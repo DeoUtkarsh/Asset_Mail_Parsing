@@ -1,0 +1,45 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.spec
+
+# Virtual environment
+venv/
+.venv/
+env/
+.env_backup
+
+# ── Secrets / Environment ─────────────────────────────────────────────────────
+backend/.env
+# Keep the example file — it has no real secrets
+!backend/.env.example
+
+# ── Node / Frontend ───────────────────────────────────────────────────────────
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/node_modules/.cache/
+
+# ── OS / Editor ───────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Misc ──────────────────────────────────────────────────────────────────────
+*.bak
+*.tmp
