@@ -1,24 +1,42 @@
 # ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
+*$py.class
 *.pyo
 *.pyd
+.Python
 *.egg
 *.egg-info/
+.eggs/
 dist/
 build/
-.eggs/
+develop-eggs/
+downloads/
+*.manifest
 *.spec
+pip-wheel-metadata/
+*.cover
+.hypothesis/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+*.mo
 
-# Virtual environment
+# Virtual environments
 venv/
 .venv/
 env/
-.env_backup
+ENV/
 
-# ── Secrets / Environment ─────────────────────────────────────────────────────
+# ── Secrets / local env ───────────────────────────────────────────────────────
 backend/.env
-# Keep the example file — it has no real secrets
+.env
+.env.local
+.env.*.local
+.env_backup
 !backend/.env.example
 
 # ── Node / Frontend ───────────────────────────────────────────────────────────
@@ -26,6 +44,7 @@ frontend/node_modules/
 frontend/dist/
 frontend/.vite/
 frontend/node_modules/.cache/
+*.tsbuildinfo
 
 # ── OS / Editor ───────────────────────────────────────────────────────────────
 .DS_Store
@@ -33,13 +52,18 @@ Thumbs.db
 desktop.ini
 *.swp
 *.swo
+*~
 .vscode/
+!.vscode/extensions.json
 .idea/
 
-# ── Logs ──────────────────────────────────────────────────────────────────────
+# ── Logs & temp ───────────────────────────────────────────────────────────────
 *.log
 logs/
-
-# ── Misc ──────────────────────────────────────────────────────────────────────
 *.bak
 *.tmp
+.tmp/
+
+# ── Optional local data / samples ─────────────────────────────────────────────
+*.eml
+.cursor/

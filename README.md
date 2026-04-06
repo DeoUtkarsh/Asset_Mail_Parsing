@@ -1,67 +1,189 @@
 # AI-Powered Shipbroking Email Parser
 
-An agentic system that fetches `.eml` attachments from Gmail, extracts vessel position data using NVIDIA NIM, presents it in an editable validation grid, and generates a polished position-list email draft — all locally on your machine.
+Agentic pipeline that fetches `.eml` attachments from Gmail (IMAP), extracts vessel position rows with **NVIDIA NIM**, stores everything in **PostgreSQL**, and serves a **three-stage React UI**: Inbox → Validation grid → Consolidated HTML draft with a **zone map** (Leaflet). Real-time progress uses **Server-Sent Events (SSE)**.
+
+Repository: [github.com/DeoUtkarsh/Asset_Mail_Parsing](https://github.com/DeoUtkarsh/Asset_Mail_Parsing)
 
 ---
 
-## Tech Stack
+## Architecture (high level)
+
+```mermaid
+flowchart TB
+  subgraph client [Browser — Vite React]
+    UI[Inbox / Validate / Draft]
+    SSEHook[useSSE — EventSource]
+    APIjs[api.js — fetch /api/*]
+  end
+
+  subgraph vite [Vite dev server :5173]
+    Proxy["proxy /api → localhost:8000"]
+  end
+
+  subgraph backend [FastAPI :8000]
+    Routes[REST + SSE routes]
+    LG1[LangGraph Phase 1]
+    LG2[LangGraph Phase 2]
+    A1[ingestion]
+    A2[extraction — NVIDIA LLM]
+    A3[normalization]
+    A4[drafter — intro LLM + HTML tables]
+  end
+
+  subgraph external [External services]
+    Gmail[IMAP Gmail]
+    NIM[NVIDIA NIM API]
+  end
+
+  subgraph data [Data]
+    PG[(PostgreSQL)]
+  end
+
+  UI --> APIjs
+  UI --> SSEHook
+  APIjs --> Proxy --> Routes
+  SSEHook --> Routes
+  Routes --> LG1
+  Routes --> LG2
+  LG1 --> A1 --> A2 --> A3
+  LG2 --> A4
+  A1 --> Gmail
+  A2 --> NIM
+  A4 --> NIM
+  A1 & A2 & A3 & A4 --> PG
+```
+
+---
+
+## End-to-end flow
+
+1. **User clicks “Fetch Mails”**  
+   - `POST /api/fetch-emails` starts **Phase 1** in the background and returns a `job_id`.  
+   - Frontend opens `GET /api/events/{job_id}` (SSE) for live attachment status.
+
+2. **Phase 1 (LangGraph)** — `workflow.py`  
+   - **Ingestion** — IMAP: find matching parent email, save rows, discover `.eml` / `message/rfc822` parts.  
+   - **Extraction** — For each attachment, call NVIDIA LLM → JSON vessel list → upsert into DB.  
+   - **Normalization** — Build the **superset column list** across all rows for the grid.
+
+3. **Inbox UI**  
+   - Polls / subscribes via SSE while extraction runs.  
+   - **Validate →** (top bar when email is `ready_for_validation` or `drafted`) switches to Validate with the active `email_id`.  
+   - **Preview** loads raw text + vessels per attachment.
+
+4. **Validation UI**  
+   - `GET /api/emails/{id}/vessels` + `/columns` powers **TanStack Table**.  
+   - Double-click cells to edit; changes `PUT /api/vessels/{id}`.  
+   - **Delete Mode** toggles row delete.  
+   - **Checkboxes** — draft can use **selected rows only**; if none selected, **all rows** are sent.
+
+5. **Draft generation**  
+   - `POST /api/generate-draft` with `{ email_id, vessels }` starts **Phase 2**, returns `job_id`.  
+   - SSE delivers `drafting_done` with `draft_html` + `zones` (lat/lng/count per broad zone).  
+   - **Drafter** groups rows by mapped zone (e.g. STRAITS/SEA, FAR EAST), builds HTML tables, asks LLM for a short intro only.
+
+6. **Draft UI**  
+   - Renders HTML in a sandboxed iframe, map + legend beside it, **Copy to Clipboard** for plain text.
+
+---
+
+## Tech stack
 
 | Layer | Technology |
-|---|---|
+|--------|------------|
 | Backend | Python 3.11+, FastAPI, uvicorn |
-| Agentic Framework | LangGraph |
-| LLM | NVIDIA NIM (`nemotron-3-super-120b-a12b`) |
-| Database | Supabase (PostgreSQL, free tier) |
-| Real-time | Server-Sent Events (SSE via `sse-starlette`) |
-| Frontend | React 18 + Vite + TailwindCSS |
-| Data Grid | TanStack Table v8 (MIT, fully free) |
+| Orchestration | LangGraph (Phase 1 + Phase 2) |
+| LLM | NVIDIA NIM (configurable, e.g. `nvidia/nemotron-3-super-120b-a12b`) |
+| Database | PostgreSQL (local or any host; accessed via `pg_db.py` Supabase-style API) |
+| Real-time | SSE (`sse-starlette`), `useSSE.js` |
+| Frontend | React 18, Vite, TailwindCSS |
+| Grid | TanStack Table v8 |
+| Map | Leaflet / react-leaflet |
 
 ---
 
-## One-Time Setup
+## Repository layout
 
-### 1. Supabase
+```
+├── schema.sql                 # DDL — run once on your PostgreSQL database
+├── .gitignore
+├── README.md
+├── retry_errors.py            # Optional: retry failed extractions (configure model inside script)
+├── debug_errors.py            # Optional debugging helper
+├── backend/
+│   ├── .env.example           # Template — copy to .env
+│   ├── main.py                # FastAPI routes, SSE, CORS
+│   ├── config.py              # Pydantic Settings → env vars
+│   ├── database.py            # DB singleton (alias `supabase` for agents)
+│   ├── pg_db.py               # PostgreSQL query builder (Supabase-like)
+│   ├── models.py              # Request/response models
+│   ├── imap_client.py         # Gmail IMAP + .eml parsing
+│   ├── sse_manager.py         # In-memory SSE fan-out per job_id
+│   ├── workflow.py            # LangGraph graphs
+│   └── agents/
+│       ├── ingestion.py
+│       ├── extraction.py
+│       ├── normalization.py
+│       └── drafter.py         # Zone grouping + HTML + intro LLM
+└── frontend/
+    ├── vite.config.js         # Dev server + proxy /api → :8000, allowedHosts for ngrok
+    ├── package.json
+    └── src/
+        ├── App.jsx            # Tabs + activeEmailId + draft state
+        ├── services/api.js    # All REST calls under /api
+        ├── hooks/useSSE.js
+        └── components/
+            ├── InboxView/
+            ├── ValidationView/
+            └── DraftView/
+```
 
-1. Create a free project at [supabase.com](https://supabase.com).
-2. Go to **Project Settings → API** and copy:
-   - **Project URL** → `SUPABASE_URL`
-   - **service_role** secret → `SUPABASE_SERVICE_KEY`
-3. Open the **SQL Editor** in the Supabase dashboard and run the entire contents of `schema.sql` from this project.
+---
+
+## Prerequisites
+
+- **Python 3.11+**
+- **Node.js 18+** (for Vite)
+- **PostgreSQL** (e.g. local via pgAdmin) — database created and `schema.sql` applied
+- **Gmail** account with an **App Password** for IMAP
+- **NVIDIA NIM** API key ([NVIDIA API](https://integrate.api.nvidia.com))
+
+---
+
+## One-time setup
+
+### 1. Database
+
+Create a database (e.g. `email_parser`), then run the full **`schema.sql`** in pgAdmin or `psql`.
 
 ### 2. Backend
 
 ```powershell
-# From the project root (Email_Parser_Two\)
 cd backend
-
-# Copy the example env file and fill in your credentials
 copy .env.example .env
-# Edit .env: add your SUPABASE_URL, SUPABASE_SERVICE_KEY
+# Edit .env: EMAIL_*, FILTER_SENDER, TARGET_SUBJECT, NVIDIA_*, PG_*
+```
 
-# Activate the existing venv (or create one)
-..\venv\Scripts\Activate.ps1
-
-# Install all dependencies
+```powershell
+# From repo root — create venv if needed
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+cd backend
 pip install -r requirements.txt
 ```
 
 ### 3. Frontend
 
 ```powershell
-# From the project root
 cd frontend
-
-# Install Node dependencies
 npm install
 ```
 
 ---
 
-## Running the App
+## Run locally
 
-You need **two terminal windows** open simultaneously.
-
-### Terminal 1 — Backend
+**Terminal 1 — API**
 
 ```powershell
 cd backend
@@ -69,99 +191,107 @@ cd backend
 uvicorn main:app --reload --port 8000
 ```
 
-The API will be available at `http://localhost:8000`.
-Interactive docs: `http://localhost:8000/docs`
+- API: `http://localhost:8000`  
+- Docs: `http://localhost:8000/docs`
 
-### Terminal 2 — Frontend
+**Terminal 2 — UI**
 
 ```powershell
 cd frontend
 npm run dev
 ```
 
-Open your browser at **`http://localhost:5173`**.
+- App: `http://localhost:5173`
 
 ---
 
-## Usage Flow
+## Optional: share via ngrok
 
-### Module 1 — Inbox (Fetch)
-1. Click **"⬇ Fetch Mails"**.
-2. The backend connects to Gmail via IMAP, downloads all `.eml` attachments, and immediately starts extraction via the NVIDIA LLM (all 30 files **in parallel**).
-3. You will see live status badges next to each file: `pending → extracting → done`.
-4. Once all files are done, click **"Validate →"** next to the email.
-5. Optionally click **"Preview"** on any file to see the raw text on the left and extracted vessels on the right.
+Tunnel the **Vite** port so `/api` is still proxied on your machine:
 
-### Module 2 — Validation Grid
-- All vessels from all attachments appear in one Excel-like grid.
-- **Double-click** any cell to edit it inline. Press `Enter` or click away to save.
-- **✕** on the right deletes a row.
-- Every edit is instantly persisted to Supabase.
-- When satisfied, click **"✔ Approve & Generate Draft"**.
-
-### Module 3 — Draft
-- The AI-generated email appears in a read-only textarea.
-- Click **"⎘ Copy to Clipboard"** and paste into Gmail/Outlook.
-
----
-
-## Project Structure
-
-```
-Email_Parser_Two/
-├── schema.sql                  ← Run this once in Supabase SQL Editor
-├── backend/
-│   ├── .env.example            ← Copy to .env and fill in secrets
-│   ├── requirements.txt
-│   ├── main.py                 ← FastAPI app + all routes
-│   ├── config.py               ← Pydantic settings (reads .env)
-│   ├── database.py             ← Supabase client singleton
-│   ├── models.py               ← Pydantic request/response models
-│   ├── imap_client.py          ← Gmail IMAP + .eml text extraction
-│   ├── sse_manager.py          ← SSE event broadcaster
-│   ├── workflow.py             ← LangGraph Phase 1 + Phase 2 graphs
-│   └── agents/
-│       ├── ingestion.py        ← Agent 1: fetch & save emails
-│       ├── extraction.py       ← Agent 2: parallel NVIDIA LLM calls
-│       ├── normalization.py    ← Agent 3: superset column builder
-│       └── drafter.py         ← Agent 4: draft email generator
-└── frontend/
-    ├── package.json
-    ├── vite.config.js          ← Proxy /api → localhost:8000
-    ├── src/
-    │   ├── App.jsx             ← 3-view SPA shell + nav
-    │   ├── services/api.js     ← All fetch() calls to the backend
-    │   ├── hooks/useSSE.js     ← EventSource hook
-    │   └── components/
-    │       ├── InboxView/      ← Module 1 (accordion + preview modal)
-    │       ├── ValidationView/ ← Module 2 (TanStack Table editable grid)
-    │       └── DraftView/      ← Module 3 (textarea + copy button)
+```text
+ngrok http 5173
 ```
 
+Ensure `frontend/vite.config.js` allows your ngrok host (`allowedHosts`). Keep **backend + frontend + ngrok** running; sleep/VPN/firewall will break the link.
+
 ---
 
-## Environment Variables Reference
+## Environment variables
 
-| Variable | Description |
-|---|---|
-| `EMAIL_USER` | Your Gmail address |
-| `EMAIL_PASSWORD` | Gmail **App Password** (not your login password) |
-| `IMAP_SERVER` | `imap.gmail.com` |
-| `IMAP_PORT` | `993` |
-| `FILTER_SENDER` | Only fetch emails from this address |
-| `TARGET_SUBJECT` | Subject substring to match |
-| `NVIDIA_API_KEY` | Your NVIDIA NIM API key |
-| `NVIDIA_LLM_MODEL` | Model for extraction + drafting |
-| `SUPABASE_URL` | Your Supabase project URL |
-| `SUPABASE_SERVICE_KEY` | Supabase `service_role` secret key |
+| Variable | Purpose |
+|----------|---------|
+| `EMAIL_USER` | Gmail address |
+| `EMAIL_PASSWORD` | Gmail **App Password** |
+| `IMAP_SERVER` / `IMAP_PORT` | Default `imap.gmail.com` / `993` |
+| `FILTER_SENDER` | Only process emails from this sender |
+| `TARGET_SUBJECT` | Subject substring filter |
+| `NVIDIA_API_KEY` | NVIDIA NIM key |
+| `NVIDIA_LLM_MODEL` | Chat model for extraction + draft intro |
+| `NVIDIA_API_BASE_URL` | Default NVIDIA integrate endpoint |
+| `PG_HOST` / `PG_PORT` / `PG_DATABASE` / `PG_USER` / `PG_PASSWORD` | PostgreSQL connection |
+| `MAX_ATTACHMENTS` | `0` = process all attachments (demo) |
+
+---
+
+## API summary (prefix `/api`)
+
+| Method | Path | Role |
+|--------|------|------|
+| POST | `/fetch-emails` | Start Phase 1 → `job_id` |
+| GET | `/events/{job_id}` | SSE stream |
+| GET | `/emails` | List parent emails + attachment summaries |
+| GET | `/emails/{id}/attachments` | Attachments for one email |
+| GET | `/attachments/{id}/raw` | Raw text for preview |
+| GET | `/attachments/{id}/vessels` | Vessels for one attachment |
+| GET | `/emails/{id}/vessels` | All vessels for validation grid |
+| GET | `/emails/{id}/columns` | Superset column keys |
+| PUT | `/vessels/{id}` | Update row |
+| DELETE | `/vessels/{id}` | Delete row |
+| POST | `/emails/{id}/vessels` | Add blank row |
+| POST | `/generate-draft` | Phase 2 → `job_id`, then SSE `drafting_done` |
 
 ---
 
 ## Gmail App Password
 
-Standard Gmail passwords do not work with IMAP. You need a **16-character App Password**:
+1. Google Account → Security → **2-Step Verification** on.  
+2. **App passwords** → create for Mail.  
+3. Use the 16-character value as `EMAIL_PASSWORD` (no spaces).
 
-1. Go to [myaccount.google.com/security](https://myaccount.google.com/security).
-2. Enable **2-Step Verification** if not already on.
-3. Search for **"App Passwords"** and create one for "Mail".
-4. Paste the 16-character code (no spaces) as `EMAIL_PASSWORD` in your `.env`.
+---
+
+## License / usage
+
+Demo-oriented local stack; do not commit `.env` or real credentials. This repo uses **MIT-friendly** frontend dependencies (e.g. TanStack Table, Leaflet).
+
+---
+
+## Push branch `dev_testing` (you run manually)
+
+From the repo root, with `origin` pointing at GitHub:
+
+```powershell
+cd D:\Asset_Modules\Email_Parser_Two
+git status
+git checkout -b dev_testing
+git add .
+git commit -m "docs: architecture README, .gitignore; align with PostgreSQL stack"
+git push -u origin dev_testing
+```
+
+If `dev_testing` already exists remotely:
+
+```powershell
+git fetch origin
+git checkout dev_testing
+git merge main
+# or: git rebase main
+git push origin dev_testing
+```
+
+If you only want to update the remote branch from your current branch:
+
+```powershell
+git push -u origin HEAD:dev_testing
+```
