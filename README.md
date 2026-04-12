@@ -27,7 +27,7 @@ flowchart TB
     A1[ingestion]
     A2[extraction — NVIDIA LLM]
     A3[normalization]
-    A4[drafter — intro LLM + HTML tables]
+    A4[drafter — grid-aligned HTML + intro LLM]
   end
 
   subgraph external [External services]
@@ -62,9 +62,9 @@ flowchart TB
    - Frontend opens `GET /api/events/{job_id}` (SSE) for live attachment status.
 
 2. **Phase 1 (LangGraph)** — `workflow.py`  
-   - **Ingestion** — IMAP: find matching parent email, save rows, discover `.eml` / `message/rfc822` parts (attachment **display name** from MIME `filename` / `Content-Disposition`, fallback `attachment_NNN.eml`).  
+   - **Ingestion** — IMAP: find matching parent email, save rows, discover `.eml` / `message/rfc822` parts (attachment **display name** from MIME `filename` / `Content-Disposition`, fallback `attachment_NNN.eml`). **`MAX_ATTACHMENTS`** in `.env` caps how many parts are stored when set to a positive integer; **`0`** keeps **all** parts.  
    - **Extraction** — For each attachment, call NVIDIA LLM → JSON vessel list → upsert into DB.  
-   - **Signature pass** — For each attachment body tail, a second LLM call extracts broker **emails** and **phones**; stored on that **`attachments`** row (`signature_emails`, `signature_phones`). The grid reads them via **`vessels_full`** (per source file / vessel row).  
+   - **Signature pass** — For each attachment body tail: NVIDIA LLM extracts broker **emails** / **phones**, merged with a **regex fallback** (same chunk) when the model returns empty or partial results. Values are stored on **`attachments`** (`signature_emails`, `signature_phones`). The validation grid reads them via **`vessels_full`** (per source file / vessel row).  
    - **Normalization** — Build the **superset column list** across all rows for the grid.
 
 3. **Inbox UI**  
@@ -80,9 +80,11 @@ flowchart TB
    - **Checkboxes** — draft can use **selected rows only**; if none selected, **all rows** are sent.
 
 5. **Draft generation**  
-   - `POST /api/generate-draft` with `{ email_id, vessels }` starts **Phase 2**, returns `job_id`.  
+   - `POST /api/generate-draft` with `{ email_id, vessels, grid_columns }` starts **Phase 2**, returns `job_id`.  
+   - Each vessel in the payload mirrors the grid: `dynamic_data`, `region`, `filename`, **`signature_emails`**, **`signature_phones`**, etc. **`grid_columns`** is the same ordered list as `GET /api/emails/{id}/columns` (REGION + dynamic keys + signature columns).  
    - SSE delivers `drafting_done` with `draft_html` + `zones` (lat/lng/count per broad zone).  
-   - **Drafter** groups rows by mapped zone (e.g. STRAITS/SEA, FAR EAST), builds HTML tables, asks LLM for a short intro only.
+   - **Drafter** groups rows by mapped zone (e.g. STRAITS/SEA, FAR EAST), builds **HTML tables with the same columns as Validate** (empty cells show **—**). A short **intro paragraph** is generated via LLM with **system instructions + sanitization** so instruction-style meta text is dropped when the model misbehaves.  
+   - If **`grid_columns`** is omitted or empty, the drafter falls back to a fixed subset of vessel fields (legacy compact tables).
 
 6. **Draft UI**  
    - Renders HTML in a sandboxed iframe, map + legend beside it, **Copy to Clipboard** for plain text.
@@ -110,9 +112,6 @@ flowchart TB
 ├── schema.sql                 # DDL — run once on your PostgreSQL database
 ├── .gitignore
 ├── README.md
-├── retry_errors.py            # Optional: retry failed extractions (configure model inside script)
-├── debug_errors.py            # Optional debugging helper
-├── test_signature_sample.py   # Console test: 5 *.eml from cwd/repo, else Gmail attachments
 ├── backend/
 │   ├── .env.example           # Template — copy to .env
 │   ├── main.py                # FastAPI routes, SSE, CORS
@@ -127,8 +126,8 @@ flowchart TB
 │       ├── ingestion.py
 │       ├── extraction.py
 │       ├── normalization.py
-│       ├── signature_extract.py  # LLM: broker emails/phones → attachments
-│       └── drafter.py         # Zone grouping + HTML + intro LLM
+│       ├── signature_extract.py  # LLM + regex fallback → attachments.signature_*
+│       └── drafter.py         # Zone grouping + grid-aligned HTML + intro LLM
 └── frontend/
     ├── vite.config.js         # Dev server + proxy /api → :8000, allowedHosts for ngrok
     ├── package.json
@@ -231,10 +230,10 @@ Ensure `frontend/vite.config.js` allows your ngrok host (`allowedHosts`). Keep *
 | `FILTER_SENDER` | Only process emails from this sender |
 | `TARGET_SUBJECT` | Subject substring filter |
 | `NVIDIA_API_KEY` | NVIDIA NIM key |
-| `NVIDIA_LLM_MODEL` | Chat model for extraction + draft intro |
+| `NVIDIA_LLM_MODEL` | Chat model for vessel extraction, signature extraction, and draft intro |
 | `NVIDIA_API_BASE_URL` | Default NVIDIA integrate endpoint |
 | `PG_HOST` / `PG_PORT` / `PG_DATABASE` / `PG_USER` / `PG_PASSWORD` | PostgreSQL connection |
-| `MAX_ATTACHMENTS` | Default `3` for testing; `0` = process all attachments |
+| `MAX_ATTACHMENTS` | **`0`** (default in code) = process **all** `.eml` / `message/rfc822` parts on the matched parent email; set **`N > 0`** to cap at the first N parts (faster/cheaper tests) |
 
 ---
 
@@ -253,7 +252,7 @@ Ensure `frontend/vite.config.js` allows your ngrok host (`allowedHosts`). Keep *
 | PUT | `/vessels/{id}` | Update row |
 | DELETE | `/vessels/{id}` | Delete row |
 | POST | `/emails/{id}/vessels` | Add blank row |
-| POST | `/generate-draft` | Phase 2 → `job_id`, then SSE `drafting_done` |
+| POST | `/generate-draft` | Body: `email_id`, `vessels[]`, `grid_columns[]` (optional). Phase 2 → `job_id`, then SSE `drafting_done` |
 
 ---
 
