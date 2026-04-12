@@ -24,9 +24,9 @@ class Settings(BaseSettings):
     PG_USER: str = "postgres"
     PG_PASSWORD: str = "postgres"
 
-    # Limit how many attachments are processed per run.
-    # Set to 0 (or remove) to process ALL attachments.
-    MAX_ATTACHMENTS: int = 5
+    # Limit how many attachments are processed per run (first N in MIME order).
+    # 0 = process ALL .eml / rfc822 parts. Set a positive N for faster dev runs.
+    MAX_ATTACHMENTS: int = 0
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 

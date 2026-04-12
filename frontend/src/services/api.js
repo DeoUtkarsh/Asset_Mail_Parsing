@@ -65,5 +65,9 @@ export const createVessel = (emailId) =>
  * vessels = array of { id, dynamic_data, region } from the validation grid.
  * Returns { job_id }.
  */
-export const generateDraft = (emailId, vessels) =>
-  request("POST", "/generate-draft", { email_id: emailId, vessels });
+export const generateDraft = (emailId, vessels, gridColumns = []) =>
+  request("POST", "/generate-draft", {
+    email_id: emailId,
+    vessels,
+    grid_columns: gridColumns,
+  });

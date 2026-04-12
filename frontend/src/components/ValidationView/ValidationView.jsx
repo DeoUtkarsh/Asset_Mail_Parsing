@@ -65,6 +65,7 @@ export default function ValidationView({ emailId, onDraftGenerated }) {
   };
 
   const handleCellEdit = useCallback(async (rowId, field, value) => {
+    if (field === "signature_emails" || field === "signature_phones") return;
     setVessels((prev) =>
       prev.map((v) => {
         if (v.id !== rowId) return v;
@@ -127,9 +128,11 @@ export default function ValidationView({ emailId, onDraftGenerated }) {
       region: v.region,
       attachment_id: v.attachment_id,
       filename: v.filename,
+      signature_emails: v.signature_emails ?? "",
+      signature_phones: v.signature_phones ?? "",
     }));
     try {
-      const { job_id } = await generateDraft(emailId, payload);
+      const { job_id } = await generateDraft(emailId, payload, columns);
       setDraftJobId(job_id);
     } catch (e) {
       setGenerating(false);

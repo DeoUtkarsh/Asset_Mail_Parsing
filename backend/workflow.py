@@ -12,6 +12,7 @@ from agents.ingestion import run_ingestion
 from agents.extraction import run_extraction
 from agents.normalization import run_normalization
 from agents.drafter import run_drafter
+from agents.signature_extract import run_parent_signature_extraction
 
 import logging
 logger = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ class Phase2State(TypedDict):
     job_id: str
     email_id: str
     vessels: list[dict[str, Any]]
+    grid_columns: list[str]  # Validate-tab column keys (order + signatures)
     draft_html: str
     zones: list[dict[str, Any]]   # Leaflet map markers: [{name, lat, lng, count}]
     error: str
@@ -57,6 +59,7 @@ async def extraction_node(state: Phase1State) -> Phase1State:
         return state
     try:
         await run_extraction(state["job_id"], state["attachment_ids"])
+        await run_parent_signature_extraction(state["job_id"], state["email_id"])
         return state
     except Exception as exc:
         return {**state, "error": str(exc)}
@@ -90,6 +93,7 @@ async def drafter_node(state: Phase2State) -> Phase2State:
             state["job_id"],
             state["email_id"],
             state["vessels"],
+            state.get("grid_columns") or [],
         )
         return {**state, "draft_html": draft_html, "zones": zones}
     except Exception as exc:

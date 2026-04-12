@@ -19,13 +19,15 @@ _SCHEMA_SQL = """
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 
 CREATE TABLE IF NOT EXISTS parent_emails (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    subject         TEXT NOT NULL,
-    sender          TEXT NOT NULL DEFAULT '',
-    date_received   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    status          TEXT NOT NULL DEFAULT 'fetching',
-    message_id      TEXT UNIQUE,
-    created_at      TIMESTAMPTZ DEFAULT NOW()
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    subject             TEXT NOT NULL,
+    sender              TEXT NOT NULL DEFAULT '',
+    date_received       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    status              TEXT NOT NULL DEFAULT 'fetching',
+    message_id          TEXT UNIQUE,
+    signature_emails    TEXT,
+    signature_phones    TEXT,
+    created_at          TIMESTAMPTZ DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS attachments (
@@ -33,6 +35,8 @@ CREATE TABLE IF NOT EXISTS attachments (
     parent_email_id   UUID NOT NULL REFERENCES parent_emails(id) ON DELETE CASCADE,
     filename          TEXT NOT NULL DEFAULT '',
     raw_text          TEXT,
+    signature_emails  TEXT,
+    signature_phones  TEXT,
     status            TEXT NOT NULL DEFAULT 'pending',
     error_message     TEXT,
     created_at        TIMESTAMPTZ DEFAULT NOW()
@@ -58,7 +62,15 @@ CREATE INDEX IF NOT EXISTS idx_vessels_region
 
 CREATE INDEX IF NOT EXISTS idx_vessels_dynamic_data
     ON vessels USING GIN (dynamic_data);
+"""
 
+# After tables exist: add columns on upgraded DBs, then (re)create view (needs those columns).
+_MIGRATE_SQL = """
+ALTER TABLE parent_emails ADD COLUMN IF NOT EXISTS signature_emails TEXT;
+ALTER TABLE parent_emails ADD COLUMN IF NOT EXISTS signature_phones TEXT;
+ALTER TABLE attachments ADD COLUMN IF NOT EXISTS signature_emails TEXT;
+ALTER TABLE attachments ADD COLUMN IF NOT EXISTS signature_phones TEXT;
+DROP VIEW IF EXISTS vessels_full;
 CREATE OR REPLACE VIEW vessels_full AS
 SELECT
     v.id,
@@ -70,7 +82,9 @@ SELECT
     a.filename,
     a.parent_email_id,
     pe.subject,
-    pe.date_received
+    pe.date_received,
+    a.signature_emails,
+    a.signature_phones
 FROM vessels v
 JOIN attachments a  ON a.id  = v.attachment_id
 JOIN parent_emails pe ON pe.id = a.parent_email_id;
@@ -261,8 +275,9 @@ class PostgresDatabase:
         try:
             with conn.cursor() as cur:
                 cur.execute(_SCHEMA_SQL)
+                cur.execute(_MIGRATE_SQL)
             conn.commit()
-            logger.info("PostgreSQL schema verified (tables + view exist)")
+            logger.info("PostgreSQL schema verified (tables + view + migrations)")
         except Exception as exc:
             conn.rollback()
             logger.error("Schema init failed: %s", exc)

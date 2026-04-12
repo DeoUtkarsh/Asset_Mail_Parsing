@@ -237,14 +237,22 @@ async def get_raw_text(att_id: str):
     try:
         row = (
             supabase.table("attachments")
-            .select("raw_text, filename")
+            .select(
+                "raw_text, filename, signature_emails, signature_phones",
+            )
             .eq("id", att_id)
-            .limit(1)
+            .single()
             .execute()
         )
         if not row.data:
             raise HTTPException(status_code=404, detail="Attachment not found.")
-        return row.data[0]  # Return the dict, not the list
+        att = row.data[0]
+        return {
+            "raw_text": att.get("raw_text"),
+            "filename": att.get("filename"),
+            "signature_emails": att.get("signature_emails") or "",
+            "signature_phones": att.get("signature_phones") or "",
+        }
     except HTTPException:
         raise
     except Exception as exc:
@@ -258,7 +266,10 @@ async def get_all_vessels(email_id: str):
     try:
         rows = (
             supabase.table("vessels_full")
-            .select("id, attachment_id, dynamic_data, region, is_validated, filename")
+            .select(
+                "id, attachment_id, dynamic_data, region, is_validated, filename, "
+                "signature_emails, signature_phones"
+            )
             .eq("parent_email_id", email_id)
             .execute()
         )
@@ -281,6 +292,9 @@ async def get_superset_columns(email_id: str):
         )
         from agents.normalization import _build_superset
         columns = _build_superset(rows.data or [])
+        for k in ("signature_emails", "signature_phones"):
+            if k not in columns:
+                columns.append(k)
         return {"columns": columns}
     except Exception as exc:
         logger.error("[API] get_superset_columns failed: %s", exc)
@@ -329,7 +343,7 @@ async def create_vessel(email_id: str):
         # Find the first attachment that belongs to this email
         att = (
             supabase.table("attachments")
-            .select("id, filename")
+            .select("id, filename, signature_emails, signature_phones")
             .eq("parent_email_id", email_id)
             .limit(1)
             .execute()
@@ -348,8 +362,9 @@ async def create_vessel(email_id: str):
             .execute()
         )
         new_vessel = result.data[0]
-        # Return with filename so the grid can show the group header immediately
         new_vessel["filename"] = att_row["filename"]
+        new_vessel["signature_emails"] = att_row.get("signature_emails") or ""
+        new_vessel["signature_phones"] = att_row.get("signature_phones") or ""
         logger.info("[API] Created blank vessel id=%s", new_vessel["id"])
         return new_vessel
     except HTTPException:
@@ -371,6 +386,7 @@ async def generate_draft(body: GenerateDraftRequest, background_tasks: Backgroun
             "job_id": job_id,
             "email_id": body.email_id,
             "vessels": body.vessels,
+            "grid_columns": body.grid_columns or [],
             "draft_html": "",
             "zones": [],
             "error": "",

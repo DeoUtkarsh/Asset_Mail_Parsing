@@ -62,8 +62,9 @@ flowchart TB
    - Frontend opens `GET /api/events/{job_id}` (SSE) for live attachment status.
 
 2. **Phase 1 (LangGraph)** — `workflow.py`  
-   - **Ingestion** — IMAP: find matching parent email, save rows, discover `.eml` / `message/rfc822` parts.  
+   - **Ingestion** — IMAP: find matching parent email, save rows, discover `.eml` / `message/rfc822` parts (attachment **display name** from MIME `filename` / `Content-Disposition`, fallback `attachment_NNN.eml`).  
    - **Extraction** — For each attachment, call NVIDIA LLM → JSON vessel list → upsert into DB.  
+   - **Signature pass** — For each attachment body tail, a second LLM call extracts broker **emails** and **phones**; stored on that **`attachments`** row (`signature_emails`, `signature_phones`). The grid reads them via **`vessels_full`** (per source file / vessel row).  
    - **Normalization** — Build the **superset column list** across all rows for the grid.
 
 3. **Inbox UI**  
@@ -74,6 +75,7 @@ flowchart TB
 4. **Validation UI**  
    - `GET /api/emails/{id}/vessels` + `/columns` powers **TanStack Table**.  
    - Double-click cells to edit; changes `PUT /api/vessels/{id}`.  
+   - **SIGNATURE EMAILS** / **SIGNATURE PHONES** are read-only columns (values from the vessel’s **attachment**, so each broker file can differ).  
    - **Delete Mode** toggles row delete.  
    - **Checkboxes** — draft can use **selected rows only**; if none selected, **all rows** are sent.
 
@@ -110,6 +112,7 @@ flowchart TB
 ├── README.md
 ├── retry_errors.py            # Optional: retry failed extractions (configure model inside script)
 ├── debug_errors.py            # Optional debugging helper
+├── test_signature_sample.py   # Console test: 5 *.eml from cwd/repo, else Gmail attachments
 ├── backend/
 │   ├── .env.example           # Template — copy to .env
 │   ├── main.py                # FastAPI routes, SSE, CORS
@@ -124,6 +127,7 @@ flowchart TB
 │       ├── ingestion.py
 │       ├── extraction.py
 │       ├── normalization.py
+│       ├── signature_extract.py  # LLM: broker emails/phones → attachments
 │       └── drafter.py         # Zone grouping + HTML + intro LLM
 └── frontend/
     ├── vite.config.js         # Dev server + proxy /api → :8000, allowedHosts for ngrok
@@ -230,7 +234,7 @@ Ensure `frontend/vite.config.js` allows your ngrok host (`allowedHosts`). Keep *
 | `NVIDIA_LLM_MODEL` | Chat model for extraction + draft intro |
 | `NVIDIA_API_BASE_URL` | Default NVIDIA integrate endpoint |
 | `PG_HOST` / `PG_PORT` / `PG_DATABASE` / `PG_USER` / `PG_PASSWORD` | PostgreSQL connection |
-| `MAX_ATTACHMENTS` | `0` = process all attachments (demo) |
+| `MAX_ATTACHMENTS` | Default `3` for testing; `0` = process all attachments |
 
 ---
 

@@ -15,6 +15,8 @@ class GenerateDraftRequest(BaseModel):
     email_id: str
     # List of vessel dicts with user-edited dynamic_data
     vessels: list[dict[str, Any]]
+    # Same order as Validate tab (from GET /columns); drives draft table headers/cells
+    grid_columns: Optional[list[str]] = None
 
 
 class UpdateVesselRequest(BaseModel):

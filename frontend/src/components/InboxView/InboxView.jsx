@@ -37,6 +37,11 @@ export default function InboxView({ onSendToValidation }) {
         setFetching(false); setJobId(null); loadEmails(); break;
       case "phase1_failed":
         setFetching(false); setJobId(null); break;
+      case "signature_extraction_started":
+      case "signature_extraction_done":
+      case "signature_extraction_error":
+        if (type === "signature_extraction_done") loadEmails();
+        break;
       default: break;
     }
   }, []);
@@ -134,6 +139,10 @@ export default function InboxView({ onSendToValidation }) {
               <span style={{ color: "#7dd3fc" }}>[{log.type}]</span>{" "}
               {log.filename && <span style={{ color: "#0369a1" }}>{log.filename}</span>}
               {log.message && <span> {log.message}</span>}
+              {log.signature_preview != null && log.signature_preview !== "" && (
+                <span style={{ color: "#0369a1" }}> {log.signature_preview}</span>
+              )}
+              {log.error && <span style={{ color: "#b91c1c" }}> {log.error}</span>}
               {log.vessel_count !== undefined && (
                 <span style={{ color: "#0891b2" }}> → {log.vessel_count} vessels</span>
               )}
@@ -163,7 +172,10 @@ export default function InboxView({ onSendToValidation }) {
                   <th className="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wide"
                       style={{ color: "#e0f2fe", borderBottom: "2px solid #0284c7" }}>Sender</th>
                   <th className="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wide"
-                      style={{ color: "#e0f2fe", borderBottom: "2px solid #0284c7" }}>Attachment (.eml)</th>
+                      style={{ color: "#e0f2fe", borderBottom: "2px solid #0284c7" }}
+                      title="Name from the email (Content-Disposition / MIME); re-fetch to refresh old rows">
+                    Attachment name
+                  </th>
                   <th className="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wide w-32"
                       style={{ color: "#e0f2fe", borderBottom: "2px solid #0284c7" }}>Status</th>
                   <th className="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wide w-44"
@@ -210,11 +222,14 @@ export default function InboxView({ onSendToValidation }) {
                         </div>
                       </td>
 
-                      {/* Attachment filename */}
-                      <td className="px-4 py-3">
-                        <span className="inline-flex items-center gap-1.5 text-xs font-mono" style={{ color: "#0369a1" }}>
-                          <span style={{ color: "#7dd3fc" }}>📎</span>
-                          {row.filename}
+                      <td className="px-4 py-3 max-w-[min(28rem,40vw)]">
+                        <span
+                          className="flex items-center gap-1.5 text-xs font-mono w-full min-w-0"
+                          style={{ color: "#0369a1" }}
+                          title={row.filename || undefined}
+                        >
+                          <span className="flex-shrink-0" style={{ color: "#7dd3fc" }}>📎</span>
+                          <span className="truncate">{row.filename || "—"}</span>
                         </span>
                       </td>
 

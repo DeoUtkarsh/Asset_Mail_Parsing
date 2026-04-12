@@ -8,6 +8,22 @@ import { Fragment, useState } from "react";
 
 const helper = createColumnHelper();
 
+/** Per-attachment signature (joined on each row); read-only in grid. */
+const READONLY_PARENT_KEYS = new Set(["signature_emails", "signature_phones"]);
+
+function ReadOnlyParentCell({ getValue }) {
+  const value = getValue() ?? "";
+  return (
+    <div
+      className="px-2 py-1 text-xs max-w-[min(320px,40vw)] whitespace-normal break-words leading-snug"
+      style={{ color: value ? "#0369a1" : "#bae6fd", fontStyle: value ? "normal" : "italic" }}
+      title={value || ""}
+    >
+      {value || "—"}
+    </div>
+  );
+}
+
 function EditableCell({ getValue, row, column, table }) {
   const initial = getValue() ?? "";
   const [editing, setEditing] = useState(false);
@@ -146,13 +162,23 @@ export default function EditableGrid({ data, columns: colKeys, onCellEdit, onDel
       cell: EditableRegionCell,
     }),
     ...colKeys
-      .filter((k) => k !== "region")
+      .filter((k) => k !== "region" && !READONLY_PARENT_KEYS.has(k))
       .map((key) =>
         helper.accessor((row) => row.dynamic_data?.[key] ?? "", {
           id: key,
           header: key.replace(/_/g, " ").toUpperCase(),
           size: 130,
           cell: EditableCell,
+        })
+      ),
+    ...colKeys
+      .filter((k) => READONLY_PARENT_KEYS.has(k))
+      .map((key) =>
+        helper.accessor((row) => row[key] ?? "", {
+          id: key,
+          header: key === "signature_emails" ? "SIGNATURE EMAILS" : "SIGNATURE PHONES",
+          size: 240,
+          cell: ReadOnlyParentCell,
         })
       ),
   ];

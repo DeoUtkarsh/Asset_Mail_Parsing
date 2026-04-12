@@ -11,15 +11,17 @@ CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 -- One row per email fetched from Gmail
 -- ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS parent_emails (
-    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    subject         TEXT NOT NULL,
-    sender          TEXT NOT NULL DEFAULT '',
-    date_received   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    subject             TEXT NOT NULL,
+    sender              TEXT NOT NULL DEFAULT '',
+    date_received       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     -- Status lifecycle:
     -- fetching → extracting → ready_for_validation → drafted
-    status          TEXT NOT NULL DEFAULT 'fetching',
-    message_id      TEXT UNIQUE,          -- Gmail Message-ID header (dedup guard)
-    created_at      TIMESTAMPTZ DEFAULT NOW()
+    status              TEXT NOT NULL DEFAULT 'fetching',
+    message_id          TEXT UNIQUE,          -- Gmail Message-ID header (dedup guard)
+    signature_emails    TEXT,                 -- Legacy; signatures live on attachments now
+    signature_phones    TEXT,
+    created_at          TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- ─────────────────────────────────────────────
@@ -31,6 +33,8 @@ CREATE TABLE IF NOT EXISTS attachments (
     parent_email_id   UUID NOT NULL REFERENCES parent_emails(id) ON DELETE CASCADE,
     filename          TEXT NOT NULL DEFAULT '',
     raw_text          TEXT,               -- Full extracted text from the .eml file
+    signature_emails  TEXT,               -- Broker emails for this attachment only
+    signature_phones  TEXT,               -- Broker phones for this attachment only
     -- Status: pending → extracting → done | error
     status            TEXT NOT NULL DEFAULT 'pending',
     error_message     TEXT,               -- Populated if extraction fails
@@ -66,6 +70,14 @@ CREATE INDEX IF NOT EXISTS idx_vessels_dynamic_data
     ON vessels USING GIN (dynamic_data);
 
 -- ─────────────────────────────────────────────
+-- Upgrade path: add signature columns on existing installs
+-- ─────────────────────────────────────────────
+ALTER TABLE parent_emails ADD COLUMN IF NOT EXISTS signature_emails TEXT;
+ALTER TABLE parent_emails ADD COLUMN IF NOT EXISTS signature_phones TEXT;
+ALTER TABLE attachments ADD COLUMN IF NOT EXISTS signature_emails TEXT;
+ALTER TABLE attachments ADD COLUMN IF NOT EXISTS signature_phones TEXT;
+
+-- ─────────────────────────────────────────────
 -- Convenience view: vessels with parent context
 -- Useful for the validation grid query
 -- ─────────────────────────────────────────────
@@ -80,7 +92,9 @@ SELECT
     a.filename,
     a.parent_email_id,
     pe.subject,
-    pe.date_received
+    pe.date_received,
+    a.signature_emails,
+    a.signature_phones
 FROM vessels v
 JOIN attachments   a  ON a.id  = v.attachment_id
 JOIN parent_emails pe ON pe.id = a.parent_email_id;

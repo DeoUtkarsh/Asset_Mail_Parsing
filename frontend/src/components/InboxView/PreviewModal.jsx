@@ -1,11 +1,48 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { getAttachmentRaw, getVesselsForAttachment } from "../../services/api";
+
+function looksLikeHtml(s) {
+  if (!s || s.length < 12) return false;
+  const head = s.trimStart().slice(0, 200).toLowerCase();
+  return head.startsWith("<!doctype") || head.startsWith("<html") || head.startsWith("<meta");
+}
+
+/** Prefer readable text when stored content is HTML (e.g. Word-exported bodies). */
+function toPreviewPlainText(s) {
+  if (!s) return "";
+  if (!looksLikeHtml(s)) return s;
+  try {
+    const doc = new DOMParser().parseFromString(s, "text/html");
+    const t = doc.body?.innerText;
+    if (t && t.replace(/\s/g, "").length > 0) return t.replace(/\n{3,}/g, "\n\n").trim();
+  } catch {
+    /* fall through */
+  }
+  return s.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, " ")
+    .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, " ")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/(p|div|tr|li|h[1-6])>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/[ \t\r\f\v]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
 
 export default function PreviewModal({ attachmentId, filename, onClose }) {
   const [rawText, setRawText] = useState("");
+  const [signatureEmails, setSignatureEmails] = useState("");
+  const [signaturePhones, setSignaturePhones] = useState("");
   const [vessels, setVessels] = useState([]);
   const [columns, setColumns] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [showRawSource, setShowRawSource] = useState(false);
+
+  const plainPreview = useMemo(() => toPreviewPlainText(rawText), [rawText]);
+  const hasHtmlLike = useMemo(() => looksLikeHtml(rawText), [rawText]);
+
+  useEffect(() => {
+    setShowRawSource(false);
+  }, [attachmentId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -18,6 +55,8 @@ export default function PreviewModal({ attachmentId, filename, onClose }) {
         ]);
         if (cancelled) return;
         setRawText(rawData.raw_text || "");
+        setSignatureEmails(rawData.signature_emails || "");
+        setSignaturePhones(rawData.signature_phones || "");
         setVessels(vesselData);
         const keySet = new Set();
         vesselData.forEach((v) => Object.keys(v.dynamic_data || {}).forEach((k) => keySet.add(k)));
@@ -90,23 +129,71 @@ export default function PreviewModal({ attachmentId, filename, onClose }) {
             {/* ── Left: raw text ── */}
             <div className="w-1/2 flex flex-col" style={{ borderRight: "1px solid #bae6fd" }}>
               <div
-                className="px-4 py-2 flex-shrink-0"
+                className="px-4 py-2 flex-shrink-0 flex items-center justify-between gap-2"
                 style={{ background: "#e0f2fe", borderBottom: "1px solid #bae6fd" }}
               >
                 <span className="text-xs font-bold uppercase tracking-wider" style={{ color: "#0369a1" }}>
-                  Raw .eml Text
+                  {showRawSource ? "Raw source" : "Message text (readable)"}
                 </span>
+                {hasHtmlLike && rawText && (
+                  <button
+                    type="button"
+                    onClick={() => setShowRawSource((v) => !v)}
+                    className="text-[11px] font-semibold px-2 py-1 rounded-md shrink-0"
+                    style={{
+                      background: "#fff",
+                      color: "#0369a1",
+                      border: "1px solid #bae6fd",
+                    }}
+                  >
+                    {showRawSource ? "Show readable text" : "Show HTML source"}
+                  </button>
+                )}
               </div>
               <pre
                 className="flex-1 overflow-y-auto p-4 text-xs font-mono whitespace-pre-wrap leading-relaxed"
                 style={{ background: "#fff", color: "#0c4a6e" }}
               >
-                {rawText || <span style={{ color: "#bae6fd", fontStyle: "italic" }}>No text extracted.</span>}
+                {(showRawSource ? rawText : plainPreview) || (
+                  <span style={{ color: "#bae6fd", fontStyle: "italic" }}>No text extracted.</span>
+                )}
               </pre>
             </div>
 
-            {/* ── Right: extracted vessels ── */}
-            <div className="w-1/2 flex flex-col overflow-hidden">
+            {/* ── Right: signature for this attachment + extracted vessels ── */}
+            <div className="w-1/2 flex flex-col overflow-hidden min-h-0">
+              <div
+                className="px-4 py-2 flex-shrink-0"
+                style={{ background: "#e0f2fe", borderBottom: "1px solid #bae6fd" }}
+              >
+                <span className="text-xs font-bold uppercase tracking-wider" style={{ color: "#0369a1" }}>
+                  Broker signature (this attachment)
+                </span>
+              </div>
+              <div
+                className="flex-shrink-0 px-4 py-3 text-xs space-y-2 border-b"
+                style={{ background: "#fff", borderColor: "#e0f2fe" }}
+              >
+                <div>
+                  <span className="font-bold uppercase tracking-wide" style={{ color: "#0369a1" }}>Emails</span>
+                  <pre
+                    className="mt-1 whitespace-pre-wrap font-sans leading-relaxed"
+                    style={{ color: "#0c4a6e" }}
+                  >
+                    {signatureEmails?.trim() || "— (after Phase 1 signature pass, or empty for this file)"}
+                  </pre>
+                </div>
+                <div>
+                  <span className="font-bold uppercase tracking-wide" style={{ color: "#0369a1" }}>Phones</span>
+                  <pre
+                    className="mt-1 whitespace-pre-wrap font-sans leading-relaxed"
+                    style={{ color: "#0c4a6e" }}
+                  >
+                    {signaturePhones?.trim() || "—"}
+                  </pre>
+                </div>
+              </div>
+
               <div
                 className="px-4 py-2 flex-shrink-0"
                 style={{ background: "#e0f2fe", borderBottom: "1px solid #bae6fd" }}
@@ -121,7 +208,7 @@ export default function PreviewModal({ attachmentId, filename, onClose }) {
                   No vessels extracted from this file.
                 </div>
               ) : (
-                <div className="flex-1 overflow-auto" style={{ background: "#fff" }}>
+                <div className="flex-1 min-h-0 overflow-auto" style={{ background: "#fff" }}>
                   <table className="min-w-max text-xs border-collapse">
                     <thead className="sticky top-0 z-10">
                       <tr style={{ background: "#0369a1" }}>
