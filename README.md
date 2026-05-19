@@ -143,6 +143,14 @@ flowchart TB
 
 ---
 
+## AWS deployment (step-by-step)
+
+Full runbook: **[docs/aws-deployment/README.md](docs/aws-deployment/README.md)** (Phases 0–7, troubleshooting, prod cutover).
+
+**Dev environment (live):** https://d2bt5vx8sl8jq9.cloudfront.net — ECS + RDS + S3 + CloudFront in `ap-southeast-1` (`emailparsing-dev`). New deploys: start at Phase 0 if Docker is missing; reuse the **Deployed resources** table in the deployment README for IDs and URLs.
+
+---
+
 ## Prerequisites
 
 - **Python 3.11+**
