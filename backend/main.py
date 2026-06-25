@@ -8,7 +8,8 @@ GET  /api/events/{job_id}       → SSE stream for real-time status updates
 GET  /api/emails                → List all parent emails + their attachments
 GET  /api/emails/{email_id}/attachments → List attachments for one email
 GET  /api/attachments/{att_id}/vessels  → Vessels for one attachment (Preview Modal)
-GET  /api/emails/{email_id}/vessels     → All vessels for the Validation Grid
+GET  /api/vessels                     → All vessels across ready parent emails (Validation Grid)
+GET  /api/emails/{email_id}/vessels     → All vessels for one parent email
 GET  /api/emails/{email_id}/columns     → The superset column list for the grid
 PUT  /api/vessels/{vessel_id}           → Update a single vessel row (cell edit)
 DELETE /api/vessels/{vessel_id}         → Delete a vessel row
@@ -86,6 +87,7 @@ async def startup_event():
                 settings.PG_HOST, settings.PG_PORT, settings.PG_DATABASE)
     logger.info("  MAX_ATTACHMENTS  : %s",
                 settings.MAX_ATTACHMENTS if settings.MAX_ATTACHMENTS > 0 else "ALL")
+    logger.info("  EXTRACT_CONCURRENCY: %d", settings.EXTRACTION_CONCURRENCY)
     logger.info("=" * 60)
 
     # Verify PostgreSQL is reachable at startup
@@ -117,6 +119,11 @@ async def _run_phase1(job_id: str) -> None:
         if final_state.get("error"):
             logger.error("[Phase1] Failed: %s", final_state["error"])
             await sse_manager.send(job_id, "phase1_failed", {"error": final_state["error"]})
+        elif not final_state.get("email_id"):
+            logger.info("[Phase1] No new emails to fetch")
+            await sse_manager.send(job_id, "phase1_no_new", {
+                "message": "No new forwarded emails to fetch. All matching mails are already in the database.",
+            })
         else:
             logger.info("[Phase1] Complete — email_id=%s, columns=%d",
                         final_state["email_id"], len(final_state.get("superset_columns", [])))
@@ -126,6 +133,40 @@ async def _run_phase1(job_id: str) -> None:
             })
     except Exception as exc:
         logger.exception("[Phase1] Crashed: %s", exc)
+        await sse_manager.send(job_id, "phase1_failed", {"error": str(exc)})
+
+
+async def _run_retry_extraction(job_id: str, email_id: str) -> None:
+    from agents.extraction import get_retryable_attachment_ids, run_retry_extraction_for_email
+    from agents.normalization import run_normalization
+    from agents.signature_extract import run_parent_signature_extraction
+
+    attachment_ids = get_retryable_attachment_ids(email_id)
+    if not attachment_ids:
+        logger.info("[Retry] No attachments to retry for email_id=%s", email_id)
+        await sse_manager.send(job_id, "retry_no_work", {
+            "message": "No failed or pending attachments to retry for this email.",
+        })
+        return
+
+    logger.info("[Retry] Starting job_id=%s email_id=%s (%d attachments)",
+                job_id, email_id, len(attachment_ids))
+    await sse_manager.send(job_id, "retry_started", {
+        "email_id": email_id,
+        "attachment_count": len(attachment_ids),
+        "message": f"Retrying {len(attachment_ids)} attachment(s)…",
+    })
+
+    try:
+        await run_retry_extraction_for_email(job_id, email_id)
+        await run_parent_signature_extraction(job_id, email_id)
+        columns = await run_normalization(job_id, email_id)
+        await sse_manager.send(job_id, "phase1_complete", {
+            "email_id": email_id,
+            "columns": columns,
+        })
+    except Exception as exc:
+        logger.exception("[Retry] Failed: %s", exc)
         await sse_manager.send(job_id, "phase1_failed", {"error": str(exc)})
 
 
@@ -149,6 +190,25 @@ async def fetch_emails(background_tasks: BackgroundTasks):
     return {"job_id": job_id, "message": "Phase 1 started. Connect to /api/events/{job_id} for updates."}
 
 
+@app.post("/api/emails/{email_id}/retry-extraction")
+async def retry_extraction(email_id: str, background_tasks: BackgroundTasks):
+    logger.info("[API] POST /api/emails/%s/retry-extraction", email_id)
+    existing = (
+        supabase.table("parent_emails")
+        .select("id")
+        .eq("id", email_id)
+        .execute()
+    )
+    if not existing.data:
+        raise HTTPException(status_code=404, detail="Email not found.")
+    job_id = str(uuid.uuid4())
+    background_tasks.add_task(_run_retry_extraction, job_id, email_id)
+    return {
+        "job_id": job_id,
+        "message": "Retry started. Connect to /api/events/{job_id} for updates.",
+    }
+
+
 @app.get("/api/events/{job_id}")
 async def sse_events(request: Request, job_id: str):
     logger.info("[SSE] Client connected — job_id=%s", job_id)
@@ -166,7 +226,14 @@ async def sse_events(request: Request, job_id: str):
                     logger.debug("[SSE] Sending event type=%s job_id=%s", parsed.get("type"), job_id)
                     yield {"data": payload}
 
-                    if parsed.get("type") in ("phase1_complete", "phase1_failed", "drafting_done", "phase2_failed"):
+                    if parsed.get("type") in (
+                        "phase1_complete",
+                        "phase1_failed",
+                        "phase1_no_new",
+                        "retry_no_work",
+                        "drafting_done",
+                        "phase2_failed",
+                    ):
                         logger.info("[SSE] Terminal event — closing stream job_id=%s", job_id)
                         break
 
@@ -260,21 +327,64 @@ async def get_raw_text(att_id: str):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+_VESSEL_GRID_COLUMNS = (
+    "id, attachment_id, dynamic_data, region, is_validated, filename, "
+    "parent_email_id, subject, date_received, signature_emails, signature_phones"
+)
+
+
+def _sort_vessel_rows(rows: list[dict]) -> list[dict]:
+    """Oldest parent email first, then attachment filename."""
+    return sorted(
+        rows,
+        key=lambda r: (
+            str(r.get("date_received") or ""),
+            str(r.get("filename") or ""),
+        ),
+    )
+
+
+@app.get("/api/vessels")
+async def list_all_vessels():
+    """All vessels from parent emails that finished Phase 1 (validation-ready)."""
+    logger.info("[API] GET /api/vessels")
+    try:
+        ready = (
+            supabase.table("parent_emails")
+            .select("id")
+            .in_("status", ["ready_for_validation", "drafted"])
+            .execute()
+        )
+        email_ids = [e["id"] for e in (ready.data or [])]
+        if not email_ids:
+            return []
+        rows = (
+            supabase.table("vessels_full")
+            .select(_VESSEL_GRID_COLUMNS)
+            .in_("parent_email_id", email_ids)
+            .execute()
+        )
+        data = _sort_vessel_rows(rows.data or [])
+        logger.info("[API] Returning %d vessels from %d emails", len(data), len(email_ids))
+        return data
+    except Exception as exc:
+        logger.error("[API] list_all_vessels failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.get("/api/emails/{email_id}/vessels")
 async def get_all_vessels(email_id: str):
     logger.info("[API] GET /api/emails/%s/vessels", email_id)
     try:
         rows = (
             supabase.table("vessels_full")
-            .select(
-                "id, attachment_id, dynamic_data, region, is_validated, filename, "
-                "signature_emails, signature_phones"
-            )
+            .select(_VESSEL_GRID_COLUMNS)
             .eq("parent_email_id", email_id)
             .execute()
         )
-        logger.info("[API] Returning %d vessels", len(rows.data or []))
-        return rows.data or []
+        data = _sort_vessel_rows(rows.data or [])
+        logger.info("[API] Returning %d vessels", len(data))
+        return data
     except Exception as exc:
         logger.error("[API] get_all_vessels failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
@@ -284,18 +394,8 @@ async def get_all_vessels(email_id: str):
 async def get_superset_columns(email_id: str):
     logger.info("[API] GET /api/emails/%s/columns", email_id)
     try:
-        rows = (
-            supabase.table("vessels_full")
-            .select("dynamic_data")
-            .eq("parent_email_id", email_id)
-            .execute()
-        )
-        from agents.normalization import _build_superset
-        columns = _build_superset(rows.data or [])
-        for k in ("signature_emails", "signature_phones"):
-            if k not in columns:
-                columns.append(k)
-        return {"columns": columns}
+        from standard_columns import STANDARD_COLUMN_IDS
+        return {"columns": STANDARD_COLUMN_IDS}
     except Exception as exc:
         logger.error("[API] get_superset_columns failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))

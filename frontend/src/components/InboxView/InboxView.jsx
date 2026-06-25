@@ -1,11 +1,12 @@
-import { useState, useEffect, useCallback } from "react";
-import { fetchEmails, getEmails } from "../../services/api";
+import { useState, useEffect, useCallback, useMemo } from "react";
+import { fetchEmails, getEmails, retryExtraction } from "../../services/api";
 import { useSSE } from "../../hooks/useSSE";
 import PreviewModal from "./PreviewModal";
 
-export default function InboxView({ onSendToValidation }) {
+export default function InboxView({ onEmailReady, onVesselsUpdated }) {
   const [emails, setEmails]           = useState([]);
   const [fetching, setFetching]       = useState(false);
+  const [retrying, setRetrying]       = useState(false);
   const [jobId, setJobId]             = useState(null);
   const [statusLog, setStatusLog]     = useState([]);
   const [previewAtt, setPreviewAtt]   = useState(null);
@@ -13,14 +14,35 @@ export default function InboxView({ onSendToValidation }) {
 
   useEffect(() => { loadEmails(); }, []);
 
+  const pickReadyEmail = (data) => {
+    const ready = data.find(
+      (e) => e.status === "ready_for_validation" || e.status === "drafted"
+    );
+    if (ready?.id) onEmailReady?.(ready.id);
+  };
+
   const loadEmails = async () => {
     try {
       const data = await getEmails();
       setEmails(data);
+      pickReadyEmail(data);
     } catch (e) {
       console.error("Failed to load emails:", e);
     }
   };
+
+  const isRetryableStatus = (status) =>
+    status === "error" || status === "pending" || status === "extracting";
+
+  const retryTarget = useMemo(() => {
+    for (const em of emails) {
+      const count = (em.attachments || []).filter((att) =>
+        isRetryableStatus(attStatuses[att.id] || att.status)
+      ).length;
+      if (count > 0) return { emailId: em.id, count };
+    }
+    return null;
+  }, [emails, attStatuses]);
 
   const handleEvent = useCallback((evt) => {
     const { type, ...rest } = evt;
@@ -34,9 +56,28 @@ export default function InboxView({ onSendToValidation }) {
         setAttStatuses((p) => ({ ...p, [rest.attachment_id]: type === "extraction_done" ? "done" : "error" }));
         break;
       case "phase1_complete":
-        setFetching(false); setJobId(null); loadEmails(); break;
+        setFetching(false);
+        setRetrying(false);
+        setJobId(null);
+        if (rest.email_id) onEmailReady?.(rest.email_id);
+        onVesselsUpdated?.();
+        loadEmails();
+        break;
+      case "phase1_no_new":
+        setFetching(false);
+        setJobId(null);
+        loadEmails();
+        break;
+      case "retry_no_work":
+        setRetrying(false);
+        setJobId(null);
+        loadEmails();
+        break;
       case "phase1_failed":
-        setFetching(false); setJobId(null); break;
+        setFetching(false);
+        setRetrying(false);
+        setJobId(null);
+        break;
       case "signature_extraction_started":
       case "signature_extraction_done":
       case "signature_extraction_error":
@@ -44,7 +85,7 @@ export default function InboxView({ onSendToValidation }) {
         break;
       default: break;
     }
-  }, []);
+  }, [onEmailReady, onVesselsUpdated]);
 
   useSSE(jobId, handleEvent);
 
@@ -59,6 +100,21 @@ export default function InboxView({ onSendToValidation }) {
       alert("Failed to start fetch: " + e.message);
     }
   };
+
+  const handleRetry = async () => {
+    if (!retryTarget?.emailId) return;
+    setRetrying(true);
+    setStatusLog([]);
+    try {
+      const { job_id } = await retryExtraction(retryTarget.emailId);
+      setJobId(job_id);
+    } catch (e) {
+      setRetrying(false);
+      alert("Failed to start retry: " + e.message);
+    }
+  };
+
+  const busy = fetching || retrying;
 
   const resolveAttStatus = (att) => attStatuses[att.id] || att.status;
 
@@ -75,12 +131,6 @@ export default function InboxView({ onSendToValidation }) {
     return d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
   };
 
-  const validateEmail = emails.find(
-    (e) => e.status === "ready_for_validation" || e.status === "drafted"
-  );
-
-  const emailValidateShown = new Set();
-
   return (
     <div className="flex flex-col h-full" style={{ background: "#f0f9ff" }}>
 
@@ -90,39 +140,37 @@ export default function InboxView({ onSendToValidation }) {
         style={{ background: "linear-gradient(135deg, #0c4a6e 0%, #0369a1 100%)" }}
       >
         <div>
-          <h1 className="text-base font-bold text-white tracking-wide">⚓ Inbox</h1>
-          <p className="text-xs mt-0.5" style={{ color: "#bae6fd" }}>
-            Fetching from{" "}
-            <span className="font-semibold text-white">sanjib@iconshipbrokers.com</span>
-          </p>
+          <h1 className="text-base font-bold text-white tracking-wide">Vessel Extracted Data</h1>
         </div>
         <div className="flex items-center gap-3">
-          {validateEmail && (
+          {retryTarget ? (
             <button
-              onClick={() => onSendToValidation(validateEmail.id)}
-              className="flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-semibold transition-all shadow-sm"
-              style={{ background: "#fff", color: "#0c4a6e", border: "none" }}
-              onMouseEnter={e => e.currentTarget.style.background = "#e0f2fe"}
-              onMouseLeave={e => e.currentTarget.style.background = "#fff"}
+              onClick={handleRetry}
+              disabled={busy}
+              className="flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-medium transition-all shadow-sm bg-amber-600 text-white hover:bg-amber-700 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-amber-600"
             >
-              Validate →
+              {retrying ? (
+                <>
+                  <span className="inline-block w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  Retrying…
+                </>
+              ) : (
+                `Retry Failed (${retryTarget.count})`
+              )}
             </button>
-          )}
+          ) : null}
           <button
             onClick={handleFetch}
-            disabled={fetching}
-            className="flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-semibold transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
-            style={{ background: "#0ea5e9", color: "#fff", border: "2px solid #38bdf8" }}
-            onMouseEnter={e => { if (!fetching) e.currentTarget.style.background = "#0284c7"; }}
-            onMouseLeave={e => { if (!fetching) e.currentTarget.style.background = "#0ea5e9"; }}
+            disabled={busy}
+            className="flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-medium transition-all shadow-sm bg-sky-600 text-white hover:bg-sky-700 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-sky-600"
           >
             {fetching ? (
               <>
-                <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                <span className="inline-block w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
                 Fetching…
               </>
             ) : (
-              "⬇ Fetch Mails"
+              "Fetch Emails"
             )}
           </button>
         </div>
@@ -153,12 +201,12 @@ export default function InboxView({ onSendToValidation }) {
 
       {/* ── Table ───────────────────────────────────────────────── */}
       <div className="flex-1 min-h-0 overflow-auto px-6 py-4">
-        {rows.length === 0 && !fetching ? (
+        {rows.length === 0 && !busy ? (
           <div
             className="rounded-xl p-16 text-center text-sm"
             style={{ background: "#fff", border: "2px dashed #bae6fd", color: "#7dd3fc" }}
           >
-            No emails fetched yet. Click "Fetch Mails" to start.
+            No emails fetched yet. Click "Fetch Emails" to start.
           </div>
         ) : (
           <div className="rounded-xl overflow-hidden shadow-md" style={{ border: "1px solid #bae6fd" }}>
@@ -185,10 +233,6 @@ export default function InboxView({ onSendToValidation }) {
               <tbody>
                 {rows.map((row, i) => {
                   const status = resolveAttStatus(row);
-                  const showValidate =
-                    (row.email.status === "ready_for_validation" || row.email.status === "drafted") &&
-                    !emailValidateShown.has(row.email.id);
-                  if (showValidate) emailValidateShown.add(row.email.id);
 
                   return (
                     <tr
@@ -269,6 +313,7 @@ export default function InboxView({ onSendToValidation }) {
         <PreviewModal
           attachmentId={previewAtt.id}
           filename={previewAtt.filename}
+          emailId={previewAtt.emailId}
           onClose={() => setPreviewAtt(null)}
         />
       )}

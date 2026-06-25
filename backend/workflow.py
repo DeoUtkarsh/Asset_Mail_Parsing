@@ -57,6 +57,8 @@ async def ingestion_node(state: Phase1State) -> Phase1State:
 async def extraction_node(state: Phase1State) -> Phase1State:
     if state.get("error"):
         return state
+    if not state.get("attachment_ids"):
+        return state
     try:
         await run_extraction(state["job_id"], state["attachment_ids"])
         await run_parent_signature_extraction(state["job_id"], state["email_id"])
@@ -67,6 +69,8 @@ async def extraction_node(state: Phase1State) -> Phase1State:
 
 async def normalization_node(state: Phase1State) -> Phase1State:
     if state.get("error"):
+        return state
+    if not state.get("email_id"):
         return state
     try:
         superset = await run_normalization(state["job_id"], state["email_id"])

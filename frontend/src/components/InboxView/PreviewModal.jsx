@@ -1,5 +1,11 @@
-import { useEffect, useMemo, useState } from "react";
-import { getAttachmentRaw, getVesselsForAttachment } from "../../services/api";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
+import {
+  getAttachmentRaw,
+  getVesselsForAttachment,
+  updateVessel,
+} from "../../services/api";
+import EditableGrid from "../ValidationView/EditableGrid";
+import { STANDARD_COLUMN_IDS } from "../../utils/standardColumns";
 
 function looksLikeHtml(s) {
   if (!s || s.length < 12) return false;
@@ -28,26 +34,38 @@ function toPreviewPlainText(s) {
     .trim();
 }
 
-export default function PreviewModal({ attachmentId, filename, onClose }) {
+export default function PreviewModal({ attachmentId, filename, emailId, onClose }) {
   const [rawText, setRawText] = useState("");
-  const [signatureEmails, setSignatureEmails] = useState("");
-  const [signaturePhones, setSignaturePhones] = useState("");
   const [vessels, setVessels] = useState([]);
-  const [columns, setColumns] = useState([]);
+  const [columns] = useState(STANDARD_COLUMN_IDS);
   const [loading, setLoading] = useState(true);
   const [showRawSource, setShowRawSource] = useState(false);
+  const [savedMsg, setSavedMsg] = useState(false);
+  const [error, setError] = useState("");
+  const savedTimer = useRef(null);
+  const vesselsRef = useRef(vessels);
+
+  useEffect(() => { vesselsRef.current = vessels; }, [vessels]);
 
   const plainPreview = useMemo(() => toPreviewPlainText(rawText), [rawText]);
   const hasHtmlLike = useMemo(() => looksLikeHtml(rawText), [rawText]);
 
+  const flashSaved = () => {
+    setSavedMsg(true);
+    clearTimeout(savedTimer.current);
+    savedTimer.current = setTimeout(() => setSavedMsg(false), 2000);
+  };
+
   useEffect(() => {
     setShowRawSource(false);
+    setError("");
   }, [attachmentId]);
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
       setLoading(true);
+      setError("");
       try {
         const [rawData, vesselData] = await Promise.all([
           getAttachmentRaw(attachmentId),
@@ -55,33 +73,57 @@ export default function PreviewModal({ attachmentId, filename, onClose }) {
         ]);
         if (cancelled) return;
         setRawText(rawData.raw_text || "");
-        setSignatureEmails(rawData.signature_emails || "");
-        setSignaturePhones(rawData.signature_phones || "");
-        setVessels(vesselData);
-        const keySet = new Set();
-        vesselData.forEach((v) => Object.keys(v.dynamic_data || {}).forEach((k) => keySet.add(k)));
-        setColumns(Array.from(keySet));
+        const enriched = vesselData.map((v) => ({
+          ...v,
+          attachment_id: attachmentId,
+          filename: rawData.filename || filename,
+          signature_emails: rawData.signature_emails || "",
+          signature_phones: rawData.signature_phones || "",
+        }));
+        setVessels(enriched);
       } catch (e) {
-        if (!cancelled) console.error(e);
+        if (!cancelled) {
+          console.error(e);
+          setError(e.message || "Failed to load preview.");
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }
     }
     load();
     return () => { cancelled = true; };
-  }, [attachmentId]);
+  }, [attachmentId, emailId, filename]);
+
+  const handleCellEdit = useCallback(async (rowId, field, value) => {
+    if (field === "signature_emails" || field === "signature_phones") return;
+    setVessels((prev) =>
+      prev.map((v) => {
+        if (v.id !== rowId) return v;
+        if (field === "__region__") return { ...v, region: value };
+        return { ...v, dynamic_data: { ...v.dynamic_data, [field]: value } };
+      })
+    );
+    const vessel = vesselsRef.current.find((v) => v.id === rowId);
+    if (!vessel) return;
+    const savePromise = field === "__region__"
+      ? updateVessel(rowId, vessel.dynamic_data, value)
+      : updateVessel(rowId, { ...vessel.dynamic_data, [field]: value }, vessel.region);
+    savePromise.then(flashSaved).catch((e) => setError("Failed to save: " + e.message));
+  }, []);
 
   useEffect(() => {
-    const handler = (e) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+    const onKeyDown = (e) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center backdrop-blur-sm"
+    <div className="fixed inset-0 z-50 flex items-center justify-center"
       style={{ background: "rgba(12, 74, 110, 0.55)" }}>
       <div
-        className="relative w-[95vw] h-[90vh] rounded-2xl shadow-2xl flex flex-col overflow-hidden"
+        className="relative w-[95vw] h-[90vh] rounded-2xl shadow-2xl flex flex-col min-h-0"
         style={{ background: "#f0f9ff", border: "1px solid #bae6fd" }}
       >
         {/* ── Header ── */}
@@ -124,12 +166,50 @@ export default function PreviewModal({ attachmentId, filename, onClose }) {
             Loading…
           </div>
         ) : (
-          <div className="flex-1 flex overflow-hidden">
+          <div className="flex-1 flex flex-col min-h-0">
 
-            {/* ── Left: raw text ── */}
-            <div className="w-1/2 flex flex-col" style={{ borderRight: "1px solid #bae6fd" }}>
+            {/* ── Top half: editable vessel grid ── */}
+            <div
+              className="flex flex-col min-h-0 shrink-0"
+              style={{ height: "42%", borderBottom: "1px solid #bae6fd" }}
+            >
               <div
-                className="px-4 py-2 flex-shrink-0 flex items-center justify-between gap-2"
+                className="px-3 py-1 flex-shrink-0 flex items-center justify-between gap-2"
+                style={{ background: "#e0f2fe", borderBottom: "1px solid #bae6fd" }}
+              >
+                <span className="text-[10px] font-bold uppercase tracking-wider" style={{ color: "#0369a1" }}>
+                  Extracted Vessels
+                </span>
+                <span
+                  className={`text-xs font-semibold transition-all duration-300 ${savedMsg ? "opacity-100" : "opacity-0"}`}
+                  style={{ color: "#0891b2" }}
+                >
+                  ✓ Saved
+                </span>
+              </div>
+
+              {error && (
+                <div className="flex-shrink-0 mx-2 mt-1 px-3 py-1.5 rounded-lg text-xs"
+                  style={{ background: "#fef2f2", border: "1px solid #fca5a5", color: "#dc2626" }}>
+                  {error}
+                </div>
+              )}
+
+              <div className="flex-1 min-h-0 px-1 pb-1 flex flex-col">
+                <EditableGrid
+                  data={vessels}
+                  columns={columns}
+                  onCellEdit={handleCellEdit}
+                  showCheckboxes={false}
+                  hideGroupHeaders
+                />
+              </div>
+            </div>
+
+            {/* ── Bottom: message text ── */}
+            <div className="flex flex-col min-h-0 flex-1">
+              <div
+                className="px-3 py-1 flex-shrink-0 flex items-center justify-between gap-2"
                 style={{ background: "#e0f2fe", borderBottom: "1px solid #bae6fd" }}
               >
                 <span className="text-xs font-bold uppercase tracking-wider" style={{ color: "#0369a1" }}>
@@ -151,7 +231,7 @@ export default function PreviewModal({ attachmentId, filename, onClose }) {
                 )}
               </div>
               <pre
-                className="flex-1 overflow-y-auto p-4 text-xs font-mono whitespace-pre-wrap leading-relaxed"
+                className="flex-1 min-h-0 overflow-y-auto p-3 text-[11px] font-mono whitespace-pre-wrap leading-snug"
                 style={{ background: "#fff", color: "#0c4a6e" }}
               >
                 {(showRawSource ? rawText : plainPreview) || (
@@ -160,106 +240,18 @@ export default function PreviewModal({ attachmentId, filename, onClose }) {
               </pre>
             </div>
 
-            {/* ── Right: signature for this attachment + extracted vessels ── */}
-            <div className="w-1/2 flex flex-col overflow-hidden min-h-0">
-              <div
-                className="px-4 py-2 flex-shrink-0"
-                style={{ background: "#e0f2fe", borderBottom: "1px solid #bae6fd" }}
-              >
-                <span className="text-xs font-bold uppercase tracking-wider" style={{ color: "#0369a1" }}>
-                  Broker signature (this attachment)
-                </span>
-              </div>
-              <div
-                className="flex-shrink-0 px-4 py-3 text-xs space-y-2 border-b"
-                style={{ background: "#fff", borderColor: "#e0f2fe" }}
-              >
-                <div>
-                  <span className="font-bold uppercase tracking-wide" style={{ color: "#0369a1" }}>Emails</span>
-                  <pre
-                    className="mt-1 whitespace-pre-wrap font-sans leading-relaxed"
-                    style={{ color: "#0c4a6e" }}
-                  >
-                    {signatureEmails?.trim() || "— (after Phase 1 signature pass, or empty for this file)"}
-                  </pre>
-                </div>
-                <div>
-                  <span className="font-bold uppercase tracking-wide" style={{ color: "#0369a1" }}>Phones</span>
-                  <pre
-                    className="mt-1 whitespace-pre-wrap font-sans leading-relaxed"
-                    style={{ color: "#0c4a6e" }}
-                  >
-                    {signaturePhones?.trim() || "—"}
-                  </pre>
-                </div>
-              </div>
-
-              <div
-                className="px-4 py-2 flex-shrink-0"
-                style={{ background: "#e0f2fe", borderBottom: "1px solid #bae6fd" }}
-              >
-                <span className="text-xs font-bold uppercase tracking-wider" style={{ color: "#0369a1" }}>
-                  Extracted Vessels
-                </span>
-              </div>
-
-              {vessels.length === 0 ? (
-                <div className="flex-1 flex items-center justify-center text-sm italic" style={{ color: "#7dd3fc" }}>
-                  No vessels extracted from this file.
-                </div>
-              ) : (
-                <div className="flex-1 min-h-0 overflow-auto" style={{ background: "#fff" }}>
-                  <table className="min-w-max text-xs border-collapse">
-                    <thead className="sticky top-0 z-10">
-                      <tr style={{ background: "#0369a1" }}>
-                        <th className="px-3 py-2 text-left font-semibold whitespace-nowrap"
-                            style={{ color: "#e0f2fe", borderBottom: "2px solid #0284c7" }}>#</th>
-                        <th className="px-3 py-2 text-left font-semibold whitespace-nowrap"
-                            style={{ color: "#e0f2fe", borderBottom: "2px solid #0284c7" }}>Region</th>
-                        {columns.map((col) => (
-                          <th key={col}
-                              className="px-3 py-2 text-left font-semibold whitespace-nowrap uppercase"
-                              style={{ color: "#e0f2fe", borderBottom: "2px solid #0284c7" }}>
-                            {col.replace(/_/g, " ")}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {vessels.map((v, i) => (
-                        <tr
-                          key={v.id}
-                          style={{ background: i % 2 === 0 ? "#ffffff" : "#f0f9ff", borderBottom: "1px solid #e0f2fe" }}
-                          onMouseEnter={e => e.currentTarget.style.background = "#e0f2fe"}
-                          onMouseLeave={e => e.currentTarget.style.background = i % 2 === 0 ? "#ffffff" : "#f0f9ff"}
-                        >
-                          <td className="px-3 py-1.5 whitespace-nowrap" style={{ color: "#7dd3fc" }}>{i + 1}</td>
-                          <td className="px-3 py-1.5 whitespace-nowrap font-semibold" style={{ color: "#0369a1" }}>
-                            {v.region || "—"}
-                          </td>
-                          {columns.map((col) => (
-                            <td key={col} className="px-3 py-1.5 whitespace-nowrap" style={{ color: "#0c4a6e" }}>
-                              {v.dynamic_data?.[col] || <span style={{ color: "#bae6fd" }}>—</span>}
-                            </td>
-                          ))}
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </div>
-
           </div>
         )}
 
         {/* ── Footer ── */}
         <div
-          className="px-5 py-2 text-xs flex-shrink-0"
+          className="px-4 py-1 text-[10px] flex-shrink-0"
           style={{ background: "#e0f2fe", borderTop: "1px solid #bae6fd", color: "#7dd3fc" }}
         >
           Press <kbd className="px-1.5 py-0.5 rounded text-xs font-mono"
             style={{ background: "#fff", border: "1px solid #bae6fd", color: "#0369a1" }}>Esc</kbd> to close
+          {" · "}
+          Double-click a cell to edit
         </div>
       </div>
     </div>

@@ -1,54 +1,51 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getAllVessels, getColumns, updateVessel, deleteVessel, createVessel, generateDraft } from "../../services/api";
+import { getAllVesselsCombined, updateVessel, deleteVessel, generateDraft } from "../../services/api";
 import { useSSE } from "../../hooks/useSSE";
+import { STANDARD_COLUMN_IDS } from "../../utils/standardColumns";
 import EditableGrid from "./EditableGrid";
 
-export default function ValidationView({ emailId, onDraftGenerated }) {
+export default function ValidationView({ draftEmailId, refreshKey = 0, onDraftGenerated }) {
   const [vessels, setVessels]       = useState([]);
-  const [columns, setColumns]       = useState([]);
+  const [columns] = useState(STANDARD_COLUMN_IDS);
   const [loading, setLoading]       = useState(false);
   const [generating, setGenerating] = useState(false);
   const [draftJobId, setDraftJobId] = useState(null);
   const [error, setError]           = useState("");
   const [savedMsg, setSavedMsg]     = useState(false);
-  const [deleteMode, setDeleteMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
   const savedTimer                  = useRef(null);
+  const draftSourceRef              = useRef({ vessels: [], columns: [] });
 
   const vesselsRef = useRef(vessels);
   useEffect(() => { vesselsRef.current = vessels; }, [vessels]);
 
-  useEffect(() => {
-    if (!emailId) return;
-    load();
-  }, [emailId]);
-
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     setError("");
     try {
-      const [vesselData, colData] = await Promise.all([
-        getAllVessels(emailId),
-        getColumns(emailId),
-      ]);
-      // Sort by filename so group headers are contiguous
-      vesselData.sort((a, b) =>
-        (a.filename || a.attachment_id || "").localeCompare(b.filename || b.attachment_id || "")
-      );
+      const vesselData = await getAllVesselsCombined();
       setVessels(vesselData);
-      setColumns(colData.columns || []);
     } catch (e) {
       setError(e.message);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load, refreshKey]);
 
   const handleDraftEvent = useCallback((evt) => {
     if (evt.type === "drafting_done") {
       setGenerating(false);
       setDraftJobId(null);
-      onDraftGenerated(evt.draft_html || "", evt.zones || []);
+      onDraftGenerated(
+        evt.draft_html || "",
+        evt.zones || [],
+        draftSourceRef.current.vessels,
+        draftSourceRef.current.columns,
+      );
     } else if (evt.type === "phase2_failed") {
       setGenerating(false);
       setDraftJobId(null);
@@ -78,13 +75,35 @@ export default function ValidationView({ emailId, onDraftGenerated }) {
     const savePromise = field === "__region__"
       ? updateVessel(rowId, vessel.dynamic_data, value)
       : updateVessel(rowId, { ...vessel.dynamic_data, [field]: value }, vessel.region);
-    savePromise.then(flashSaved).catch(console.error);
+    savePromise.then(flashSaved).catch((e) => setError("Failed to save: " + e.message));
   }, []);
 
-  const handleDeleteRow = useCallback(async (rowId) => {
-    setVessels((prev) => prev.filter((v) => v.id !== rowId));
-    deleteVessel(rowId).catch(console.error);
-  }, []);
+  const handleDeleteSelected = useCallback(async () => {
+    if (selectedIds.size === 0) return;
+    const ids = [...selectedIds];
+    setVessels((prev) => prev.filter((v) => !selectedIds.has(v.id)));
+    setSelectedIds(new Set());
+    try {
+      await Promise.all(ids.map((id) => deleteVessel(id)));
+      flashSaved();
+    } catch (e) {
+      setError("Failed to delete rows: " + e.message);
+      load();
+    }
+  }, [selectedIds, load]);
+
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (selectedIds.size === 0) return;
+      if (e.key !== "Delete") return;
+      const tag = e.target?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea") return;
+      e.preventDefault();
+      handleDeleteSelected();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedIds, handleDeleteSelected]);
 
   const handleToggleSelect = useCallback((id) => {
     setSelectedIds((prev) => {
@@ -102,26 +121,22 @@ export default function ValidationView({ emailId, onDraftGenerated }) {
     });
   }, [vessels]);
 
-  const handleAddRow = async () => {
-    if (!emailId) return;
-    try {
-      const newVessel = await createVessel(emailId);
-      setVessels((prev) => [...prev, newVessel]);
-      flashSaved();
-    } catch (e) {
-      setError("Failed to add row: " + e.message);
-    }
-  };
-
   const sourceCount = new Set(vessels.map((v) => v.attachment_id).filter(Boolean)).size;
 
   const handleGenerateDraft = async () => {
-    if (!emailId) { setError("No email selected."); return; }
+    const emailId =
+      draftEmailId ||
+      vessels.find((v) => v.parent_email_id)?.parent_email_id;
+    if (!emailId) {
+      setError("No validation-ready email found for draft generation.");
+      return;
+    }
     setGenerating(true);
     setError("");
     const sourceVessels = selectedIds.size > 0
       ? vessels.filter((v) => selectedIds.has(v.id))
       : vessels;
+    draftSourceRef.current = { vessels: sourceVessels, columns: [...columns] };
     const payload = sourceVessels.map((v) => ({
       id: v.id,
       dynamic_data: v.dynamic_data,
@@ -149,12 +164,7 @@ export default function ValidationView({ emailId, onDraftGenerated }) {
         style={{ background: "linear-gradient(135deg, #0c4a6e 0%, #0369a1 100%)" }}
       >
         <div>
-          <h2 className="text-base font-bold text-white tracking-wide">⚓ Validation Grid</h2>
-          <p className="text-xs mt-0.5" style={{ color: "#bae6fd" }}>
-            {emailId
-              ? `${vessels.length} vessels across ${sourceCount} source file${sourceCount !== 1 ? "s" : ""} — double-click any cell to edit`
-              : "Select an email from the Inbox to load vessels."}
-          </p>
+          <h2 className="text-base font-bold text-white tracking-wide">Vessel Position List</h2>
         </div>
 
         <div className="flex items-center gap-3">
@@ -166,65 +176,20 @@ export default function ValidationView({ emailId, onDraftGenerated }) {
             ✓ Saved
           </span>
 
-          {emailId && (
-            <button
-              onClick={load}
-              disabled={loading}
-              className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors shadow-sm disabled:opacity-50"
-              style={{ background: "rgba(255,255,255,0.12)", color: "#e0f2fe", border: "1px solid rgba(186,230,253,0.4)" }}
-              onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.22)"}
-              onMouseLeave={e => e.currentTarget.style.background = "rgba(255,255,255,0.12)"}
-            >
-              ↺ Reload
-            </button>
-          )}
-
-          {emailId && (
-            <button
-              onClick={handleAddRow}
-              disabled={loading}
-              className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors shadow-sm disabled:opacity-50"
-              style={{ background: "rgba(255,255,255,0.12)", color: "#7dd3fc", border: "1px solid rgba(125,211,252,0.4)" }}
-              onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.22)"}
-              onMouseLeave={e => e.currentTarget.style.background = "rgba(255,255,255,0.12)"}
-            >
-              ＋ Add Row
-            </button>
-          )}
-
-          {emailId && vessels.length > 0 && (
-            <button
-              onClick={() => setDeleteMode((d) => !d)}
-              className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors shadow-sm"
-              style={deleteMode
-                ? { background: "#ef4444", color: "#fff", border: "1px solid #dc2626" }
-                : { background: "rgba(239,68,68,0.15)", color: "#fca5a5", border: "1px solid rgba(252,165,165,0.4)" }
-              }
-              onMouseEnter={e => e.currentTarget.style.background = deleteMode ? "#dc2626" : "rgba(239,68,68,0.25)"}
-              onMouseLeave={e => e.currentTarget.style.background = deleteMode ? "#ef4444" : "rgba(239,68,68,0.15)"}
-            >
-              🗑 {deleteMode ? "Exit Delete Mode" : "Delete Mode"}
-            </button>
-          )}
-
           <button
             onClick={handleGenerateDraft}
-            disabled={!emailId || generating || loading || vessels.length === 0}
-            className="flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-semibold transition-all shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
-            style={{ background: "#fff", color: "#0c4a6e", border: "none" }}
-            onMouseEnter={e => { if (!generating) e.currentTarget.style.background = "#e0f2fe"; }}
-            onMouseLeave={e => { if (!generating) e.currentTarget.style.background = "#fff"; }}
+            disabled={generating || loading || vessels.length === 0}
+            className="flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-medium transition-all shadow-sm bg-sky-600 text-white hover:bg-sky-700 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-sky-600"
           >
             {generating ? (
               <>
-                <span className="inline-block w-4 h-4 border-2 border-t-transparent rounded-full animate-spin"
-                  style={{ borderColor: "#0369a1", borderTopColor: "transparent" }} />
+                <span className="inline-block w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
                 Generating draft…
               </>
             ) : selectedIds.size > 0 ? (
-              `✔ Generate Draft — ${selectedIds.size} selected`
+              `Generate Draft — ${selectedIds.size} selected`
             ) : (
-              `✔ Generate Draft — All ${vessels.length}`
+              `Generate Draft — All ${vessels.length}`
             )}
           </button>
         </div>
@@ -232,7 +197,7 @@ export default function ValidationView({ emailId, onDraftGenerated }) {
 
       {/* ── Stats bar ── */}
       {vessels.length > 0 && (
-        <div className="flex gap-3 px-6 py-3 flex-shrink-0" style={{ background: "#e0f2fe", borderBottom: "1px solid #bae6fd" }}>
+        <div className="flex gap-2 px-4 py-2 flex-shrink-0" style={{ background: "#e0f2fe", borderBottom: "1px solid #bae6fd" }}>
           <Stat label="Vessels" value={vessels.length} />
           <Stat label="Sources" value={sourceCount} />
           <Stat label="Regions" value={new Set(vessels.map((v) => v.region).filter(Boolean)).size} />
@@ -249,7 +214,7 @@ export default function ValidationView({ emailId, onDraftGenerated }) {
       )}
 
       {/* ── Grid ── */}
-      <div className="flex-1 min-h-0 px-4 py-3 overflow-hidden flex flex-col">
+      <div className="flex-1 min-h-0 px-3 py-2 overflow-hidden flex flex-col">
         {loading ? (
           <div className="flex-1 flex items-center justify-center text-sm" style={{ color: "#7dd3fc" }}>
             <span className="inline-block w-5 h-5 border-2 border-sky-400 border-t-transparent rounded-full animate-spin mr-2" />
@@ -260,8 +225,7 @@ export default function ValidationView({ emailId, onDraftGenerated }) {
             data={vessels}
             columns={columns}
             onCellEdit={handleCellEdit}
-            onDeleteRow={handleDeleteRow}
-            deleteMode={deleteMode}
+            showCheckboxes
             selectedIds={selectedIds}
             onToggleSelect={handleToggleSelect}
             onToggleAll={handleToggleAll}
@@ -274,7 +238,7 @@ export default function ValidationView({ emailId, onDraftGenerated }) {
 
 function Stat({ label, value }) {
   return (
-    <div className="px-3 py-1.5 rounded-lg text-xs shadow-sm"
+    <div className="px-2 py-1 rounded-md text-[11px] shadow-sm"
       style={{ background: "#fff", border: "1px solid #bae6fd" }}>
       <span style={{ color: "#7dd3fc" }}>{label}: </span>
       <span className="font-bold" style={{ color: "#0369a1" }}>{value}</span>

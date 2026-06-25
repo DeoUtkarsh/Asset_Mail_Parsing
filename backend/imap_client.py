@@ -15,8 +15,46 @@ from typing import Optional
 from urllib.parse import unquote
 
 from config import settings
+from mail_targets import MAIL_TARGETS
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_message_id(raw: str) -> str:
+    return (raw or "").strip()
+
+
+def _matches_any_target(sender: str, subject: str) -> bool:
+    sender_l = sender.lower()
+    subject_l = subject.lower()
+    for target in MAIL_TARGETS:
+        if target.sender.lower() not in sender_l:
+            continue
+        if target.subject_contains.lower() not in subject_l:
+            continue
+        return True
+    return False
+
+
+def _imap_search_uids(mail: imaplib.IMAP4_SSL) -> list[bytes]:
+    """Union UIDs from each target sender (newest-first order applied by caller)."""
+    seen: set[bytes] = set()
+    ordered: list[bytes] = []
+
+    for target in MAIL_TARGETS:
+        criteria = f'(FROM "{target.sender}")'
+        _, uids = mail.search(None, criteria)
+        if not uids or not uids[0]:
+            logger.info("IMAP search '%s' returned 0 UIDs", criteria)
+            continue
+        batch = uids[0].split()
+        logger.info("IMAP search '%s' returned %d UIDs", criteria, len(batch))
+        for uid in batch:
+            if uid not in seen:
+                seen.add(uid)
+                ordered.append(uid)
+
+    return ordered
 
 
 def _decode_header_value(raw: str) -> str:
@@ -268,62 +306,8 @@ def _extract_text_from_bytes(raw_bytes: bytes) -> str:
     return _extract_text_from_message(msg)
 
 
-def fetch_target_email() -> Optional[dict]:
-    """
-    Connect to Gmail, find the target email, and return a dict with all
-    .eml attachments (or message/rfc822 parts) and their extracted text.
-    """
-    logger.info("Connecting to IMAP %s:%s as %s", settings.IMAP_SERVER, settings.IMAP_PORT, settings.EMAIL_USER)
-    mail = imaplib.IMAP4_SSL(settings.IMAP_SERVER, settings.IMAP_PORT)
-    mail.login(settings.EMAIL_USER, settings.EMAIL_PASSWORD)
-    mail.select("INBOX")
-
-    # Search ALL emails from the sender (read + unread)
-    search_criteria = f'(FROM "{settings.FILTER_SENDER}")'
-    _, uids = mail.search(None, search_criteria)
-    logger.info("IMAP search '%s' returned %d UIDs", search_criteria,
-                len(uids[0].split()) if uids and uids[0] else 0)
-
-    if not uids or not uids[0]:
-        mail.logout()
-        return None
-
-    uid_list = uids[0].split()
-    logger.info("Found %d emails from sender. Searching for subject match…", len(uid_list))
-
-    target_msg: Optional[email.message.Message] = None
-    target_meta: dict = {}
-
-    for uid in reversed(uid_list):
-        _, msg_data = mail.fetch(uid, "(RFC822)")
-        if not msg_data or not msg_data[0]:
-            continue
-
-        raw_email = msg_data[0][1]
-        msg = message_from_bytes(raw_email)
-        subject = _decode_header_value(msg.get("Subject", ""))
-
-        logger.debug("  Checking UID %s — subject: %s", uid.decode(), subject[:80])
-
-        if settings.TARGET_SUBJECT.lower() not in subject.lower():
-            continue
-
-        logger.info("  ✓ Subject match found — UID %s: %s", uid.decode(), subject)
-        target_msg = msg
-        target_meta = {
-            "message_id": msg.get("Message-ID", uid.decode()),
-            "subject": subject,
-            "sender": _decode_header_value(msg.get("From", "")),
-            "date": msg.get("Date", ""),
-        }
-        break
-
-    mail.logout()
-
-    if target_msg is None:
-        logger.warning("No email found matching subject: %s", settings.TARGET_SUBJECT)
-        return None
-
+def _extract_attachments_from_message(target_msg: email.message.Message) -> list[dict]:
+    """Pull .eml / message/rfc822 parts from a matched parent message."""
     # ── Enumerate MIME parts (per-part detail only at DEBUG) ────────────────
     all_parts = list(target_msg.walk())
     logger.info("MIME walk: %d parts in matched email (per-part detail at DEBUG)", len(all_parts))
@@ -398,4 +382,68 @@ def fetch_target_email() -> Optional[dict]:
             logger.debug("    Part %02d produced empty text — skipping", i)
 
     logger.info("Total usable attachments found: %d", len(attachments))
+    return attachments
+
+
+def fetch_new_target_email(skip_message_ids: set[str]) -> Optional[dict]:
+    """
+    Connect to Gmail, find the newest matching forwarded email that is not
+    already stored (by Message-ID), and return metadata + attachments.
+    """
+    logger.info("Connecting to IMAP %s:%s as %s", settings.IMAP_SERVER, settings.IMAP_PORT, settings.EMAIL_USER)
+    mail = imaplib.IMAP4_SSL(settings.IMAP_SERVER, settings.IMAP_PORT)
+    mail.login(settings.EMAIL_USER, settings.EMAIL_PASSWORD)
+    mail.select("INBOX")
+
+    uid_list = _imap_search_uids(mail)
+    if not uid_list:
+        mail.logout()
+        return None
+
+    logger.info(
+        "Scanning %d candidate UIDs (newest first); %d already in DB",
+        len(uid_list),
+        len(skip_message_ids),
+    )
+
+    target_msg: Optional[email.message.Message] = None
+    target_meta: dict = {}
+
+    for uid in sorted(uid_list, key=lambda u: int(u), reverse=True):
+        _, msg_data = mail.fetch(uid, "(RFC822)")
+        if not msg_data or not msg_data[0]:
+            continue
+
+        raw_email = msg_data[0][1]
+        msg = message_from_bytes(raw_email)
+        subject = _decode_header_value(msg.get("Subject", ""))
+        sender = _decode_header_value(msg.get("From", ""))
+        message_id = _normalize_message_id(msg.get("Message-ID", uid.decode()))
+
+        logger.debug("  Checking UID %s — subject: %s", uid.decode(), subject[:80])
+
+        if not _matches_any_target(sender, subject):
+            continue
+
+        if message_id in skip_message_ids:
+            logger.info("  ⊗ Already in DB — skipping UID %s: %s", uid.decode(), subject[:80])
+            continue
+
+        logger.info("  ✓ New email found — UID %s: %s", uid.decode(), subject)
+        target_msg = msg
+        target_meta = {
+            "message_id": message_id,
+            "subject": subject,
+            "sender": sender,
+            "date": msg.get("Date", ""),
+        }
+        break
+
+    mail.logout()
+
+    if target_msg is None:
+        logger.info("No new matching emails to fetch (all already ingested or none in inbox).")
+        return None
+
+    attachments = _extract_attachments_from_message(target_msg)
     return {**target_meta, "attachments": attachments}

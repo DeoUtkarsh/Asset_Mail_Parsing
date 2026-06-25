@@ -1,9 +1,12 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { MapContainer, TileLayer, Marker, Tooltip, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import EditableGrid from "../ValidationView/EditableGrid";
+import { regionToZone, vesselsGroupedByZone } from "../../utils/zoneMapping";
+import { STANDARD_COLUMN_IDS } from "../../utils/standardColumns";
+import { copyEmailHtml } from "../../utils/copyEmailHtml";
 
-// Zone accent colours (same order as backend ZONE_ORDER)
 const ZONE_COLORS = {
   "STRAITS/SEA":    "#0ea5e9",
   "FAR EAST":       "#f59e0b",
@@ -44,9 +47,7 @@ function makePinIcon(count, color) {
 function RecenterControl() {
   const map = useMap();
   return (
-    <div
-      style={{ position: "absolute", bottom: 10, right: 10, zIndex: 1000 }}
-    >
+    <div style={{ position: "absolute", bottom: 10, right: 10, zIndex: 1000 }}>
       <button
         onClick={() => map.setView([15, 100], 3)}
         title="Reset view"
@@ -105,98 +106,91 @@ function ZoneMap({ zones }) {
   );
 }
 
-export default function DraftView({ html = "", zones = [] }) {
+export default function DraftView({ html = "", zones = [], vessels = [], columns = [] }) {
   const [copied, setCopied] = useState(false);
-  const iframeRef = useRef(null);
 
-  // Reset copied state when new draft arrives
-  useEffect(() => { setCopied(false); }, [html]);
+  useEffect(() => { setCopied(false); }, [html, vessels]);
 
-  const handleCopy = () => {
-    // Copy plain-text version by extracting text from the HTML
-    const tmp = document.createElement("div");
-    tmp.innerHTML = html;
-    const text = tmp.innerText || tmp.textContent || html;
-    navigator.clipboard.writeText(text).catch(() => {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      document.body.removeChild(ta);
-    });
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const gridVessels = useMemo(() => vesselsGroupedByZone(vessels), [vessels]);
+
+  const zoneCount = useMemo(
+    () => new Set(vessels.map((v) => regionToZone(v.region))).size,
+    [vessels]
+  );
+
+  const hasGrid = vessels.length > 0;
+  const hasContent = hasGrid || Boolean(html);
+
+  const handleCopy = async () => {
+    try {
+      await copyEmailHtml(html, { vessels: gridVessels });
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (e) {
+      console.error("Copy failed:", e);
+      alert("Could not copy to clipboard. Try again or use Ctrl+V in your email compose window.");
+    }
   };
 
-  const wordCount = html
-    ? (html.replace(/<[^>]*>/g, " ").match(/\S+/g) || []).length
-    : 0;
-
-  const hasContent = Boolean(html);
-
   return (
-    <div className="flex flex-col h-full overflow-hidden" style={{ background: "#f0f9ff" }}>
+    <div className="flex flex-col h-full gap-0" style={{ background: "#f0f9ff" }}>
 
-      {/* ── Header — ocean gradient ── */}
       <div
         className="flex items-center justify-between px-6 py-4 flex-shrink-0 shadow-md"
         style={{ background: "linear-gradient(135deg, #0c4a6e 0%, #0369a1 100%)" }}
       >
         <div>
-          <h2 className="text-base font-bold text-white tracking-wide">⚓ Generated Draft</h2>
-          <p className="text-xs mt-0.5" style={{ color: "#bae6fd" }}>
-            {hasContent
-              ? `Consolidated position list · ${wordCount} words · ${zones.length} zone${zones.length !== 1 ? "s" : ""}`
-              : "Review the final email below, then copy into your email client."}
-          </p>
+          <h2 className="text-base font-bold text-white tracking-wide">Contact List</h2>
         </div>
+
         <button
           onClick={handleCopy}
-          disabled={!hasContent}
-          className="flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-semibold transition-all shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
-          style={copied
-            ? { background: "#6ee7b7", color: "#064e3b", border: "none" }
-            : { background: "#fff", color: "#0c4a6e", border: "none" }
-          }
-          onMouseEnter={e => { if (!copied && hasContent) e.currentTarget.style.background = "#e0f2fe"; }}
-          onMouseLeave={e => { if (!copied) e.currentTarget.style.background = "#fff"; }}
+          disabled={!hasGrid && !html}
+          className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-medium transition-all shadow-sm disabled:opacity-40 disabled:cursor-not-allowed ${
+            copied
+              ? ""
+              : "bg-sky-600 text-white hover:bg-sky-700 disabled:hover:bg-sky-600"
+          }`}
+          style={copied ? { background: "#6ee7b7", color: "#064e3b" } : undefined}
         >
-          {copied ? "✔ Copied!" : "⎘ Copy to Clipboard"}
+          {copied ? "Copied!" : "Copy to Clipboard"}
         </button>
       </div>
 
       {!hasContent ? (
-        /* ── Empty state ── */
         <div
           className="flex-1 flex flex-col items-center justify-center gap-4 rounded-xl border-dashed m-6"
           style={{ background: "#fff", border: "2px dashed #bae6fd" }}
         >
           <div className="text-5xl" style={{ color: "#bae6fd" }}>✉</div>
           <p className="text-sm text-center max-w-sm" style={{ color: "#7dd3fc" }}>
-            No draft yet. Go to{" "}
-            <span className="font-semibold" style={{ color: "#0369a1" }}>② Validate</span>, review
-            your vessels, and click{" "}
+            No contact list yet. Go to{" "}
+            <span className="font-semibold" style={{ color: "#0369a1" }}>Vessel Position List</span>, select
+            vessels, and click{" "}
             <span className="font-semibold" style={{ color: "#0369a1" }}>Generate Draft</span>.
           </p>
         </div>
-      ) : (
-        /* ── Content: map left, email right ── */
-        <div className="flex-1 min-h-0 flex flex-row gap-4 p-4 overflow-hidden">
+      ) : hasGrid ? (
+        <>
+          <div className="flex gap-2 px-4 py-2 flex-shrink-0" style={{ background: "#e0f2fe", borderBottom: "1px solid #bae6fd" }}>
+            <Stat label="Vessels" value={vessels.length} />
+            <Stat label="Zones" value={zoneCount} />
+            <Stat label="Columns" value={STANDARD_COLUMN_IDS.length} />
+          </div>
 
-          {/* ── Left: map + legend ── */}
-          <div className="flex flex-col gap-3 flex-shrink-0 min-h-0" style={{ width: "30%" }}>
+          <div className="flex-1 min-h-0 flex flex-row gap-3 p-3 overflow-hidden">
+
+            {/* ── Left: zone map + legend ── */}
             {zones.length > 0 && (
-              <>
+              <div className="flex flex-col gap-2 flex-shrink-0 min-h-0" style={{ width: "28%" }}>
                 <div
-                  className="flex-1 min-h-0 rounded-xl overflow-hidden shadow-md"
-                  style={{ border: "1px solid #bae6fd" }}
+                  className="flex-1 min-h-0 rounded-lg overflow-hidden shadow-sm"
+                  style={{ border: "1px solid #94a3b8" }}
                 >
                   <ZoneMap zones={zones} />
                 </div>
-                {/* Zone legend — pinned at bottom */}
                 <div
-                  className="flex flex-col gap-1.5 px-3 py-2 rounded-xl flex-shrink-0"
+                  className="flex flex-col gap-1.5 px-3 py-2 rounded-lg flex-shrink-0"
                   style={{ background: "#fff", border: "1px solid #bae6fd" }}
                 >
                   {zones.map((z) => (
@@ -210,26 +204,49 @@ export default function DraftView({ html = "", zones = [] }) {
                     </div>
                   ))}
                 </div>
-              </>
+              </div>
             )}
-          </div>
 
-          {/* ── Right: email preview ── */}
-          <div className="flex-1 min-h-0 flex flex-col gap-1 overflow-hidden">
-            <iframe
-              ref={iframeRef}
-              srcDoc={html}
-              title="Draft email preview"
-              sandbox="allow-same-origin"
-              className="flex-1 min-h-0 w-full rounded-xl shadow-md bg-white"
-              style={{ border: "1px solid #bae6fd" }}
-            />
-            <p className="text-xs text-right flex-shrink-0" style={{ color: "#7dd3fc" }}>
-              Read-only preview — use "Copy to Clipboard" to send via your email client.
-            </p>
+            {/* ── Right: grid table (unchanged) ── */}
+            <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
+              <EditableGrid
+                data={gridVessels}
+                columns={STANDARD_COLUMN_IDS}
+                onCellEdit={() => {}}
+                readOnly
+                showCheckboxes={false}
+                groupHeaderIcon={null}
+              />
+              <p className="text-[10px] text-right pt-1 flex-shrink-0" style={{ color: "#7dd3fc" }}>
+                Copy to Clipboard pastes intro text + standard vessel columns into Gmail/Outlook.
+              </p>
+            </div>
           </div>
+        </>
+      ) : (
+        <div className="flex-1 min-h-0 p-4 flex flex-col gap-2">
+          <iframe
+            srcDoc={html}
+            title="Contact list preview"
+            sandbox="allow-same-origin"
+            className="flex-1 min-h-0 w-full rounded-lg shadow-sm bg-white"
+            style={{ border: "1px solid #94a3b8" }}
+          />
+          <p className="text-[10px] text-right flex-shrink-0" style={{ color: "#7dd3fc" }}>
+            Regenerate draft to see the updated grid view.
+          </p>
         </div>
       )}
+    </div>
+  );
+}
+
+function Stat({ label, value }) {
+  return (
+    <div className="px-2 py-1 rounded-md text-[11px] shadow-sm"
+      style={{ background: "#fff", border: "1px solid #bae6fd" }}>
+      <span style={{ color: "#7dd3fc" }}>{label}: </span>
+      <span className="font-bold" style={{ color: "#0369a1" }}>{value}</span>
     </div>
   );
 }

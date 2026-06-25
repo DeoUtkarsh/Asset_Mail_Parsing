@@ -11,17 +11,26 @@ const VIEWS = {
 
 export default function App() {
   const [view, setView] = useState(VIEWS.INBOX);
-  const [activeEmailId, setActiveEmailId] = useState(null);
+  const [draftEmailId, setDraftEmailId] = useState(null);
+  const [vesselRefreshKey, setVesselRefreshKey] = useState(0);
   // draftData holds the single consolidated HTML email + zone markers for the map
-  const [draftData, setDraftData] = useState({ html: "", zones: [] });
+  const [draftData, setDraftData] = useState({ html: "", zones: [], vessels: [], columns: [] });
 
-  const goToValidation = (emailId) => {
-    setActiveEmailId(emailId);
-    setView(VIEWS.VALIDATION);
+  const setEmailForDraft = (emailId) => {
+    setDraftEmailId(emailId);
   };
 
-  const goToDraft = (html, zones) => {
-    setDraftData({ html: html || "", zones: zones || [] });
+  const refreshVesselList = () => {
+    setVesselRefreshKey((k) => k + 1);
+  };
+
+  const goToDraft = (html, zones, vessels, columns) => {
+    setDraftData({
+      html: html || "",
+      zones: zones || [],
+      vessels: vessels || [],
+      columns: columns || [],
+    });
     setView(VIEWS.DRAFT);
   };
 
@@ -32,15 +41,15 @@ export default function App() {
         <div className="flex items-center gap-2">
           <span className="text-xl">⚓</span>
           <span className="font-semibold text-slate-700 text-sm tracking-wide">
-            Shipbroking Email Parser
+            Email Extraction Agent
           </span>
         </div>
 
         <div className="ml-auto flex items-center gap-1">
           {[
-            { id: VIEWS.INBOX, label: "① Inbox" },
-            { id: VIEWS.VALIDATION, label: "② Validate" },
-            { id: VIEWS.DRAFT, label: "③ Draft" },
+            { id: VIEWS.INBOX, label: "Email Data" },
+            { id: VIEWS.VALIDATION, label: "Vessel Position List" },
+            { id: VIEWS.DRAFT, label: "Contact List" },
           ].map(({ id, label }) => (
             <button
               key={id}
@@ -61,20 +70,29 @@ export default function App() {
       <main className="flex-1 overflow-hidden flex flex-col">
         {view === VIEWS.INBOX && (
           <div className="flex-1 min-h-0 overflow-hidden">
-            <InboxView onSendToValidation={goToValidation} />
+            <InboxView
+              onEmailReady={setEmailForDraft}
+              onVesselsUpdated={refreshVesselList}
+            />
           </div>
         )}
         {view === VIEWS.VALIDATION && (
           <div className="flex-1 min-h-0 overflow-hidden">
             <ValidationView
-              emailId={activeEmailId}
+              draftEmailId={draftEmailId}
+              refreshKey={vesselRefreshKey}
               onDraftGenerated={goToDraft}
             />
           </div>
         )}
         {view === VIEWS.DRAFT && (
           <div className="flex-1 min-h-0 overflow-hidden">
-            <DraftView html={draftData.html} zones={draftData.zones} />
+            <DraftView
+              html={draftData.html}
+              zones={draftData.zones}
+              vessels={draftData.vessels}
+              columns={draftData.columns}
+            />
           </div>
         )}
       </main>

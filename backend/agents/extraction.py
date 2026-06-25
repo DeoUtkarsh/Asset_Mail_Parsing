@@ -1,8 +1,7 @@
 """
 Agent 2 — Parallel Extraction
-Calls the NVIDIA NIM LLM on every attachment simultaneously using
-asyncio.gather(). Each call extracts a JSON array of vessel objects
-from the raw .eml text and saves them to the vessels table.
+Calls the NVIDIA NIM LLM on every attachment using bounded concurrency.
+Each call extracts a JSON array of vessel objects from the raw .eml text.
 """
 import asyncio
 import json
@@ -10,16 +9,19 @@ import re
 import logging
 from typing import Any
 
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI, RateLimitError
 from database import supabase
 from config import settings
 from sse_manager import sse_manager
 
 logger = logging.getLogger(__name__)
 
+RETRYABLE_STATUSES = ("error", "pending", "extracting")
+
 nvidia_client = AsyncOpenAI(
     base_url=settings.NVIDIA_API_BASE_URL,
     api_key=settings.NVIDIA_API_KEY,
+    max_retries=0,
 )
 
 EXTRACTION_PROMPT = """\
@@ -52,14 +54,49 @@ TEXT TO PARSE:
 JSON ARRAY OUTPUT:"""
 
 
+def _is_rate_limit_error(exc: Exception) -> bool:
+    if isinstance(exc, RateLimitError):
+        return True
+    msg = str(exc).lower()
+    return "429" in msg or "too many requests" in msg or "rate limit" in msg
+
+
+def _retry_delay_seconds(exc: Exception, attempt: int) -> float:
+    if _is_rate_limit_error(exc):
+        base = settings.EXTRACTION_RATE_LIMIT_BASE_SEC
+        return min(base * (2 ** (attempt - 1)), 90.0)
+    return min(2.0 ** attempt, 30.0)
+
+
+def get_retryable_attachment_ids(email_id: str) -> list[str]:
+    rows = (
+        supabase.table("attachments")
+        .select("id, status")
+        .eq("parent_email_id", email_id)
+        .execute()
+    )
+    return [
+        row["id"]
+        for row in (rows.data or [])
+        if row.get("status") in RETRYABLE_STATUSES
+    ]
+
+
+def prepare_attachments_for_retry(attachment_ids: list[str]) -> None:
+    for att_id in attachment_ids:
+        supabase.table("vessels").delete().eq("attachment_id", att_id).execute()
+        supabase.table("attachments").update({
+            "status": "pending",
+            "error_message": None,
+        }).eq("id", att_id).execute()
+
+
 def _extract_json_array(text: str) -> list[dict]:
     """Robustly pull a JSON array from potentially messy LLM output."""
-    # Strip markdown code fences
     text = re.sub(r"```(?:json)?\s*", "", text)
     text = re.sub(r"```\s*$", "", text, flags=re.MULTILINE)
     text = text.strip()
 
-    # Strategy 1: find the outermost single JSON array
     match = re.search(r"\[.*\]", text, re.DOTALL)
     if match:
         try:
@@ -69,7 +106,6 @@ def _extract_json_array(text: str) -> list[dict]:
         except json.JSONDecodeError:
             pass
 
-    # Strategy 2: merge multiple JSON arrays (LLM sometimes outputs one per section)
     all_arrays: list[dict] = []
     for m in re.finditer(r"\[.*?\]", text, re.DOTALL):
         try:
@@ -82,7 +118,6 @@ def _extract_json_array(text: str) -> list[dict]:
         logger.info("Merged %d vessels from multiple JSON arrays.", len(all_arrays))
         return all_arrays
 
-    # Strategy 3: try the whole stripped text
     try:
         result = json.loads(text)
         if isinstance(result, list):
@@ -90,10 +125,8 @@ def _extract_json_array(text: str) -> list[dict]:
     except json.JSONDecodeError:
         pass
 
-    # Strategy 4: truncated JSON — try to recover by closing the array
     if "[" in text:
         truncated = text[text.index("["):]
-        # Close any open objects and the array
         open_braces = truncated.count("{") - truncated.count("}")
         if open_braces > 0:
             truncated += "}" * open_braces
@@ -124,17 +157,17 @@ async def _extract_single_attachment(
 ) -> list[dict]:
     """Run the LLM on one attachment and save the extracted vessels."""
     async with semaphore:
-        # Mark as extracting
         supabase.table("attachments").update({"status": "extracting"}).eq("id", attachment_id).execute()
         await sse_manager.send(job_id, "extraction_started", {
             "attachment_id": attachment_id,
             "filename": filename,
         })
 
-        # Retry loop (up to 3 attempts)
         vessels_data: list[dict] = []
         last_error: str = ""
-        for attempt in range(1, 4):
+        max_attempts = settings.EXTRACTION_MAX_ATTEMPTS
+
+        for attempt in range(1, max_attempts + 1):
             try:
                 response = await nvidia_client.chat.completions.create(
                     model=settings.NVIDIA_LLM_MODEL,
@@ -153,18 +186,27 @@ async def _extract_single_attachment(
                 )
                 content = response.choices[0].message.content or ""
                 vessels_data = _extract_json_array(content)
-                break  # Success
+                last_error = ""
+                break
 
             except Exception as exc:
                 last_error = str(exc)
-                logger.warning("Extraction attempt %d failed for %s: %s", attempt, filename, exc)
-                if attempt < 3:
-                    await asyncio.sleep(2 ** attempt)  # Exponential back-off
+                logger.warning(
+                    "Extraction attempt %d/%d failed for %s: %s",
+                    attempt, max_attempts, filename, exc,
+                )
+                if attempt < max_attempts:
+                    delay = _retry_delay_seconds(exc, attempt)
+                    logger.info("Waiting %.1fs before retry…", delay)
+                    await asyncio.sleep(delay)
 
-        if not vessels_data and last_error:
+        if settings.EXTRACTION_REQUEST_DELAY_SEC > 0:
+            await asyncio.sleep(settings.EXTRACTION_REQUEST_DELAY_SEC)
+
+        if last_error and not vessels_data:
             supabase.table("attachments").update({
                 "status": "error",
-                "error_message": last_error,
+                "error_message": last_error[:500],
             }).eq("id", attachment_id).execute()
             await sse_manager.send(job_id, "extraction_error", {
                 "attachment_id": attachment_id,
@@ -173,10 +215,8 @@ async def _extract_single_attachment(
             })
             return []
 
-        # Persist each vessel as a separate row
         for vessel in vessels_data:
             region = vessel.pop("region", None)
-            # Normalise keys: lowercase + underscores
             normalised = {k.lower().replace(" ", "_"): str(v) for k, v in vessel.items()}
             supabase.table("vessels").insert({
                 "attachment_id": attachment_id,
@@ -184,7 +224,10 @@ async def _extract_single_attachment(
                 "region": region,
             }).execute()
 
-        supabase.table("attachments").update({"status": "done"}).eq("id", attachment_id).execute()
+        supabase.table("attachments").update({
+            "status": "done",
+            "error_message": None,
+        }).eq("id", attachment_id).execute()
         await sse_manager.send(job_id, "extraction_done", {
             "attachment_id": attachment_id,
             "filename": filename,
@@ -195,11 +238,10 @@ async def _extract_single_attachment(
 
 
 async def run_extraction(job_id: str, attachment_ids: list[str]) -> int:
-    """
-    Run extraction on all attachments in parallel (max 10 concurrent).
-    Returns total number of vessels extracted.
-    """
-    # Fetch attachment metadata
+    """Run extraction on attachments with bounded concurrency. Returns total vessels."""
+    if not attachment_ids:
+        return 0
+
     rows = (
         supabase.table("attachments")
         .select("id, filename, raw_text")
@@ -208,8 +250,13 @@ async def run_extraction(job_id: str, attachment_ids: list[str]) -> int:
     )
     attachments = rows.data or []
 
-    # Cap concurrency to avoid hammering the API
-    semaphore = asyncio.Semaphore(10)
+    concurrency = max(1, settings.EXTRACTION_CONCURRENCY)
+    semaphore = asyncio.Semaphore(concurrency)
+    logger.info(
+        "Starting extraction for %d attachments (concurrency=%d)",
+        len(attachments),
+        concurrency,
+    )
 
     tasks = [
         _extract_single_attachment(
@@ -228,8 +275,26 @@ async def run_extraction(job_id: str, attachment_ids: list[str]) -> int:
     for r in results:
         if isinstance(r, list):
             total_vessels += len(r)
+        elif isinstance(r, Exception):
+            logger.error("Extraction task raised: %s", r)
 
     await sse_manager.send(job_id, "all_extractions_done", {
         "total_vessels": total_vessels,
     })
     return total_vessels
+
+
+async def run_retry_extraction_for_email(job_id: str, email_id: str) -> int:
+    """Re-run extraction only for failed, pending, or stuck attachments."""
+    attachment_ids = get_retryable_attachment_ids(email_id)
+    if not attachment_ids:
+        return 0
+
+    prepare_attachments_for_retry(attachment_ids)
+    supabase.table("parent_emails").update({"status": "extracting"}).eq("id", email_id).execute()
+    logger.info(
+        "Retrying extraction for email_id=%s (%d attachments)",
+        email_id,
+        len(attachment_ids),
+    )
+    return await run_extraction(job_id, attachment_ids)

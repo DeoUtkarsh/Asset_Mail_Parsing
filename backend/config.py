@@ -28,6 +28,12 @@ class Settings(BaseSettings):
     # 0 = process ALL .eml / rfc822 parts. Set a positive N for faster dev runs.
     MAX_ATTACHMENTS: int = 0
 
+    # LLM extraction throttling (NVIDIA NIM rate limits)
+    EXTRACTION_CONCURRENCY: int = 2
+    EXTRACTION_MAX_ATTEMPTS: int = 6
+    EXTRACTION_RATE_LIMIT_BASE_SEC: float = 8.0
+    EXTRACTION_REQUEST_DELAY_SEC: float = 1.0
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 

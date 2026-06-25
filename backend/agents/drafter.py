@@ -12,6 +12,7 @@ from openai import AsyncOpenAI
 from database import supabase
 from config import settings
 from sse_manager import sse_manager
+from standard_columns import STANDARD_COLUMNS, resolve_cell_value, header_for_column
 
 logger = logging.getLogger(__name__)
 
@@ -198,49 +199,62 @@ def _sanitize_intro(raw: str) -> str:
     return INTRO_DEFAULT
 
 
-def _build_html_grid(intro_text: str, zone_groups: dict[str, list[dict]], col_keys: list[str]) -> str:
-    """Tables use the same columns as the Validate tab (including signatures)."""
+def _active_column_keys_for_zone(vessels: list[dict], col_keys: list[str]) -> list[str]:
+    """Email tables: only columns with data in this zone (plus region / vessel name)."""
+    active: list[str] = []
+    for ck in col_keys:
+        if ck in ("__region__", "vessel_name", "name"):
+            active.append(ck)
+        elif ck in ("signature_emails", "signature_phones"):
+            if any(_is_meaningful_cell(_cell_for_grid_column(v, ck)) for v in vessels):
+                active.append(ck)
+        elif any(_is_meaningful_cell(_cell_for_grid_column(v, ck)) for v in vessels):
+            active.append(ck)
+    return active if active else list(col_keys)
+
+
+def _build_html_grid(intro_text: str, zone_groups: dict[str, list[dict]]) -> str:
+    """Tables use fixed standard columns (same as Validate / Contact List tabs)."""
     zone_html_parts: list[str] = []
-    empty_cell = '<span style="color:#bae6fd">—</span>'
+    empty_cell = "—"
 
     for zone, vessels in zone_groups.items():
         if not vessels:
             continue
 
         th = "".join(
-            f'<th style="background:#0369a1;color:#e0f2fe;padding:7px 12px;'
-            f'text-align:left;font-size:11px;'
-            f'border:1px solid #0284c7;font-weight:600;letter-spacing:0.4px">'
-            f'{_header_for_column_key(ck)}</th>'
-            for ck in col_keys
+            f'<th style="background:#0369a1;color:#e0f2fe;padding:8px 10px;'
+            f'text-align:left;font-size:11px;font-family:Arial,Helvetica,sans-serif;'
+            f'border:1px solid #0284c7;font-weight:600;white-space:nowrap">'
+            f'{header_for_column(col["id"])}</th>'
+            for col in STANDARD_COLUMNS
         )
 
         rows = ""
         for i, v in enumerate(vessels):
-            bg = "#ffffff" if i % 2 == 0 else "#f0f9ff"
+            bg = "#ffffff" if i % 2 == 0 else "#f8fafc"
             tds = []
-            for ck in col_keys:
-                raw = _cell_for_grid_column(v, ck)
+            for col in STANDARD_COLUMNS:
+                raw = resolve_cell_value(v, col["id"], i + 1)
                 display = raw if _is_meaningful_cell(raw) else empty_cell
-                wrap = (
-                    "normal" if ck in ("signature_emails", "signature_phones") else "nowrap"
-                )
+                is_name = col["id"] == "vessel_name"
+                weight = "font-weight:700;" if is_name else ""
+                wrap = "normal" if col["id"] in ("remarks", "cargo_history_combo", "attachments") else "nowrap"
                 tds.append(
-                    f'<td style="padding:7px 12px;font-size:11px;color:#0c4a6e;'
-                    f'border:1px solid #e0f2fe;background:{bg};'
-                    f'white-space:{wrap};max-width:420px">{display}</td>'
+                    f'<td style="padding:8px 10px;font-size:11px;font-family:Arial,Helvetica,sans-serif;'
+                    f'color:#0c4a6e;border:1px solid #cbd5e1;background:{bg};'
+                    f'white-space:{wrap};vertical-align:top;{weight}">{display}</td>'
                 )
             rows += f"<tr>{''.join(tds)}</tr>"
 
         zone_html_parts.append(
-            f'<div style="margin-bottom:28px">'
-            f'<p style="font-size:11px;font-weight:700;color:#0ea5e9;'
-            f'letter-spacing:0.8px;text-transform:uppercase;margin:0 0 4px 2px;'
-            f'border-left:3px solid #0ea5e9;padding-left:6px">'
+            f'<div style="margin-bottom:24px">'
+            f'<p style="font-size:12px;font-weight:700;color:#0369a1;font-family:Arial,Helvetica,sans-serif;'
+            f'text-transform:uppercase;margin:0 0 8px 0;padding:4px 0;border-bottom:2px solid #0ea5e9">'
             f'{zone}'
             f'</p>'
-            f'<table style="width:100%;border-collapse:collapse;border:1px solid #bae6fd;'
-            f'border-radius:6px;overflow:hidden">'
+            f'<table cellpadding="0" cellspacing="0" border="0" '
+            f'style="border-collapse:collapse;width:100%;min-width:600px;font-family:Arial,Helvetica,sans-serif">'
             f'<thead><tr>{th}</tr></thead>'
             f'<tbody>{rows}</tbody>'
             f'</table></div>'
@@ -249,23 +263,16 @@ def _build_html_grid(intro_text: str, zone_groups: dict[str, list[dict]], col_ke
     zones_html = "\n".join(zone_html_parts)
     return f"""<!DOCTYPE html>
 <html>
-<head><meta charset="UTF-8">
-<style>
-  body {{ font-family: Arial, sans-serif; font-size: 13px; color: #0c4a6e;
-         max-width: 1100px; margin: 0 auto; padding: 24px; background: #f0f9ff; }}
-  p {{ margin: 0 0 10px 0; line-height: 1.6; color: #0c4a6e; }}
-  tr:hover td {{ background: #e0f2fe !important; }}
-</style>
-</head>
-<body>
-  <p>Dear Utkarsh,</p>
-  <p>Good day.</p>
-  <p>{intro_text}</p>
-  <div style="margin: 20px 0 28px 0">
+<head><meta charset="UTF-8"></head>
+<body style="font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#0c4a6e;margin:0;padding:16px;line-height:1.6;">
+  <p style="margin:0 0 10px 0;">Dear Utkarsh,</p>
+  <p style="margin:0 0 10px 0;">Good day.</p>
+  <p style="margin:0 0 16px 0;">{intro_text}</p>
+  <div style="margin:0 0 20px 0">
     {zones_html}
   </div>
-  <p>Should you require any further details, please do not hesitate to reach out.</p>
-  <p>Best Regards</p>
+  <p style="margin:16px 0 10px 0;">Should you require any further details, please do not hesitate to reach out.</p>
+  <p style="margin:0;">Best Regards</p>
 </body>
 </html>"""
 
@@ -347,12 +354,9 @@ def _build_html_legacy(intro_text: str, zone_groups: dict[str, list[dict]]) -> s
 def _build_html(
     intro_text: str,
     zone_groups: dict[str, list[dict]],
-    grid_columns: list[str],
+    grid_columns: list[str] | None = None,
 ) -> str:
-    col_keys = _ordered_grid_column_keys(grid_columns)
-    if col_keys:
-        return _build_html_grid(intro_text, zone_groups, col_keys)
-    return _build_html_legacy(intro_text, zone_groups)
+    return _build_html_grid(intro_text, zone_groups)
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────

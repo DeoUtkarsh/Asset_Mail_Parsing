@@ -4,19 +4,31 @@ import {
   flexRender,
   createColumnHelper,
 } from "@tanstack/react-table";
-import { Fragment, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
+import {
+  STANDARD_COLUMNS,
+  resolveStandardCellValue,
+  editFieldForColumn,
+  isVesselNameColumn,
+  isRegionColumn,
+} from "../../utils/standardColumns";
 
 const helper = createColumnHelper();
 
-/** Per-attachment signature (joined on each row); read-only in grid. */
-const READONLY_PARENT_KEYS = new Set(["signature_emails", "signature_phones"]);
+const GRID_BORDER = "1px solid #94a3b8";
 
-function ReadOnlyParentCell({ getValue }) {
+/** Checkbox (if shown), SR. NO, IMO, VESSEL NAME stay fixed when scrolling. */
+function buildPinnedOrder(showCheckboxes) {
+  const cols = ["_num", "imo", "vessel_name"];
+  return showCheckboxes ? ["_select", ...cols] : cols;
+}
+
+function ReadOnlyCell({ getValue }) {
   const value = getValue() ?? "";
   return (
     <div
-      className="px-2 py-1 text-xs max-w-[min(320px,40vw)] whitespace-normal break-words leading-snug"
-      style={{ color: value ? "#0369a1" : "#bae6fd", fontStyle: value ? "normal" : "italic" }}
+      className="px-1.5 py-0.5 text-[11px] leading-snug max-w-[min(260px,32vw)] whitespace-normal break-words"
+      style={{ color: value ? "#0c4a6e" : "#94a3b8", fontStyle: value ? "normal" : "italic" }}
       title={value || ""}
     >
       {value || "—"}
@@ -24,25 +36,34 @@ function ReadOnlyParentCell({ getValue }) {
   );
 }
 
-function EditableCell({ getValue, row, column, table }) {
+function EditableCell({ getValue, row, column, table, vesselName = false }) {
   const initial = getValue() ?? "";
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(initial);
+  const readOnly = table.options.meta?.readOnly;
 
   const commit = () => {
     setEditing(false);
     if (value !== initial) {
-      table.options.meta?.onCellEdit(row.original.id, column.id, value);
+      const field = editFieldForColumn(column.id);
+      if (field) table.options.meta?.onCellEdit(row.original.id, field, value);
     }
   };
 
-  if (!editing) {
+  if (!editing || readOnly) {
     return (
       <div
-        onDoubleClick={() => setEditing(true)}
-        className="px-2 py-1 cursor-text min-h-[22px] text-xs whitespace-nowrap overflow-hidden text-ellipsis max-w-[200px]"
-        style={{ color: value ? "#0c4a6e" : "#bae6fd", fontStyle: value ? "normal" : "italic" }}
-        title={value || "double-click to edit"}
+        onDoubleClick={
+          readOnly || !editFieldForColumn(column.id) ? undefined : () => setEditing(true)
+        }
+        className={`px-1.5 py-0.5 min-h-[20px] text-[11px] leading-snug whitespace-normal break-words w-full ${
+          vesselName ? "font-bold" : ""
+        } ${readOnly || !editFieldForColumn(column.id) ? "cursor-default" : "cursor-text"}`}
+        style={{
+          color: value ? "#0c4a6e" : "#94a3b8",
+          fontStyle: value ? "normal" : "italic",
+        }}
+        title={readOnly ? value || "" : value || "Double-click to edit · Enter to save"}
       >
         {value || "—"}
       </div>
@@ -59,7 +80,9 @@ function EditableCell({ getValue, row, column, table }) {
         if (e.key === "Enter") commit();
         if (e.key === "Escape") { setValue(initial); setEditing(false); }
       }}
-      className="w-full min-w-[80px] px-2 py-0.5 bg-sky-50 border border-sky-400 rounded text-xs text-sky-800 outline-none"
+      className={`w-full px-1.5 py-0.5 bg-sky-50 border border-sky-400 rounded text-[11px] text-sky-800 outline-none ${
+        vesselName ? "min-w-[140px] font-bold" : "min-w-[72px]"
+      }`}
     />
   );
 }
@@ -68,6 +91,7 @@ function EditableRegionCell({ getValue, row, column, table }) {
   const initial = getValue() ?? "";
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(initial);
+  const readOnly = table.options.meta?.readOnly;
 
   const commit = () => {
     setEditing(false);
@@ -76,15 +100,17 @@ function EditableRegionCell({ getValue, row, column, table }) {
     }
   };
 
-  if (!editing) {
+  if (!editing || readOnly) {
     return (
       <div
-        onDoubleClick={() => setEditing(true)}
-        className="px-2 py-1 cursor-text text-xs font-bold whitespace-nowrap"
+        onDoubleClick={readOnly ? undefined : () => setEditing(true)}
+        className={`px-1.5 py-0.5 text-[11px] font-semibold whitespace-normal break-words ${
+          readOnly ? "cursor-default" : "cursor-text"
+        }`}
         style={{ color: "#0369a1" }}
-        title="double-click to edit"
+        title={readOnly ? initial || "" : "Double-click to edit · Enter to save"}
       >
-        {value || <span style={{ color: "#bae6fd", fontWeight: "normal", fontStyle: "italic" }}>—</span>}
+        {value || <span style={{ color: "#94a3b8", fontWeight: "normal", fontStyle: "italic" }}>—</span>}
       </div>
     );
   }
@@ -99,177 +125,389 @@ function EditableRegionCell({ getValue, row, column, table }) {
         if (e.key === "Enter") commit();
         if (e.key === "Escape") { setValue(initial); setEditing(false); }
       }}
-      className="w-full min-w-[120px] px-2 py-0.5 bg-sky-50 border border-sky-400 rounded text-xs text-sky-800 outline-none uppercase font-semibold"
+      className="w-full min-w-[100px] px-1.5 py-0.5 bg-sky-50 border border-sky-400 rounded text-[11px] text-sky-800 outline-none uppercase font-semibold"
     />
   );
 }
 
-export default function EditableGrid({ data, columns: colKeys, onCellEdit, onDeleteRow, deleteMode, selectedIds, onToggleSelect, onToggleAll }) {
-  const allSelected = data.length > 0 && data.every((v) => selectedIds.has(v.id));
-  const someSelected = data.some((v) => selectedIds.has(v.id));
+function SrNoCell({ row }) {
+  return (
+    <span className="text-[11px] pl-1 font-medium tabular-nums" style={{ color: "#475569" }}>
+      {row.index + 1}
+    </span>
+  );
+}
 
-  const deletCol = helper.display({
-    id: "_delete",
-    header: "",
-    size: 36,
-    cell: (info) => (
-      <button
-        onClick={() => onDeleteRow(info.row.original.id)}
-        className="px-2 text-red-400 hover:text-red-600 transition-colors text-sm"
-        title="Delete row"
-      >
-        ✕
-      </button>
-    ),
-  });
+export default function EditableGrid({
+  data,
+  columns: _legacyColumns,
+  onCellEdit,
+  readOnly = false,
+  showCheckboxes = false,
+  hideGroupHeaders = false,
+  groupHeaderIcon = "📎",
+  selectedIds = new Set(),
+  onToggleSelect,
+  onToggleAll,
+}) {
+  const [hoveredRowId, setHoveredRowId] = useState(null);
 
-  const columnDefs = [
-    helper.display({
-      id: "_select",
-      size: 36,
-      header: () => (
-        <input
-          type="checkbox"
-          checked={allSelected}
-          ref={(el) => { if (el) el.indeterminate = someSelected && !allSelected; }}
-          onChange={() => onToggleAll()}
-          className="cursor-pointer accent-sky-500"
-          title={allSelected ? "Deselect all" : "Select all"}
-        />
-      ),
-      cell: (info) => (
-        <input
-          type="checkbox"
-          checked={selectedIds.has(info.row.original.id)}
-          onChange={() => onToggleSelect(info.row.original.id)}
-          className="cursor-pointer accent-sky-500"
-        />
-      ),
-    }),
-    helper.display({
-      id: "_num",
-      header: "#",
-      size: 40,
-      cell: (info) => (
-        <span className="text-xs px-2" style={{ color: "#7dd3fc" }}>{info.row.index + 1}</span>
-      ),
-    }),
-    ...(deleteMode ? [deletCol] : []),
-    helper.accessor("region", {
-      id: "region",
-      header: "REGION",
-      size: 160,
-      cell: EditableRegionCell,
-    }),
-    ...colKeys
-      .filter((k) => k !== "region" && !READONLY_PARENT_KEYS.has(k))
-      .map((key) =>
-        helper.accessor((row) => row.dynamic_data?.[key] ?? "", {
-          id: key,
-          header: key.replace(/_/g, " ").toUpperCase(),
-          size: 130,
-          cell: EditableCell,
+  const groupCounts = useMemo(() => {
+    const counts = new Map();
+    data.forEach((v) => {
+      const id = v.attachment_id;
+      counts.set(id, (counts.get(id) || 0) + 1);
+    });
+    return counts;
+  }, [data]);
+
+  const allSelected = showCheckboxes && data.length > 0 && data.every((v) => selectedIds.has(v.id));
+  const someSelected = showCheckboxes && data.some((v) => selectedIds.has(v.id));
+
+  const columnDefs = useMemo(() => {
+    const cols = [];
+
+    if (showCheckboxes) {
+      cols.push(
+        helper.display({
+          id: "_select",
+          size: 32,
+          header: () => (
+            <input
+              type="checkbox"
+              checked={allSelected}
+              ref={(el) => { if (el) el.indeterminate = someSelected && !allSelected; }}
+              onChange={() => onToggleAll?.()}
+              className="cursor-pointer accent-sky-500"
+              title={allSelected ? "Deselect all" : "Select all"}
+            />
+          ),
+          cell: (info) => (
+            <input
+              type="checkbox"
+              checked={selectedIds.has(info.row.original.id)}
+              onChange={() => onToggleSelect?.(info.row.original.id)}
+              className="cursor-pointer accent-sky-500"
+            />
+          ),
         })
-      ),
-    ...colKeys
-      .filter((k) => READONLY_PARENT_KEYS.has(k))
-      .map((key) =>
-        helper.accessor((row) => row[key] ?? "", {
-          id: key,
-          header: key === "signature_emails" ? "SIGNATURE EMAILS" : "SIGNATURE PHONES",
-          size: 240,
-          cell: ReadOnlyParentCell,
+      );
+    }
+
+    for (const col of STANDARD_COLUMNS) {
+      const isReadOnly = col.readOnly || col.id === "_num";
+      const isRegion = isRegionColumn(col.id);
+      const isName = isVesselNameColumn(col.id);
+
+      if (col.id === "_num") {
+        cols.push(
+          helper.display({
+            id: "_num",
+            header: col.header,
+            size: col.width || 40,
+            cell: (info) => <SrNoCell row={info.row} />,
+          })
+        );
+        continue;
+      }
+
+      cols.push(
+        helper.display({
+          id: col.id,
+          header: col.header,
+          size: col.width || 110,
+          cell: (info) => {
+            const value = resolveStandardCellValue(
+              info.row.original,
+              col.id,
+              info.row.index + 1
+            );
+            if (isRegion) {
+              return (
+                <EditableRegionCell
+                  {...info}
+                  getValue={() => value}
+                />
+              );
+            }
+            if (isReadOnly) {
+              return <ReadOnlyCell getValue={() => value} />;
+            }
+            if (isName) {
+              return (
+                <EditableCell
+                  {...info}
+                  getValue={() => value}
+                  vesselName
+                />
+              );
+            }
+            return <EditableCell {...info} getValue={() => value} />;
+          },
         })
-      ),
-  ];
+      );
+    }
+
+    return cols;
+  }, [
+    showCheckboxes,
+    allSelected,
+    someSelected,
+    selectedIds,
+    onToggleAll,
+    onToggleSelect,
+  ]);
 
   const table = useReactTable({
     data,
     columns: columnDefs,
     getCoreRowModel: getCoreRowModel(),
-    meta: { onCellEdit },
+    meta: { onCellEdit, readOnly },
   });
+
+  const pinnedColIds = useMemo(
+    () => new Set(buildPinnedOrder(showCheckboxes)),
+    [showCheckboxes]
+  );
+
+  const headerStyle = {
+    background: "#0369a1",
+    color: "#e0f2fe",
+    border: GRID_BORDER,
+    fontWeight: 600,
+  };
+
+  const tableStyle = {
+    borderCollapse: "separate",
+    borderSpacing: 0,
+    borderTop: GRID_BORDER,
+    borderRight: GRID_BORDER,
+    borderBottom: GRID_BORDER,
+    borderLeft: "none",
+  };
 
   if (data.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center text-sm italic" style={{ color: "#7dd3fc" }}>
-        No vessels loaded. Select an email from the Inbox first.
+        No vessels loaded. Fetch emails on Email Data first.
       </div>
     );
   }
 
   const rows = table.getRowModel().rows;
-  const colCount = table.getVisibleLeafColumns().length;
+  const headerGroup = table.getHeaderGroups()[0];
+  const leafColumns = table.getVisibleLeafColumns();
+  const colCount = leafColumns.length;
+
+  const pinnedLeftById = (() => {
+    const offsets = {};
+    let left = 0;
+    for (const col of leafColumns) {
+      if (pinnedColIds.has(col.id)) {
+        offsets[col.id] = left;
+        left += col.columnDef.size || 100;
+      }
+    }
+    return offsets;
+  })();
+
+  const pinnedLeafColumns = leafColumns.filter((col) => pinnedColIds.has(col.id));
+  const firstPinnedId = pinnedLeafColumns[0]?.id;
+  const lastPinnedId = pinnedLeafColumns.at(-1)?.id;
+  const pinnedColCount = pinnedLeafColumns.length;
+  const scrollColCount = colCount - pinnedColCount;
+  const pinnedTotalWidth = pinnedLeafColumns.reduce(
+    (sum, col) => sum + (col.columnDef.size || 100),
+    0
+  );
+  const GROUP_HEADER_BG = "#dbeafe";
+
+  const totalTableWidth = leafColumns.reduce(
+    (sum, col) => sum + (col.columnDef.size || 100),
+    0
+  );
+
+  const colWidth = (columnId) =>
+    leafColumns.find((c) => c.id === columnId)?.columnDef.size || 100;
+
+  /** Extends sticky cell paint to the left edge so scrolled content cannot peek through. */
+  const pinnedShadows = (columnId, bg) => {
+    const parts = [];
+    if (columnId === firstPinnedId) parts.push(`-12px 0 0 0 ${bg}`);
+    if (columnId === lastPinnedId) parts.push("2px 0 6px rgba(0,0,0,0.08)");
+    return parts.length ? { boxShadow: parts.join(", ") } : {};
+  };
+
+  const thStyle = (columnId) => {
+    const w = colWidth(columnId);
+    const pinned = pinnedLeftById[columnId];
+    const bg = headerStyle.background;
+    return {
+      ...headerStyle,
+      width: w,
+      minWidth: w,
+      maxWidth: w,
+      boxSizing: "border-box",
+      position: "sticky",
+      top: 0,
+      zIndex: pinned != null ? 55 : 40,
+      ...(pinned != null ? { left: pinned } : {}),
+      ...(columnId === firstPinnedId ? { borderLeft: GRID_BORDER } : {}),
+      ...(pinned != null ? pinnedShadows(columnId, bg) : {}),
+      ...(columnId === "_num" ? { paddingLeft: 8 } : {}),
+    };
+  };
+
+  const tdStyle = (columnId, rowBg, rowId) => {
+    const w = colWidth(columnId);
+    const pinned = pinnedLeftById[columnId];
+    const isVesselName = columnId === "vessel_name";
+    const bg = isVesselName
+      ? hoveredRowId === rowId ? "#dbeafe" : "#eff6ff"
+      : rowBg;
+    return {
+      border: GRID_BORDER,
+      width: w,
+      minWidth: w,
+      maxWidth: w,
+      boxSizing: "border-box",
+      background: bg,
+      ...(columnId === "_num" ? { paddingLeft: 8 } : {}),
+      ...(pinned != null
+        ? {
+            position: "sticky",
+            left: pinned,
+            zIndex: columnId === "_select" ? 26 : 25,
+            ...(columnId === firstPinnedId ? { borderLeft: GRID_BORDER } : {}),
+            ...pinnedShadows(columnId, bg),
+          }
+        : {}),
+    };
+  };
 
   return (
-    <div className="overflow-auto flex-1 rounded-xl shadow-md" style={{ border: "1px solid #bae6fd" }}>
-      <table className="min-w-max text-xs" style={{ borderCollapse: "collapse" }}>
-        <thead className="sticky top-0 z-20">
-          {table.getHeaderGroups().map((hg) => (
-            <tr key={hg.id} style={{ background: "#0369a1" }}>
-              {hg.headers.map((header) => (
+    <div className="flex flex-col flex-1 min-h-0 rounded-lg shadow-sm" style={{ border: GRID_BORDER, background: "#fff" }}>
+      <div className="overflow-auto flex-1 min-h-0 overscroll-contain bg-white">
+        <table
+          className="text-[11px] leading-tight bg-white"
+          style={{
+            ...tableStyle,
+            tableLayout: "fixed",
+            width: totalTableWidth,
+            minWidth: totalTableWidth,
+          }}
+        >
+          <colgroup>
+            {leafColumns.map((col) => (
+              <col key={col.id} style={{ width: col.columnDef.size || 100 }} />
+            ))}
+          </colgroup>
+          <thead>
+            <tr>
+              {headerGroup.headers.map((header) => (
                 <th
                   key={header.id}
-                  style={{
-                    width: header.column.columnDef.size,
-                    color: "#e0f2fe",
-                    borderBottom: "2px solid #0284c7",
-                    borderRight: "1px solid #0284c7",
-                    fontWeight: 600,
-                  }}
-                  className={`px-2 py-2.5 text-xs whitespace-nowrap select-none ${
-                    header.id === "_select" ? "text-center" : "text-left"
+                  style={thStyle(header.column.id)}
+                  className={`py-1.5 text-[11px] whitespace-nowrap select-none ${
+                    header.id === "_select" ? "text-center px-1.5" : header.id === "_num" ? "text-left pr-1.5" : "text-left px-1.5"
                   }`}
                 >
                   {flexRender(header.column.columnDef.header, header.getContext())}
                 </th>
               ))}
             </tr>
-          ))}
-        </thead>
-        <tbody>
-          {rows.map((row, i) => {
-            const currentAttId = row.original.attachment_id;
-            const prevAttId = i > 0 ? rows[i - 1].original.attachment_id : null;
-            const isNewGroup = currentAttId !== prevAttId;
-            const filename = (row.original.filename || currentAttId || "Unknown Source")
-              .replace(/\.eml$/i, "");
+          </thead>
+          <tbody>
+            {rows.map((row, i) => {
+              const currentAttId = row.original.attachment_id;
+              const prevAttId = i > 0 ? rows[i - 1].original.attachment_id : null;
+              const isNewGroup = currentAttId !== prevAttId;
+              const filename = (row.original.filename || currentAttId || "Unknown Source")
+                .replace(/\.eml$/i, "");
+              const groupVesselCount = groupCounts.get(currentAttId) || 0;
+              const rowBg =
+                hoveredRowId === row.id ? "#e0f2fe" : i % 2 === 0 ? "#ffffff" : "#f1f5f9";
 
-            return (
-              <Fragment key={row.id}>
-                {isNewGroup && (
-                  <tr style={{ background: "#e0f2fe", borderTop: "2px solid #7dd3fc", borderBottom: "1px solid #bae6fd" }}>
-                    <td colSpan={colCount} className="px-3 py-1.5">
-                      <span className="flex items-center gap-1.5 text-xs font-bold" style={{ color: "#0369a1" }}>
-                        <span>📎</span>
-                        <span>{filename}</span>
-                      </span>
-                    </td>
+              return (
+                <Fragment key={row.id}>
+                  {isNewGroup && !hideGroupHeaders && (
+                    <tr style={{ background: GROUP_HEADER_BG }}>
+                      <td
+                        colSpan={pinnedColCount}
+                        className="py-1.5 pl-2 pr-1"
+                        style={{
+                          border: GRID_BORDER,
+                          borderRight: "none",
+                          borderLeft: GRID_BORDER,
+                          position: "sticky",
+                          left: 0,
+                          zIndex: 31,
+                          background: GROUP_HEADER_BG,
+                          boxSizing: "border-box",
+                          overflow: "hidden",
+                          width: pinnedTotalWidth,
+                          minWidth: pinnedTotalWidth,
+                          maxWidth: pinnedTotalWidth,
+                          ...(pinnedColCount > 0
+                            ? {
+                                boxShadow: `-12px 0 0 0 ${GROUP_HEADER_BG}, 2px 0 6px rgba(0,0,0,0.08)`,
+                              }
+                            : {}),
+                        }}
+                      >
+                        <span
+                          className="flex items-center gap-1 text-[11px] font-bold min-w-0"
+                          style={{
+                            color: "#0c4a6e",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            whiteSpace: "nowrap",
+                          }}
+                          title={`${filename} (${groupVesselCount} vessel${groupVesselCount !== 1 ? "s" : ""})`}
+                        >
+                          {groupHeaderIcon ? <span>{groupHeaderIcon}</span> : null}
+                          <span>{filename}</span>
+                          <span className="font-normal" style={{ color: "#64748b" }}>
+                            ({groupVesselCount} vessel{groupVesselCount !== 1 ? "s" : ""})
+                          </span>
+                        </span>
+                      </td>
+                      {scrollColCount > 0 ? (
+                        <td
+                          colSpan={scrollColCount}
+                          className="py-1.5"
+                          style={{
+                            border: GRID_BORDER,
+                            borderLeft: "none",
+                            background: GROUP_HEADER_BG,
+                          }}
+                        />
+                      ) : null}
+                    </tr>
+                  )}
+                  <tr
+                    style={{ background: rowBg }}
+                    onMouseEnter={() => setHoveredRowId(row.id)}
+                    onMouseLeave={() => setHoveredRowId(null)}
+                  >
+                    {row.getVisibleCells().map((cell) => (
+                      <td
+                        key={cell.id}
+                        style={tdStyle(cell.column.id, rowBg, row.id)}
+                        className={`align-top ${
+                          cell.column.id === "_select" ? "text-center px-1" : ""
+                        }`}
+                      >
+                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                      </td>
+                    ))}
                   </tr>
-                )}
-                <tr
-                  style={{ background: i % 2 === 0 ? "#ffffff" : "#f0f9ff", transition: "background 0.1s" }}
-                  onMouseEnter={e => e.currentTarget.style.background = "#e0f2fe"}
-                  onMouseLeave={e => e.currentTarget.style.background = i % 2 === 0 ? "#ffffff" : "#f0f9ff"}
-                >
-                  {row.getVisibleCells().map((cell) => (
-                    <td
-                      key={cell.id}
-                      style={{
-                        borderBottom: "1px solid #e0f2fe",
-                        borderRight: "1px solid #e0f2fe",
-                      }}
-                      className={`align-middle ${cell.column.id === "_select" ? "text-center px-2" : ""}`}
-                    >
-                      {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                    </td>
-                  ))}
-                </tr>
-              </Fragment>
-            );
-          })}
-        </tbody>
-      </table>
+                </Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

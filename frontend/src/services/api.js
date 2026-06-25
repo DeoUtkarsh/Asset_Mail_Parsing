@@ -19,6 +19,10 @@ async function request(method, path, body) {
 /** Kick off Phase 1. Returns { job_id }. */
 export const fetchEmails = () => request("POST", "/fetch-emails");
 
+/** Retry failed/pending extractions for one parent email. Returns { job_id }. */
+export const retryExtraction = (emailId) =>
+  request("POST", `/emails/${emailId}/retry-extraction`);
+
 // ── Inbox data ──────────────────────────────────────────────────────────────
 
 /** Returns all parent emails with attachment summaries. */
@@ -41,6 +45,9 @@ export const getVesselsForAttachment = (attId) =>
 /** Returns all vessels for one email (all attachments merged). */
 export const getAllVessels = (emailId) =>
   request("GET", `/emails/${emailId}/vessels`);
+
+/** Returns all vessels across every validation-ready parent email in the DB. */
+export const getAllVesselsCombined = () => request("GET", "/vessels");
 
 /** Returns the ordered superset column list. */
 export const getColumns = (emailId) =>
