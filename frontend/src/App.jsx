@@ -1,7 +1,7 @@
 import { useState } from "react";
 import InboxView from "./components/InboxView/InboxView";
 import ValidationView from "./components/ValidationView/ValidationView";
-import DraftView from "./components/DraftView/DraftView";
+import ContactListView from "./components/ContactListView/ContactListView";
 
 const VIEWS = {
   INBOX: "inbox",
@@ -13,8 +13,6 @@ export default function App() {
   const [view, setView] = useState(VIEWS.INBOX);
   const [draftEmailId, setDraftEmailId] = useState(null);
   const [vesselRefreshKey, setVesselRefreshKey] = useState(0);
-  // draftData holds the single consolidated HTML email + zone markers for the map
-  const [draftData, setDraftData] = useState({ html: "", zones: [], vessels: [], columns: [] });
 
   const setEmailForDraft = (emailId) => {
     setDraftEmailId(emailId);
@@ -22,16 +20,6 @@ export default function App() {
 
   const refreshVesselList = () => {
     setVesselRefreshKey((k) => k + 1);
-  };
-
-  const goToDraft = (html, zones, vessels, columns) => {
-    setDraftData({
-      html: html || "",
-      zones: zones || [],
-      vessels: vessels || [],
-      columns: columns || [],
-    });
-    setView(VIEWS.DRAFT);
   };
 
   return (
@@ -81,18 +69,12 @@ export default function App() {
             <ValidationView
               draftEmailId={draftEmailId}
               refreshKey={vesselRefreshKey}
-              onDraftGenerated={goToDraft}
             />
           </div>
         )}
         {view === VIEWS.DRAFT && (
           <div className="flex-1 min-h-0 overflow-hidden">
-            <DraftView
-              html={draftData.html}
-              zones={draftData.zones}
-              vessels={draftData.vessels}
-              columns={draftData.columns}
-            />
+            <ContactListView />
           </div>
         )}
       </main>

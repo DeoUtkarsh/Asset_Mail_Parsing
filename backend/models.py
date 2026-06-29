@@ -26,6 +26,12 @@ class UpdateVesselRequest(BaseModel):
     region: Optional[str] = None
 
 
+class UpdateAttachmentContactsRequest(BaseModel):
+    """Update broker signature emails/phones for one attachment."""
+    signature_emails: Optional[str] = None
+    signature_phones: Optional[str] = None
+
+
 # ── API response shapes ───────────────────────────────────────────
 
 class AttachmentOut(BaseModel):

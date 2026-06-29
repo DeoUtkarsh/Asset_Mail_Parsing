@@ -4,7 +4,8 @@ import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import EditableGrid from "../ValidationView/EditableGrid";
 import { regionToZone, vesselsGroupedByZone } from "../../utils/zoneMapping";
-import { STANDARD_COLUMN_IDS } from "../../utils/standardColumns";
+import { getColumnDefinitions } from "../../services/api";
+import { DEFAULT_COLUMNS } from "../../utils/standardColumns";
 import { copyEmailHtml } from "../../utils/copyEmailHtml";
 
 const ZONE_COLORS = {
@@ -106,8 +107,23 @@ function ZoneMap({ zones }) {
   );
 }
 
-export default function DraftView({ html = "", zones = [], vessels = [], columns = [] }) {
+export default function DraftView({
+  html = "",
+  zones = [],
+  vessels = [],
+  columns = [],
+  emptyOnly = false,
+  embedded = false,
+  title = "Contact List",
+}) {
   const [copied, setCopied] = useState(false);
+  const [columnDefs, setColumnDefs] = useState(DEFAULT_COLUMNS);
+
+  useEffect(() => {
+    getColumnDefinitions()
+      .then((r) => setColumnDefs(r.columns?.length ? r.columns : DEFAULT_COLUMNS))
+      .catch(() => setColumnDefs(DEFAULT_COLUMNS));
+  }, []);
 
   useEffect(() => { setCopied(false); }, [html, vessels]);
 
@@ -119,7 +135,7 @@ export default function DraftView({ html = "", zones = [], vessels = [], columns
   );
 
   const hasGrid = vessels.length > 0;
-  const hasContent = hasGrid || Boolean(html);
+  const hasContent = !emptyOnly && (hasGrid || Boolean(html));
 
   const handleCopy = async () => {
     try {
@@ -133,14 +149,14 @@ export default function DraftView({ html = "", zones = [], vessels = [], columns
   };
 
   return (
-    <div className="flex flex-col h-full gap-0" style={{ background: "#f0f9ff" }}>
+    <div className={`flex flex-col gap-0 ${embedded ? "h-full" : "h-full"}`} style={{ background: "#f0f9ff" }}>
 
       <div
         className="flex items-center justify-between px-6 py-4 flex-shrink-0 shadow-md"
         style={{ background: "linear-gradient(135deg, #0c4a6e 0%, #0369a1 100%)" }}
       >
         <div>
-          <h2 className="text-base font-bold text-white tracking-wide">Contact List</h2>
+          <h2 className="text-base font-bold text-white tracking-wide">{title}</h2>
         </div>
 
         <button
@@ -157,7 +173,19 @@ export default function DraftView({ html = "", zones = [], vessels = [], columns
         </button>
       </div>
 
-      {!hasContent ? (
+      {emptyOnly ? (
+        <div
+          className="flex-1 flex flex-col items-center justify-center gap-4 rounded-xl border-dashed m-6"
+          style={{ background: "#fff", border: "2px dashed #bae6fd" }}
+        >
+          <div className="text-5xl" style={{ color: "#bae6fd" }}>✉</div>
+          <p className="text-sm text-center max-w-md px-4" style={{ color: "#7dd3fc" }}>
+            Contact list content will appear here later. For now, generate a draft from{" "}
+            <span className="font-semibold" style={{ color: "#0369a1" }}>Vessel Position List</span>{" "}
+            — the map and draft open in a modal on that tab.
+          </p>
+        </div>
+      ) : !hasContent ? (
         <div
           className="flex-1 flex flex-col items-center justify-center gap-4 rounded-xl border-dashed m-6"
           style={{ background: "#fff", border: "2px dashed #bae6fd" }}
@@ -175,7 +203,7 @@ export default function DraftView({ html = "", zones = [], vessels = [], columns
           <div className="flex gap-2 px-4 py-2 flex-shrink-0" style={{ background: "#e0f2fe", borderBottom: "1px solid #bae6fd" }}>
             <Stat label="Vessels" value={vessels.length} />
             <Stat label="Zones" value={zoneCount} />
-            <Stat label="Columns" value={STANDARD_COLUMN_IDS.length} />
+            <Stat label="Columns" value={columnDefs.length} />
           </div>
 
           <div className="flex-1 min-h-0 flex flex-row gap-3 p-3 overflow-hidden">
@@ -211,7 +239,7 @@ export default function DraftView({ html = "", zones = [], vessels = [], columns
             <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
               <EditableGrid
                 data={gridVessels}
-                columns={STANDARD_COLUMN_IDS}
+                gridColumns={columnDefs}
                 onCellEdit={() => {}}
                 readOnly
                 showCheckboxes={false}

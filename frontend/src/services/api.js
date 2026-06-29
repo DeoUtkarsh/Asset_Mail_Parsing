@@ -49,9 +49,19 @@ export const getAllVessels = (emailId) =>
 /** Returns all vessels across every validation-ready parent email in the DB. */
 export const getAllVesselsCombined = () => request("GET", "/vessels");
 
+/** Returns column definitions from PostgreSQL (id, header, display_order, read_only, storage). */
+export const getColumnDefinitions = () => request("GET", "/columns");
+
 /** Returns the ordered superset column list. */
 export const getColumns = (emailId) =>
   request("GET", `/emails/${emailId}/columns`);
+
+/** Returns all attachments with parent email context and signature contacts. */
+export const getContacts = () => request("GET", "/contacts");
+
+/** Update broker emails/phones for one attachment. */
+export const updateAttachmentContacts = (attId, { signature_emails, signature_phones }) =>
+  request("PUT", `/attachments/${attId}/contacts`, { signature_emails, signature_phones });
 
 /** Update a single vessel row (cell edit). */
 export const updateVessel = (vesselId, dynamicData, region) =>

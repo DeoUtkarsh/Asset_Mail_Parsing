@@ -2,10 +2,10 @@ import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import {
   getAttachmentRaw,
   getVesselsForAttachment,
+  getColumnDefinitions,
   updateVessel,
 } from "../../services/api";
 import EditableGrid from "../ValidationView/EditableGrid";
-import { STANDARD_COLUMN_IDS } from "../../utils/standardColumns";
 
 function looksLikeHtml(s) {
   if (!s || s.length < 12) return false;
@@ -37,7 +37,7 @@ function toPreviewPlainText(s) {
 export default function PreviewModal({ attachmentId, filename, emailId, onClose }) {
   const [rawText, setRawText] = useState("");
   const [vessels, setVessels] = useState([]);
-  const [columns] = useState(STANDARD_COLUMN_IDS);
+  const [columnDefs, setColumnDefs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showRawSource, setShowRawSource] = useState(false);
   const [savedMsg, setSavedMsg] = useState(false);
@@ -67,12 +67,14 @@ export default function PreviewModal({ attachmentId, filename, emailId, onClose 
       setLoading(true);
       setError("");
       try {
-        const [rawData, vesselData] = await Promise.all([
+        const [rawData, vesselData, colData] = await Promise.all([
           getAttachmentRaw(attachmentId),
           getVesselsForAttachment(attachmentId),
+          getColumnDefinitions(),
         ]);
         if (cancelled) return;
         setRawText(rawData.raw_text || "");
+        setColumnDefs(colData.columns || []);
         const enriched = vesselData.map((v) => ({
           ...v,
           attachment_id: attachmentId,
@@ -198,10 +200,11 @@ export default function PreviewModal({ attachmentId, filename, emailId, onClose 
               <div className="flex-1 min-h-0 px-1 pb-1 flex flex-col">
                 <EditableGrid
                   data={vessels}
-                  columns={columns}
+                  gridColumns={columnDefs}
                   onCellEdit={handleCellEdit}
                   showCheckboxes={false}
                   hideGroupHeaders
+                  emptyMessage="No vessels extracted for this attachment. Use Retry Failed on Email Data to re-extract."
                 />
               </div>
             </div>

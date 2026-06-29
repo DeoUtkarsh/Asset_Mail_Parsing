@@ -31,14 +31,15 @@ export default function InboxView({ onEmailReady, onVesselsUpdated }) {
     }
   };
 
-  const isRetryableStatus = (status) =>
-    status === "error" || status === "pending" || status === "extracting";
+  const isRetryableAtt = (att) => {
+    const status = attStatuses[att.id] || att.status;
+    if (status === "error" || status === "pending" || status === "extracting") return true;
+    return Boolean(att.retry_suggested);
+  };
 
   const retryTarget = useMemo(() => {
     for (const em of emails) {
-      const count = (em.attachments || []).filter((att) =>
-        isRetryableStatus(attStatuses[att.id] || att.status)
-      ).length;
+      const count = (em.attachments || []).filter(isRetryableAtt).length;
       if (count > 0) return { emailId: em.id, count };
     }
     return null;

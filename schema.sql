@@ -70,6 +70,18 @@ CREATE INDEX IF NOT EXISTS idx_vessels_dynamic_data
     ON vessels USING GIN (dynamic_data);
 
 -- ─────────────────────────────────────────────
+-- Table 4: column_definitions
+-- Grid headers — source of truth for UI + API
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS column_definitions (
+    id              TEXT PRIMARY KEY,
+    header          TEXT NOT NULL,
+    display_order   INT NOT NULL,
+    read_only       BOOLEAN NOT NULL DEFAULT FALSE,
+    storage         TEXT NOT NULL DEFAULT 'dynamic_data'
+);
+
+-- ─────────────────────────────────────────────
 -- Upgrade path: add signature columns on existing installs
 -- ─────────────────────────────────────────────
 ALTER TABLE parent_emails ADD COLUMN IF NOT EXISTS signature_emails TEXT;

@@ -12,7 +12,7 @@ from openai import AsyncOpenAI
 from database import supabase
 from config import settings
 from sse_manager import sse_manager
-from standard_columns import STANDARD_COLUMNS, resolve_cell_value, header_for_column
+from column_defs import get_column_definitions, resolve_cell_value, header_for_column
 
 logger = logging.getLogger(__name__)
 
@@ -213,8 +213,13 @@ def _active_column_keys_for_zone(vessels: list[dict], col_keys: list[str]) -> li
     return active if active else list(col_keys)
 
 
-def _build_html_grid(intro_text: str, zone_groups: dict[str, list[dict]]) -> str:
-    """Tables use fixed standard columns (same as Validate / Contact List tabs)."""
+def _build_html_grid(
+    intro_text: str,
+    zone_groups: dict[str, list[dict]],
+    columns: list[dict] | None = None,
+) -> str:
+    """Tables use column definitions from PostgreSQL (same as Validate / Contact List tabs)."""
+    cols = columns or get_column_definitions(supabase)
     zone_html_parts: list[str] = []
     empty_cell = "—"
 
@@ -226,15 +231,15 @@ def _build_html_grid(intro_text: str, zone_groups: dict[str, list[dict]]) -> str
             f'<th style="background:#0369a1;color:#e0f2fe;padding:8px 10px;'
             f'text-align:left;font-size:11px;font-family:Arial,Helvetica,sans-serif;'
             f'border:1px solid #0284c7;font-weight:600;white-space:nowrap">'
-            f'{header_for_column(col["id"])}</th>'
-            for col in STANDARD_COLUMNS
+            f'{header_for_column(col["id"], cols)}</th>'
+            for col in cols
         )
 
         rows = ""
         for i, v in enumerate(vessels):
             bg = "#ffffff" if i % 2 == 0 else "#f8fafc"
             tds = []
-            for col in STANDARD_COLUMNS:
+            for col in cols:
                 raw = resolve_cell_value(v, col["id"], i + 1)
                 display = raw if _is_meaningful_cell(raw) else empty_cell
                 is_name = col["id"] == "vessel_name"
@@ -356,7 +361,11 @@ def _build_html(
     zone_groups: dict[str, list[dict]],
     grid_columns: list[str] | None = None,
 ) -> str:
-    return _build_html_grid(intro_text, zone_groups)
+    cols = get_column_definitions(supabase)
+    if grid_columns:
+        allowed = set(grid_columns)
+        cols = [c for c in cols if c["id"] in allowed]
+    return _build_html_grid(intro_text, zone_groups, cols)
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────

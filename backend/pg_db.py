@@ -62,6 +62,14 @@ CREATE INDEX IF NOT EXISTS idx_vessels_region
 
 CREATE INDEX IF NOT EXISTS idx_vessels_dynamic_data
     ON vessels USING GIN (dynamic_data);
+
+CREATE TABLE IF NOT EXISTS column_definitions (
+    id              TEXT PRIMARY KEY,
+    header          TEXT NOT NULL,
+    display_order   INT NOT NULL,
+    read_only       BOOLEAN NOT NULL DEFAULT FALSE,
+    storage         TEXT NOT NULL DEFAULT 'dynamic_data'
+);
 """
 
 # After tables exist: add columns on upgraded DBs, then (re)create view (needs those columns).
@@ -70,6 +78,13 @@ ALTER TABLE parent_emails ADD COLUMN IF NOT EXISTS signature_emails TEXT;
 ALTER TABLE parent_emails ADD COLUMN IF NOT EXISTS signature_phones TEXT;
 ALTER TABLE attachments ADD COLUMN IF NOT EXISTS signature_emails TEXT;
 ALTER TABLE attachments ADD COLUMN IF NOT EXISTS signature_phones TEXT;
+CREATE TABLE IF NOT EXISTS column_definitions (
+    id              TEXT PRIMARY KEY,
+    header          TEXT NOT NULL,
+    display_order   INT NOT NULL,
+    read_only       BOOLEAN NOT NULL DEFAULT FALSE,
+    storage         TEXT NOT NULL DEFAULT 'dynamic_data'
+);
 DROP VIEW IF EXISTS vessels_full;
 CREATE OR REPLACE VIEW vessels_full AS
 SELECT

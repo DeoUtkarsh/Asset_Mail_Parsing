@@ -10,7 +10,10 @@ GET  /api/emails/{email_id}/attachments → List attachments for one email
 GET  /api/attachments/{att_id}/vessels  → Vessels for one attachment (Preview Modal)
 GET  /api/vessels                     → All vessels across ready parent emails (Validation Grid)
 GET  /api/emails/{email_id}/vessels     → All vessels for one parent email
-GET  /api/emails/{email_id}/columns     → The superset column list for the grid
+GET  /api/columns                     → Column definitions (id + header) from PostgreSQL
+GET  /api/emails/{email_id}/columns     → Same column list (legacy path)
+GET  /api/contacts                      → All attachments with parent email + signature contacts
+PUT  /api/attachments/{att_id}/contacts → Update signature emails/phones for one attachment
 PUT  /api/vessels/{vessel_id}           → Update a single vessel row (cell edit)
 DELETE /api/vessels/{vessel_id}         → Delete a vessel row
 POST /api/generate-draft                → Trigger Phase 2 (returns draft text)
@@ -28,9 +31,15 @@ from sse_starlette.sse import EventSourceResponse
 
 from config import settings
 from database import supabase, get_supabase
-from models import GenerateDraftRequest, UpdateVesselRequest
+from models import GenerateDraftRequest, UpdateVesselRequest, UpdateAttachmentContactsRequest
 from sse_manager import sse_manager
 from workflow import phase1_graph, phase2_graph
+from column_defs import (
+    STANDARD_DYNAMIC_KEYS,
+    ensure_column_definitions,
+    migrate_all_vessel_rows,
+    get_column_definitions,
+)
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
 logging.config.dictConfig({
@@ -95,6 +104,10 @@ async def startup_event():
         db = get_supabase()
         db.table("parent_emails").select("id").limit(1).execute()
         logger.info("  PostgreSQL connection: OK ✓")
+        ensure_column_definitions(db)
+        migrated = migrate_all_vessel_rows(db)
+        if migrated:
+            logger.info("  Vessel data migration: %d rows updated to standard columns", migrated)
     except Exception as exc:
         logger.error("  PostgreSQL connection FAILED: %s", exc)
         logger.error("  Check that pgAdmin is running and PG_* settings in .env are correct.")
@@ -252,13 +265,28 @@ async def list_emails():
         emails = supabase.table("parent_emails").select("*").order("date_received", desc=True).execute()
         result = []
         for em in emails.data or []:
+            from agents.extraction import get_retryable_attachment_ids
+            retry_ids = set(get_retryable_attachment_ids(em["id"]))
             atts = (
                 supabase.table("attachments")
                 .select("id, filename, status, error_message")
                 .eq("parent_email_id", em["id"])
                 .execute()
             )
-            result.append({**em, "attachments": atts.data or []})
+            att_list = []
+            for att in atts.data or []:
+                vrows = (
+                    supabase.table("vessels")
+                    .select("id")
+                    .eq("attachment_id", att["id"])
+                    .execute()
+                )
+                att_list.append({
+                    **att,
+                    "vessel_count": len(vrows.data or []),
+                    "retry_suggested": att["id"] in retry_ids,
+                })
+            result.append({**em, "attachments": att_list})
         logger.info("[API] Returning %d emails", len(result))
         return result
     except Exception as exc:
@@ -390,14 +418,95 @@ async def get_all_vessels(email_id: str):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@app.get("/api/columns")
+async def list_column_definitions():
+    logger.info("[API] GET /api/columns")
+    try:
+        return {"columns": get_column_definitions(supabase)}
+    except Exception as exc:
+        logger.error("[API] list_column_definitions failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.get("/api/emails/{email_id}/columns")
 async def get_superset_columns(email_id: str):
     logger.info("[API] GET /api/emails/%s/columns", email_id)
     try:
-        from standard_columns import STANDARD_COLUMN_IDS
-        return {"columns": STANDARD_COLUMN_IDS}
+        return {"columns": get_column_definitions(supabase)}
     except Exception as exc:
         logger.error("[API] get_superset_columns failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/contacts")
+async def list_contacts():
+    """Flat list: one row per attachment with parent email context and signature contacts."""
+    logger.info("[API] GET /api/contacts")
+    try:
+        emails = (
+            supabase.table("parent_emails")
+            .select("id, subject, sender, date_received")
+            .order("date_received", desc=True)
+            .execute()
+        )
+        result = []
+        for em in emails.data or []:
+            atts = (
+                supabase.table("attachments")
+                .select("id, filename, signature_emails, signature_phones")
+                .eq("parent_email_id", em["id"])
+                .order("filename")
+                .execute()
+            )
+            for att in atts.data or []:
+                result.append({
+                    "attachment_id": att["id"],
+                    "filename": att.get("filename") or "",
+                    "signature_emails": att.get("signature_emails") or "",
+                    "signature_phones": att.get("signature_phones") or "",
+                    "parent_email_id": em["id"],
+                    "subject": em.get("subject") or "",
+                    "sender": em.get("sender") or "",
+                    "date_received": em.get("date_received"),
+                })
+        logger.info("[API] Returning %d contact rows", len(result))
+        return result
+    except Exception as exc:
+        logger.error("[API] list_contacts failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.put("/api/attachments/{att_id}/contacts")
+async def update_attachment_contacts(att_id: str, body: UpdateAttachmentContactsRequest):
+    logger.info("[API] PUT /api/attachments/%s/contacts", att_id)
+    try:
+        update_payload: dict[str, Any] = {}
+        if body.signature_emails is not None:
+            val = body.signature_emails.strip()
+            update_payload["signature_emails"] = val or None
+        if body.signature_phones is not None:
+            val = body.signature_phones.strip()
+            update_payload["signature_phones"] = val or None
+        if not update_payload:
+            raise HTTPException(status_code=400, detail="No fields to update.")
+        result = (
+            supabase.table("attachments")
+            .update(update_payload)
+            .eq("id", att_id)
+            .execute()
+        )
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Attachment not found.")
+        row = result.data[0]
+        return {
+            "attachment_id": att_id,
+            "signature_emails": row.get("signature_emails") or "",
+            "signature_phones": row.get("signature_phones") or "",
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("[API] update_attachment_contacts failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -455,7 +564,7 @@ async def create_vessel(email_id: str):
             supabase.table("vessels")
             .insert({
                 "attachment_id": att_row["id"],
-                "dynamic_data": {},
+                "dynamic_data": {k: "" for k in STANDARD_DYNAMIC_KEYS},
                 "region": "",
                 "is_validated": False,
             })

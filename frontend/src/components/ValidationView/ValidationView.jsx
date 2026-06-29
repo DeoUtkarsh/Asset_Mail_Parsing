@@ -1,18 +1,20 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getAllVesselsCombined, updateVessel, deleteVessel, generateDraft } from "../../services/api";
+import { getAllVesselsCombined, getColumnDefinitions, updateVessel, deleteVessel, generateDraft } from "../../services/api";
 import { useSSE } from "../../hooks/useSSE";
-import { STANDARD_COLUMN_IDS } from "../../utils/standardColumns";
 import EditableGrid from "./EditableGrid";
+import DraftModal from "./DraftModal";
 
-export default function ValidationView({ draftEmailId, refreshKey = 0, onDraftGenerated }) {
+export default function ValidationView({ draftEmailId, refreshKey = 0 }) {
   const [vessels, setVessels]       = useState([]);
-  const [columns] = useState(STANDARD_COLUMN_IDS);
+  const [columnDefs, setColumnDefs] = useState([]);
   const [loading, setLoading]       = useState(false);
   const [generating, setGenerating] = useState(false);
   const [draftJobId, setDraftJobId] = useState(null);
   const [error, setError]           = useState("");
   const [savedMsg, setSavedMsg]     = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
+  const [draftData, setDraftData]   = useState(null);
+  const [draftModalOpen, setDraftModalOpen] = useState(false);
   const savedTimer                  = useRef(null);
   const draftSourceRef              = useRef({ vessels: [], columns: [] });
 
@@ -23,8 +25,12 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, onDraftGe
     setLoading(true);
     setError("");
     try {
-      const vesselData = await getAllVesselsCombined();
+      const [vesselData, colData] = await Promise.all([
+        getAllVesselsCombined(),
+        getColumnDefinitions(),
+      ]);
       setVessels(vesselData);
+      setColumnDefs(colData.columns || []);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -40,18 +46,19 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, onDraftGe
     if (evt.type === "drafting_done") {
       setGenerating(false);
       setDraftJobId(null);
-      onDraftGenerated(
-        evt.draft_html || "",
-        evt.zones || [],
-        draftSourceRef.current.vessels,
-        draftSourceRef.current.columns,
-      );
+      setDraftData({
+        html: evt.draft_html || "",
+        zones: evt.zones || [],
+        vessels: draftSourceRef.current.vessels,
+        columns: draftSourceRef.current.columns,
+      });
+      setDraftModalOpen(true);
     } else if (evt.type === "phase2_failed") {
       setGenerating(false);
       setDraftJobId(null);
       setError("Draft generation failed: " + (evt.error || "Unknown error"));
     }
-  }, [onDraftGenerated]);
+  }, []);
 
   useSSE(draftJobId, handleDraftEvent);
 
@@ -133,10 +140,12 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, onDraftGe
     }
     setGenerating(true);
     setError("");
+    setDraftData(null);
+    setDraftModalOpen(false);
     const sourceVessels = selectedIds.size > 0
       ? vessels.filter((v) => selectedIds.has(v.id))
       : vessels;
-    draftSourceRef.current = { vessels: sourceVessels, columns: [...columns] };
+    draftSourceRef.current = { vessels: sourceVessels, columns: columnDefs.map((c) => c.id) };
     const payload = sourceVessels.map((v) => ({
       id: v.id,
       dynamic_data: v.dynamic_data,
@@ -147,7 +156,7 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, onDraftGe
       signature_phones: v.signature_phones ?? "",
     }));
     try {
-      const { job_id } = await generateDraft(emailId, payload, columns);
+      const { job_id } = await generateDraft(emailId, payload, columnDefs.map((c) => c.id));
       setDraftJobId(job_id);
     } catch (e) {
       setGenerating(false);
@@ -192,6 +201,17 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, onDraftGe
               `Generate Draft — All ${vessels.length}`
             )}
           </button>
+
+          {draftData && !generating && (
+            <button
+              type="button"
+              onClick={() => setDraftModalOpen(true)}
+              className="flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-medium transition-all shadow-sm bg-emerald-600 text-white hover:bg-emerald-700"
+            >
+              <span aria-hidden>✓</span>
+              View Map &amp; Draft
+            </button>
+          )}
         </div>
       </div>
 
@@ -201,7 +221,7 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, onDraftGe
           <Stat label="Vessels" value={vessels.length} />
           <Stat label="Sources" value={sourceCount} />
           <Stat label="Regions" value={new Set(vessels.map((v) => v.region).filter(Boolean)).size} />
-          <Stat label="Columns" value={columns.length} />
+          <Stat label="Columns" value={columnDefs.length} />
         </div>
       )}
 
@@ -223,7 +243,7 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, onDraftGe
         ) : (
           <EditableGrid
             data={vessels}
-            columns={columns}
+            gridColumns={columnDefs}
             onCellEdit={handleCellEdit}
             showCheckboxes
             selectedIds={selectedIds}
@@ -232,6 +252,15 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, onDraftGe
           />
         )}
       </div>
+
+      <DraftModal
+        open={draftModalOpen}
+        onClose={() => setDraftModalOpen(false)}
+        html={draftData?.html}
+        zones={draftData?.zones}
+        vessels={draftData?.vessels}
+        columns={draftData?.columns}
+      />
     </div>
   );
 }

@@ -10,9 +10,15 @@ import logging
 from typing import Any
 
 from openai import AsyncOpenAI, RateLimitError
+from column_defs import map_raw_to_standard
 from database import supabase
 from config import settings
 from sse_manager import sse_manager
+from agents.vertical_tonnage import (
+    format_vertical_tonnage_for_llm,
+    looks_like_vertical_tonnage,
+    parse_vertical_tonnage_vessels,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,25 +34,22 @@ EXTRACTION_PROMPT = """\
 You are an expert shipbroking data extractor. Extract ALL vessel/ship position data from the text below.
 
 CRITICAL RULES:
-1. Find EVERY vessel/ship mentioned — whether listed as "open positions", "available tonnage", "please propose cargo for", or any similar phrasing. All of these are vessel position records.
-2. Return ONLY a raw JSON array. No markdown code blocks, no explanation, no prefix or suffix text.
-3. Each element in the array represents ONE vessel.
-4. Each vessel object must contain ALL specifications mentioned for that vessel as key-value pairs.
-5. ALWAYS include a "region" key = the PRIMARY port or area where the vessel is currently open/available.
-   - Look for phrases like: "Open at MERAK", "open in SINGAPORE", "available at ECI", "position at FUJAIRAH",
-     "ETA SINGAPORE", "next open: HONG KONG", "open YANGON", "delivery CHENNAI", etc.
-   - Use the OPEN PORT/LOCATION, not the seeking/routing destination.
-   - Examples of good region values: "MERAK", "SINGAPORE", "ECI", "HONG KONG", "FUJAIRAH", "MUMBAI",
-     "YANGON", "CHIBA", "DURBAN", "GEELONG", "NHA BE", "TANJUNG UBAN", "SIKKA"
-   - If the vessel is open in multiple locations pick the first/primary one.
-   - If truly no open location is mentioned, set region to "UNSPECIFIED".
-   - NEVER leave region as null or empty string.
-6. ALWAYS include a "vessel_name" key with the ship's name (e.g. "M/T INCHEON CHEMI", "RAFFLES SAMURAI").
-7. All keys must be lowercase with underscores (e.g. "dwt", "built", "last_cargo", "open_date", "coating").
-8. Values must be strings. Use "UNKNOWN" only if a field is explicitly mentioned but its value is illegible.
-9. Do NOT include keys that are completely absent for a specific vessel.
-10. If the document contains absolutely no vessel/ship data (e.g. only contact information), return an empty array: []
-11. vessel_name codes like "GS/J19", "OT/MR" etc. are vessel identifiers — extract them as the vessel_name.
+1. Find EVERY vessel/ship mentioned — open positions, available tonnage, "please propose cargo for", etc.
+2. Return ONLY a raw JSON array. No markdown, no explanation.
+3. Each element = ONE vessel.
+4. Use ONLY these keys per vessel (omit a key if truly unknown — do not invent):
+   - vessel_name, imo, call_sign, year_built, vessel_type, cargo_type, dwt_sdwt, cbm, draft, flag
+   - region (primary open port/area, e.g. SINGAPORE, MERAK, FUJAIRAH — never empty; use UNSPECIFIED if unknown)
+   - open_location, opening_date, cargo_history_combo, tank_coating
+   - sire_date, sire_location, cdi_date, cdi_location, remarks, other_info, q88, status
+5. dwt_sdwt: single string, e.g. "19000 / 19999" or "13000" if only one value.
+6. cargo_history_combo: single string merging last cargoes / L3C, e.g. "CPP / PALMS / CSS".
+7. All keys lowercase with underscores. All values strings.
+8. vessel_name codes like "GS/J19" are valid vessel names.
+9. VERTICAL TABLE FORMAT: If headers appear on separate lines (PORT OPEN, DATES, DWT, CUB/CBM)
+   followed by repeating 5-line groups (vessel name, port, date, dwt, cbm), each group is ONE vessel.
+   A normalized table may appear at the top of the text — use it.
+10. If no vessel data at all, return [].
 
 TEXT TO PARSE:
 {raw_text}
@@ -71,15 +74,54 @@ def _retry_delay_seconds(exc: Exception, attempt: int) -> float:
 def get_retryable_attachment_ids(email_id: str) -> list[str]:
     rows = (
         supabase.table("attachments")
-        .select("id, status")
+        .select("id, status, raw_text")
         .eq("parent_email_id", email_id)
         .execute()
     )
-    return [
-        row["id"]
-        for row in (rows.data or [])
-        if row.get("status") in RETRYABLE_STATUSES
-    ]
+    retry_ids: list[str] = []
+    for row in rows.data or []:
+        if row.get("status") in RETRYABLE_STATUSES:
+            retry_ids.append(row["id"])
+            continue
+        if row.get("status") != "done":
+            continue
+        vessel_rows = (
+            supabase.table("vessels")
+            .select("id")
+            .eq("attachment_id", row["id"])
+            .limit(1)
+            .execute()
+        )
+        if vessel_rows.data:
+            continue
+        raw = row.get("raw_text") or ""
+        if looks_like_vertical_tonnage(raw) and parse_vertical_tonnage_vessels(raw):
+            retry_ids.append(row["id"])
+    return retry_ids
+
+
+def _prepare_llm_text(raw_text: str) -> str:
+    """Prepend normalized table when vertical tonnage layout is detected."""
+    table = format_vertical_tonnage_for_llm(raw_text)
+    body = raw_text[:12000]
+    if table:
+        return (
+            "NORMALIZED TABLE (from vertical broker list — extract every row):\n"
+            f"{table}\n\n--- ORIGINAL MESSAGE ---\n{body}"
+        )
+    return body
+
+
+def _apply_extraction_fallback(raw_text: str, vessels_data: list[dict]) -> list[dict]:
+    if vessels_data:
+        return vessels_data
+    fallback = parse_vertical_tonnage_vessels(raw_text)
+    if fallback:
+        logger.info(
+            "[Extraction] Vertical tonnage fallback recovered %d vessels",
+            len(fallback),
+        )
+    return fallback
 
 
 def prepare_attachments_for_retry(attachment_ids: list[str]) -> None:
@@ -178,7 +220,9 @@ async def _extract_single_attachment(
                         },
                         {
                             "role": "user",
-                            "content": EXTRACTION_PROMPT.format(raw_text=raw_text[:12000]),
+                            "content": EXTRACTION_PROMPT.format(
+                                raw_text=_prepare_llm_text(raw_text),
+                            ),
                         },
                     ],
                     temperature=0.05,
@@ -186,6 +230,7 @@ async def _extract_single_attachment(
                 )
                 content = response.choices[0].message.content or ""
                 vessels_data = _extract_json_array(content)
+                vessels_data = _apply_extraction_fallback(raw_text, vessels_data)
                 last_error = ""
                 break
 
@@ -217,11 +262,12 @@ async def _extract_single_attachment(
 
         for vessel in vessels_data:
             region = vessel.pop("region", None)
-            normalised = {k.lower().replace(" ", "_"): str(v) for k, v in vessel.items()}
+            raw = {k.lower().replace(" ", "_"): str(v) for k, v in vessel.items()}
+            dynamic_data, region = map_raw_to_standard(raw, region)
             supabase.table("vessels").insert({
                 "attachment_id": attachment_id,
-                "dynamic_data": normalised,
-                "region": region,
+                "dynamic_data": dynamic_data,
+                "region": region or "UNSPECIFIED",
             }).execute()
 
         supabase.table("attachments").update({

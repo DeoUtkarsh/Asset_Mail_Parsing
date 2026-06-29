@@ -6,7 +6,8 @@ import {
 } from "@tanstack/react-table";
 import { Fragment, useMemo, useState } from "react";
 import {
-  STANDARD_COLUMNS,
+  DEFAULT_COLUMNS,
+  enrichColumnDefs,
   resolveStandardCellValue,
   editFieldForColumn,
   isVesselNameColumn,
@@ -36,17 +37,17 @@ function ReadOnlyCell({ getValue }) {
   );
 }
 
-function EditableCell({ getValue, row, column, table, vesselName = false }) {
+function EditableCell({ getValue, row, column, table, vesselName = false, columnDefs }) {
   const initial = getValue() ?? "";
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(initial);
   const readOnly = table.options.meta?.readOnly;
+  const editField = editFieldForColumn(column.id, columnDefs);
 
   const commit = () => {
     setEditing(false);
-    if (value !== initial) {
-      const field = editFieldForColumn(column.id);
-      if (field) table.options.meta?.onCellEdit(row.original.id, field, value);
+    if (value !== initial && editField) {
+      table.options.meta?.onCellEdit(row.original.id, editField, value);
     }
   };
 
@@ -54,11 +55,11 @@ function EditableCell({ getValue, row, column, table, vesselName = false }) {
     return (
       <div
         onDoubleClick={
-          readOnly || !editFieldForColumn(column.id) ? undefined : () => setEditing(true)
+          readOnly || !editField ? undefined : () => setEditing(true)
         }
         className={`px-1.5 py-0.5 min-h-[20px] text-[11px] leading-snug whitespace-normal break-words w-full ${
           vesselName ? "font-bold" : ""
-        } ${readOnly || !editFieldForColumn(column.id) ? "cursor-default" : "cursor-text"}`}
+        } ${readOnly || !editField ? "cursor-default" : "cursor-text"}`}
         style={{
           color: value ? "#0c4a6e" : "#94a3b8",
           fontStyle: value ? "normal" : "italic",
@@ -141,11 +142,13 @@ function SrNoCell({ row }) {
 export default function EditableGrid({
   data,
   columns: _legacyColumns,
+  gridColumns,
   onCellEdit,
   readOnly = false,
   showCheckboxes = false,
   hideGroupHeaders = false,
   groupHeaderIcon = "📎",
+  emptyMessage = "No vessels loaded. Fetch emails on Email Data first.",
   selectedIds = new Set(),
   onToggleSelect,
   onToggleAll,
@@ -163,6 +166,11 @@ export default function EditableGrid({
 
   const allSelected = showCheckboxes && data.length > 0 && data.every((v) => selectedIds.has(v.id));
   const someSelected = showCheckboxes && data.some((v) => selectedIds.has(v.id));
+
+  const standardCols = useMemo(
+    () => enrichColumnDefs(gridColumns?.length ? gridColumns : DEFAULT_COLUMNS),
+    [gridColumns]
+  );
 
   const columnDefs = useMemo(() => {
     const cols = [];
@@ -194,8 +202,8 @@ export default function EditableGrid({
       );
     }
 
-    for (const col of STANDARD_COLUMNS) {
-      const isReadOnly = col.readOnly || col.id === "_num";
+    for (const col of standardCols) {
+      const isReadOnly = col.read_only || col.id === "_num";
       const isRegion = isRegionColumn(col.id);
       const isName = isVesselNameColumn(col.id);
 
@@ -239,10 +247,17 @@ export default function EditableGrid({
                   {...info}
                   getValue={() => value}
                   vesselName
+                  columnDefs={standardCols}
                 />
               );
             }
-            return <EditableCell {...info} getValue={() => value} />;
+            return (
+              <EditableCell
+                {...info}
+                getValue={() => value}
+                columnDefs={standardCols}
+              />
+            );
           },
         })
       );
@@ -250,6 +265,7 @@ export default function EditableGrid({
 
     return cols;
   }, [
+    standardCols,
     showCheckboxes,
     allSelected,
     someSelected,
@@ -262,7 +278,7 @@ export default function EditableGrid({
     data,
     columns: columnDefs,
     getCoreRowModel: getCoreRowModel(),
-    meta: { onCellEdit, readOnly },
+    meta: { onCellEdit, readOnly, columnDefs: standardCols },
   });
 
   const pinnedColIds = useMemo(
@@ -288,8 +304,8 @@ export default function EditableGrid({
 
   if (data.length === 0) {
     return (
-      <div className="flex-1 flex items-center justify-center text-sm italic" style={{ color: "#7dd3fc" }}>
-        No vessels loaded. Fetch emails on Email Data first.
+      <div className="flex-1 flex items-center justify-center text-sm italic text-center px-4" style={{ color: "#7dd3fc" }}>
+        {emptyMessage}
       </div>
     );
   }
