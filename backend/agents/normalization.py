@@ -1,6 +1,6 @@
 """
 Agent 3 — Normalization
-Ensures every vessel row uses only the 22 standard dynamic_data keys.
+Ensures every vessel row uses only the standard dynamic_data keys.
 """
 import logging
 

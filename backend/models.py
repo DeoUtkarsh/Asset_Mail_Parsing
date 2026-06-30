@@ -32,6 +32,10 @@ class UpdateAttachmentContactsRequest(BaseModel):
     signature_phones: Optional[str] = None
 
 
+class SetAttachmentVerifiedRequest(BaseModel):
+    """Verify or un-verify an attachment (all its vessels follow)."""
+    verified: bool
+
 # ── API response shapes ───────────────────────────────────────────
 
 class AttachmentOut(BaseModel):

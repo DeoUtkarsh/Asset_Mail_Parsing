@@ -74,7 +74,7 @@ function EditableContactCell({ value, onSave, placeholder = "—" }) {
   );
 }
 
-export default function ContactListView() {
+export default function ContactListView({ isActive = false, refreshKey = 0 }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -101,8 +101,8 @@ export default function ContactListView() {
   }, []);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    if (isActive) load();
+  }, [isActive, refreshKey, load]);
 
   const handleSave = useCallback(async (attachmentId, field, value) => {
     setRows((prev) =>

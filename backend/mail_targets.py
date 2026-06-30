@@ -1,8 +1,8 @@
 """
 Hardcoded Gmail fetch profiles.
 
-Each profile matches forwarded broker position-list emails. Fetch picks the
-newest inbox message matching any profile whose Message-ID is not already in DB.
+Each profile matches forwarded broker position-list emails. One Fetch click
+processes every matching inbox message not yet stored (newest first).
 """
 
 from dataclasses import dataclass
@@ -15,11 +15,16 @@ class MailTarget:
     subject_contains: str
 
 
-# Tarun Agarwal forwards vessel open-position digests to the inbox.
+# Forwarded vessel open-position digests in the inbox.
 MAIL_TARGETS: tuple[MailTarget, ...] = (
     MailTarget(
         name="tarun_vessel_open_positions",
         sender="info@icontech.sg",
         subject_contains="Vessel Open Positions List",
+    ),
+    MailTarget(
+        name="sanjib_vessel_open_positions",
+        sender="sanjib@iconshipbrokers.com",
+        subject_contains="Sample of vessel's open positions from vessel owners",
     ),
 )

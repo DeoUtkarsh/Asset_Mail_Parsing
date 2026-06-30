@@ -19,6 +19,7 @@ from agents.vertical_tonnage import (
     looks_like_vertical_tonnage,
     parse_vertical_tonnage_vessels,
 )
+from agents.eta_foc import enrich_vessels_eta_foc
 
 logger = logging.getLogger(__name__)
 
@@ -38,18 +39,19 @@ CRITICAL RULES:
 2. Return ONLY a raw JSON array. No markdown, no explanation.
 3. Each element = ONE vessel.
 4. Use ONLY these keys per vessel (omit a key if truly unknown — do not invent):
-   - vessel_name, imo, call_sign, year_built, vessel_type, cargo_type, dwt_sdwt, cbm, draft, flag
+   - vessel_name, imo, call_sign, year_built, vessel_type, cargo_type, dwt_sdwt, cbm, draft, flag, eta_foc
    - region (primary open port/area, e.g. SINGAPORE, MERAK, FUJAIRAH — never empty; use UNSPECIFIED if unknown)
    - open_location, opening_date, cargo_history_combo, tank_coating
    - sire_date, sire_location, cdi_date, cdi_location, remarks, other_info, q88, status
-5. dwt_sdwt: single string, e.g. "19000 / 19999" or "13000" if only one value.
-6. cargo_history_combo: single string merging last cargoes / L3C, e.g. "CPP / PALMS / CSS".
-7. All keys lowercase with underscores. All values strings.
-8. vessel_name codes like "GS/J19" are valid vessel names.
-9. VERTICAL TABLE FORMAT: If headers appear on separate lines (PORT OPEN, DATES, DWT, CUB/CBM)
+5. eta_foc: from lines like "ETA FOC: around 19TH June 2026 in ECI" — location + date window combined (not open port/date).
+6. dwt_sdwt: single string, e.g. "19000 / 19999" or "13000" if only one value.
+7. cargo_history_combo: single string merging last cargoes / L3C, e.g. "CPP / PALMS / CSS".
+8. All keys lowercase with underscores. All values strings.
+9. vessel_name codes like "GS/J19" are valid vessel names.
+10. VERTICAL TABLE FORMAT: If headers appear on separate lines (PORT OPEN, DATES, DWT, CUB/CBM)
    followed by repeating 5-line groups (vessel name, port, date, dwt, cbm), each group is ONE vessel.
    A normalized table may appear at the top of the text — use it.
-10. If no vessel data at all, return [].
+11. If no vessel data at all, return [].
 
 TEXT TO PARSE:
 {raw_text}
@@ -113,15 +115,15 @@ def _prepare_llm_text(raw_text: str) -> str:
 
 
 def _apply_extraction_fallback(raw_text: str, vessels_data: list[dict]) -> list[dict]:
-    if vessels_data:
-        return vessels_data
-    fallback = parse_vertical_tonnage_vessels(raw_text)
-    if fallback:
-        logger.info(
-            "[Extraction] Vertical tonnage fallback recovered %d vessels",
-            len(fallback),
-        )
-    return fallback
+    if not vessels_data:
+        fallback = parse_vertical_tonnage_vessels(raw_text)
+        if fallback:
+            logger.info(
+                "[Extraction] Vertical tonnage fallback recovered %d vessels",
+                len(fallback),
+            )
+        vessels_data = fallback
+    return enrich_vessels_eta_foc(raw_text, vessels_data)
 
 
 def prepare_attachments_for_retry(attachment_ids: list[str]) -> None:

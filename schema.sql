@@ -88,6 +88,26 @@ ALTER TABLE parent_emails ADD COLUMN IF NOT EXISTS signature_emails TEXT;
 ALTER TABLE parent_emails ADD COLUMN IF NOT EXISTS signature_phones TEXT;
 ALTER TABLE attachments ADD COLUMN IF NOT EXISTS signature_emails TEXT;
 ALTER TABLE attachments ADD COLUMN IF NOT EXISTS signature_phones TEXT;
+ALTER TABLE attachments ADD COLUMN IF NOT EXISTS is_verified BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- ETA FOC column (after FLAG, before REGION) — idempotent via sync_column_definitions on API startup
+INSERT INTO column_definitions (id, header, display_order, read_only, storage)
+VALUES ('eta_foc', 'ETA FOC', 11, FALSE, 'dynamic_data')
+ON CONFLICT (id) DO UPDATE SET header = EXCLUDED.header, display_order = EXCLUDED.display_order;
+UPDATE column_definitions SET display_order = 12 WHERE id = 'region';
+UPDATE column_definitions SET display_order = 13 WHERE id = 'open_location';
+UPDATE column_definitions SET display_order = 14 WHERE id = 'opening_date';
+UPDATE column_definitions SET display_order = 15 WHERE id = 'cargo_history_combo';
+UPDATE column_definitions SET display_order = 16 WHERE id = 'tank_coating';
+UPDATE column_definitions SET display_order = 17 WHERE id = 'sire_date';
+UPDATE column_definitions SET display_order = 18 WHERE id = 'sire_location';
+UPDATE column_definitions SET display_order = 19 WHERE id = 'cdi_date';
+UPDATE column_definitions SET display_order = 20 WHERE id = 'cdi_location';
+UPDATE column_definitions SET display_order = 21 WHERE id = 'remarks';
+UPDATE column_definitions SET display_order = 22 WHERE id = 'other_info';
+UPDATE column_definitions SET display_order = 23 WHERE id = 'q88';
+UPDATE column_definitions SET display_order = 24 WHERE id = 'attachments';
+UPDATE column_definitions SET display_order = 25 WHERE id = 'status';
 
 -- ─────────────────────────────────────────────
 -- Convenience view: vessels with parent context
@@ -106,7 +126,8 @@ SELECT
     pe.subject,
     pe.date_received,
     a.signature_emails,
-    a.signature_phones
+    a.signature_phones,
+    a.is_verified AS attachment_is_verified
 FROM vessels v
 JOIN attachments   a  ON a.id  = v.attachment_id
 JOIN parent_emails pe ON pe.id = a.parent_email_id;

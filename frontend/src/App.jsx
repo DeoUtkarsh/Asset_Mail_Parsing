@@ -13,6 +13,7 @@ export default function App() {
   const [view, setView] = useState(VIEWS.INBOX);
   const [draftEmailId, setDraftEmailId] = useState(null);
   const [vesselRefreshKey, setVesselRefreshKey] = useState(0);
+  const [contactRefreshKey, setContactRefreshKey] = useState(0);
 
   const setEmailForDraft = (emailId) => {
     setDraftEmailId(emailId);
@@ -20,6 +21,10 @@ export default function App() {
 
   const refreshVesselList = () => {
     setVesselRefreshKey((k) => k + 1);
+  };
+
+  const refreshContactList = () => {
+    setContactRefreshKey((k) => k + 1);
   };
 
   return (
@@ -54,29 +59,33 @@ export default function App() {
         </div>
       </header>
 
-      {/* ── Main Content ────────────────────────────────────────── */}
-      <main className="flex-1 overflow-hidden flex flex-col">
-        {view === VIEWS.INBOX && (
-          <div className="flex-1 min-h-0 overflow-hidden">
-            <InboxView
-              onEmailReady={setEmailForDraft}
-              onVesselsUpdated={refreshVesselList}
-            />
-          </div>
-        )}
-        {view === VIEWS.VALIDATION && (
-          <div className="flex-1 min-h-0 overflow-hidden">
-            <ValidationView
-              draftEmailId={draftEmailId}
-              refreshKey={vesselRefreshKey}
-            />
-          </div>
-        )}
-        {view === VIEWS.DRAFT && (
-          <div className="flex-1 min-h-0 overflow-hidden">
-            <ContactListView />
-          </div>
-        )}
+      {/* ── Main Content — keep all tabs mounted so state/SSE survive tab switches ── */}
+      <main className="flex-1 overflow-hidden flex flex-col relative">
+        <div
+          className={`flex-1 min-h-0 overflow-hidden ${view === VIEWS.INBOX ? "" : "hidden"}`}
+        >
+          <InboxView
+            onEmailReady={setEmailForDraft}
+            onVesselsUpdated={refreshVesselList}
+            onContactsUpdated={refreshContactList}
+          />
+        </div>
+        <div
+          className={`flex-1 min-h-0 overflow-hidden ${view === VIEWS.VALIDATION ? "" : "hidden"}`}
+        >
+          <ValidationView
+            draftEmailId={draftEmailId}
+            refreshKey={vesselRefreshKey}
+          />
+        </div>
+        <div
+          className={`flex-1 min-h-0 overflow-hidden ${view === VIEWS.DRAFT ? "" : "hidden"}`}
+        >
+          <ContactListView
+            isActive={view === VIEWS.DRAFT}
+            refreshKey={contactRefreshKey}
+          />
+        </div>
       </main>
     </div>
   );

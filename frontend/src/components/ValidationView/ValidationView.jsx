@@ -196,9 +196,9 @@ export default function ValidationView({ draftEmailId, refreshKey = 0 }) {
                 Generating draft…
               </>
             ) : selectedIds.size > 0 ? (
-              `Generate Draft — ${selectedIds.size} selected`
+              `Draft Email Position List — ${selectedIds.size} selected`
             ) : (
-              `Generate Draft — All ${vessels.length}`
+              `Draft Email Position List`
             )}
           </button>
 
@@ -245,10 +245,12 @@ export default function ValidationView({ draftEmailId, refreshKey = 0 }) {
             data={vessels}
             gridColumns={columnDefs}
             onCellEdit={handleCellEdit}
+            readOnly
             showCheckboxes
             selectedIds={selectedIds}
             onToggleSelect={handleToggleSelect}
             onToggleAll={handleToggleAll}
+            emptyMessage="No verified vessels yet. Verify attachments on Email Data to add them here."
           />
         )}
       </div>

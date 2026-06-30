@@ -25,6 +25,7 @@ STANDARD_DYNAMIC_KEYS: list[str] = [
     "cbm",
     "draft",
     "flag",
+    "eta_foc",
     "open_location",
     "opening_date",
     "cargo_history_combo",
@@ -46,6 +47,7 @@ LEGACY_KEY_HINTS = frozenset({
     "port_name", "position", "area", "open", "name", "type", "imo_type", "tank_type",
     "cubic", "cub", "cargo_tank_capacity", "remark", "comments", "comment", "remarks",
     "sire", "cdi", "open_status", "imo_number", "sdraft", "sdwt_draft", "region",
+    "eta_foc", "eta foc", "eta_foc:",
 })
 
 DEFAULT_COLUMN_DEFINITIONS: list[dict[str, Any]] = [
@@ -60,20 +62,21 @@ DEFAULT_COLUMN_DEFINITIONS: list[dict[str, Any]] = [
     {"id": "cbm", "header": "CBM/CUBIC METER", "display_order": 8, "read_only": False, "storage": "dynamic_data"},
     {"id": "draft", "header": "DRAFT", "display_order": 9, "read_only": False, "storage": "dynamic_data"},
     {"id": "flag", "header": "FLAG", "display_order": 10, "read_only": False, "storage": "dynamic_data"},
-    {"id": "region", "header": "REGION", "display_order": 11, "read_only": False, "storage": "region"},
-    {"id": "open_location", "header": "OPEN LOCATION", "display_order": 12, "read_only": False, "storage": "dynamic_data"},
-    {"id": "opening_date", "header": "OPENING DATE", "display_order": 13, "read_only": False, "storage": "dynamic_data"},
-    {"id": "cargo_history_combo", "header": "CARGO HISTORY/L3C/LAST 3 CARGOES", "display_order": 14, "read_only": False, "storage": "dynamic_data"},
-    {"id": "tank_coating", "header": "TANK COATING", "display_order": 15, "read_only": False, "storage": "dynamic_data"},
-    {"id": "sire_date", "header": "SIRE DATE", "display_order": 16, "read_only": False, "storage": "dynamic_data"},
-    {"id": "sire_location", "header": "SIRE LOCATION", "display_order": 17, "read_only": False, "storage": "dynamic_data"},
-    {"id": "cdi_date", "header": "CDI DATE", "display_order": 18, "read_only": False, "storage": "dynamic_data"},
-    {"id": "cdi_location", "header": "CDI LOCATION", "display_order": 19, "read_only": False, "storage": "dynamic_data"},
-    {"id": "remarks", "header": "REMARKS", "display_order": 20, "read_only": False, "storage": "dynamic_data"},
-    {"id": "other_info", "header": "OTHER INFO", "display_order": 21, "read_only": True, "storage": "dynamic_data"},
-    {"id": "q88", "header": "Q88 AVAILABLE", "display_order": 22, "read_only": False, "storage": "dynamic_data"},
-    {"id": "attachments", "header": "ATTACHMENTS", "display_order": 23, "read_only": True, "storage": "derived"},
-    {"id": "status", "header": "STATUS", "display_order": 24, "read_only": False, "storage": "dynamic_data"},
+    {"id": "eta_foc", "header": "ETA FOC", "display_order": 11, "read_only": False, "storage": "dynamic_data"},
+    {"id": "region", "header": "REGION", "display_order": 12, "read_only": False, "storage": "region"},
+    {"id": "open_location", "header": "OPEN LOCATION", "display_order": 13, "read_only": False, "storage": "dynamic_data"},
+    {"id": "opening_date", "header": "OPENING DATE", "display_order": 14, "read_only": False, "storage": "dynamic_data"},
+    {"id": "cargo_history_combo", "header": "CARGO HISTORY/L3C/LAST 3 CARGOES", "display_order": 15, "read_only": False, "storage": "dynamic_data"},
+    {"id": "tank_coating", "header": "TANK COATING", "display_order": 16, "read_only": False, "storage": "dynamic_data"},
+    {"id": "sire_date", "header": "SIRE DATE", "display_order": 17, "read_only": False, "storage": "dynamic_data"},
+    {"id": "sire_location", "header": "SIRE LOCATION", "display_order": 18, "read_only": False, "storage": "dynamic_data"},
+    {"id": "cdi_date", "header": "CDI DATE", "display_order": 19, "read_only": False, "storage": "dynamic_data"},
+    {"id": "cdi_location", "header": "CDI LOCATION", "display_order": 20, "read_only": False, "storage": "dynamic_data"},
+    {"id": "remarks", "header": "REMARKS", "display_order": 21, "read_only": False, "storage": "dynamic_data"},
+    {"id": "other_info", "header": "OTHER INFO", "display_order": 22, "read_only": True, "storage": "dynamic_data"},
+    {"id": "q88", "header": "Q88 AVAILABLE", "display_order": 23, "read_only": False, "storage": "dynamic_data"},
+    {"id": "attachments", "header": "ATTACHMENTS", "display_order": 24, "read_only": True, "storage": "derived"},
+    {"id": "status", "header": "STATUS", "display_order": 25, "read_only": False, "storage": "dynamic_data"},
 ]
 
 IMO_NUMBER_RE = re.compile(r"^\d{7}$")
@@ -198,14 +201,14 @@ def empty_standard_dynamic_data() -> dict[str, str]:
 
 
 def needs_migration(dd: dict | None) -> bool:
-    """True when dynamic_data is not exactly the 22 standard keys."""
+    """True when dynamic_data is not exactly the standard keys."""
     if not dd:
         return False
     return set(dd.keys()) != set(STANDARD_DYNAMIC_KEYS)
 
 
 def map_raw_to_standard(dd: dict | None, region: str | None = None) -> tuple[dict[str, str], str]:
-    """Map legacy or partial LLM output into the 22 standard dynamic_data keys."""
+    """Map legacy or partial LLM output into the standard dynamic_data keys."""
     src = dd or {}
 
     if not needs_migration(src):
@@ -225,6 +228,7 @@ def map_raw_to_standard(dd: dict | None, region: str | None = None) -> tuple[dic
         "cbm": _first_hit(src, ["cbm", "cubic", "cub", "cargo_tank_capacity"]),
         "draft": _first_hit(src, ["draft", "sdraft", "sdwt_draft"]),
         "flag": _first_hit(src, ["flag"]),
+        "eta_foc": _first_hit(src, ["eta_foc", "eta foc"]),
         "open_location": loc,
         "opening_date": date,
         "cargo_history_combo": _resolve_cargo_history(src),
@@ -246,12 +250,34 @@ def map_raw_to_standard(dd: dict | None, region: str | None = None) -> tuple[dic
 
 
 def ensure_column_definitions(supabase) -> None:
+    """Seed column_definitions when empty (first install)."""
     existing = supabase.table("column_definitions").select("id").limit(1).execute()
     if existing.data:
         return
     for col in DEFAULT_COLUMN_DEFINITIONS:
         supabase.table("column_definitions").insert(dict(col)).execute()
     logger.info("Seeded %d column_definitions rows", len(DEFAULT_COLUMN_DEFINITIONS))
+
+
+def sync_column_definitions(supabase) -> None:
+    """Insert missing columns and refresh display_order from DEFAULT_COLUMN_DEFINITIONS."""
+    rows = supabase.table("column_definitions").select("id").execute()
+    existing_ids = {r["id"] for r in (rows.data or [])}
+    if not existing_ids:
+        ensure_column_definitions(supabase)
+        return
+    for col in DEFAULT_COLUMN_DEFINITIONS:
+        payload = dict(col)
+        if payload["id"] in existing_ids:
+            supabase.table("column_definitions").update({
+                "header": payload["header"],
+                "display_order": payload["display_order"],
+                "read_only": payload["read_only"],
+                "storage": payload["storage"],
+            }).eq("id", payload["id"]).execute()
+        else:
+            supabase.table("column_definitions").insert(payload).execute()
+    logger.info("Synced %d column_definitions rows", len(DEFAULT_COLUMN_DEFINITIONS))
 
 
 def migrate_all_vessel_rows(supabase) -> int:

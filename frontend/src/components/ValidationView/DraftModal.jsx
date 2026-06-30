@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { createPortal } from "react-dom";
 import DraftView from "../DraftView/DraftView";
 
 export default function DraftModal({ open, onClose, html, zones, vessels, columns }) {
@@ -13,7 +14,7 @@ export default function DraftModal({ open, onClose, html, zones, vessels, column
 
   if (!open) return null;
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center"
       style={{ background: "rgba(12, 74, 110, 0.55)" }}
@@ -53,6 +54,7 @@ export default function DraftModal({ open, onClose, html, zones, vessels, column
           />
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

@@ -293,6 +293,57 @@ async def run_parent_signature_extraction(job_id: str, email_id: str) -> None:
         })
 
 
+async def _process_attachment_signature(job_id: str, att: dict) -> bool:
+    """Extract and save signature contacts for one attachment. Returns True if LLM ran."""
+    aid = att.get("id")
+    filename = att.get("filename") or ""
+    raw = att.get("raw_text") or ""
+
+    await sse_manager.send(job_id, "signature_attachment_started", {
+        "attachment_id": aid,
+        "filename": filename,
+    })
+
+    chunk = preprocess_for_signature(raw)
+    if len(chunk) < 30:
+        supabase.table("attachments").update({
+            "signature_emails": None,
+            "signature_phones": None,
+        }).eq("id", aid).execute()
+        await sse_manager.send(job_id, "signature_attachment_done", {
+            "attachment_id": aid,
+            "filename": filename,
+        })
+        return False
+
+    result = await extract_signature_for_chunk(chunk)
+    emails = (result.get("emails") or "").strip()
+    phones = (result.get("phones") or "").strip()
+    supabase.table("attachments").update({
+        "signature_emails": emails or None,
+        "signature_phones": phones or None,
+    }).eq("id", aid).execute()
+
+    await sse_manager.send(job_id, "signature_attachment_done", {
+        "attachment_id": aid,
+        "filename": filename,
+    })
+    return bool(emails or phones)
+
+
+async def run_attachment_signature_extraction(job_id: str, attachment_id: str) -> None:
+    """Signature pass for a single attachment (used by per-row retry)."""
+    row = (
+        supabase.table("attachments")
+        .select("id, filename, raw_text")
+        .eq("id", attachment_id)
+        .execute()
+    )
+    if not row.data:
+        return
+    await _process_attachment_signature(job_id, row.data[0])
+
+
 async def _run_parent_signature_extraction_impl(job_id: str, email_id: str) -> None:
     await sse_manager.send(job_id, "signature_extraction_started", {
         "message": "Extracting signature emails & phones…",
@@ -300,7 +351,7 @@ async def _run_parent_signature_extraction_impl(job_id: str, email_id: str) -> N
 
     rows = (
         supabase.table("attachments")
-        .select("id, filename, raw_text")
+        .select("id, filename, raw_text, status")
         .eq("parent_email_id", email_id)
         .execute()
     )
@@ -310,25 +361,21 @@ async def _run_parent_signature_extraction_impl(job_id: str, email_id: str) -> N
     updated = 0
 
     for att in attachments:
-        aid = att.get("id")
-        raw = att.get("raw_text") or ""
-        chunk = preprocess_for_signature(raw)
-        if len(chunk) < 30:
-            supabase.table("attachments").update({
-                "signature_emails": None,
-                "signature_phones": None,
-            }).eq("id", aid).execute()
+        if att.get("status") == "error":
             continue
-        result = await extract_signature_for_chunk(chunk)
-        emails = (result.get("emails") or "").strip()
-        phones = (result.get("phones") or "").strip()
-        supabase.table("attachments").update({
-            "signature_emails": emails or None,
-            "signature_phones": phones or None,
-        }).eq("id", aid).execute()
-        updated += 1
-        if emails and not preview_first:
-            preview_first = emails[:120] + ("…" if len(emails) > 120 else "")
+        had_contacts = await _process_attachment_signature(job_id, att)
+        if had_contacts:
+            updated += 1
+            if not preview_first:
+                result_emails = (
+                    supabase.table("attachments")
+                    .select("signature_emails")
+                    .eq("id", att.get("id"))
+                    .execute()
+                )
+                emails_val = (result_emails.data[0].get("signature_emails") or "") if result_emails.data else ""
+                if emails_val:
+                    preview_first = emails_val[:120] + ("…" if len(emails_val) > 120 else "")
         await asyncio.sleep(0.15)
 
     logger.info(

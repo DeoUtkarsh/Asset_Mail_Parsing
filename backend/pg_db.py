@@ -78,6 +78,7 @@ ALTER TABLE parent_emails ADD COLUMN IF NOT EXISTS signature_emails TEXT;
 ALTER TABLE parent_emails ADD COLUMN IF NOT EXISTS signature_phones TEXT;
 ALTER TABLE attachments ADD COLUMN IF NOT EXISTS signature_emails TEXT;
 ALTER TABLE attachments ADD COLUMN IF NOT EXISTS signature_phones TEXT;
+ALTER TABLE attachments ADD COLUMN IF NOT EXISTS is_verified BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE TABLE IF NOT EXISTS column_definitions (
     id              TEXT PRIMARY KEY,
     header          TEXT NOT NULL,
@@ -99,7 +100,8 @@ SELECT
     pe.subject,
     pe.date_received,
     a.signature_emails,
-    a.signature_phones
+    a.signature_phones,
+    a.is_verified AS attachment_is_verified
 FROM vessels v
 JOIN attachments a  ON a.id  = v.attachment_id
 JOIN parent_emails pe ON pe.id = a.parent_email_id;

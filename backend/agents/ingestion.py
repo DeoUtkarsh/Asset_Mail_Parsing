@@ -1,6 +1,6 @@
 """
 Agent 1 — Ingestion
-Connects to Gmail, finds the target email, saves parent_email +
+Connects to Gmail, finds target emails, saves parent_email +
 attachment rows to Supabase, and returns the IDs for Agent 2.
 """
 import asyncio
@@ -25,32 +25,8 @@ def _stored_message_ids() -> set[str]:
     }
 
 
-async def run_ingestion(job_id: str) -> dict[str, Any]:
-    """
-    Returns:
-        {
-            "email_id": str,
-            "attachment_ids": [str, ...],
-            "attachment_count": int,
-        }
-    Raises nothing when no new email is found (returns empty ids).
-    """
-    await sse_manager.send(job_id, "ingestion_started", {"message": "Connecting to Gmail…"})
-
-    skip_ids = _stored_message_ids()
-    email_data = await asyncio.to_thread(fetch_new_target_email, skip_ids)
-
-    if email_data is None:
-        await sse_manager.send(job_id, "ingestion_skipped", {
-            "message": "No new forwarded emails to fetch. Matching mails are already in the database.",
-        })
-        return {
-            "email_id": "",
-            "attachment_ids": [],
-            "attachment_count": 0,
-        }
-
-    # ── Insert new parent_email (never re-process existing message_id) ───
+async def _persist_email(job_id: str, email_data: dict) -> dict[str, Any]:
+    """Insert one parent email + attachment rows from IMAP payload."""
     try:
         date_received = datetime.strptime(
             email_data["date"], "%a, %d %b %Y %H:%M:%S %z"
@@ -71,7 +47,6 @@ async def run_ingestion(job_id: str) -> dict[str, Any]:
     )
     email_id: str = inserted.data[0]["id"]
 
-    # ── Apply attachment limit ────────────────────────────────────────────
     all_attachments = email_data["attachments"]
     limit = settings.MAX_ATTACHMENTS
     if limit and limit > 0:
@@ -86,12 +61,13 @@ async def run_ingestion(job_id: str) -> dict[str, Any]:
 
     await sse_manager.send(job_id, "email_saved", {
         "email_id": email_id,
+        "subject": email_data["subject"],
+        "sender": email_data["sender"],
         "attachment_count": len(attachments_to_process),
         "total_found": len(all_attachments),
         "message": f"Processing {len(attachments_to_process)} of {len(all_attachments)} .eml attachments.",
     })
 
-    # ── Insert attachment rows ────────────────────────────────────────────
     attachment_ids: list[str] = []
     for att in attachments_to_process:
         result = (
@@ -117,4 +93,70 @@ async def run_ingestion(job_id: str) -> dict[str, Any]:
         "email_id": email_id,
         "attachment_ids": attachment_ids,
         "attachment_count": len(attachment_ids),
+        "subject": email_data["subject"],
+        "sender": email_data["sender"],
     }
+
+
+async def run_batch_ingestion(job_id: str) -> list[dict[str, Any]]:
+    """
+    Fetch and persist every matching inbox email not yet in the database.
+    Returns a list (newest first) of {email_id, attachment_ids, attachment_count, ...}.
+    """
+    await sse_manager.send(job_id, "ingestion_started", {
+        "message": "Connecting to Gmail…",
+    })
+
+    skip_ids = _stored_message_ids()
+    ingested: list[dict[str, Any]] = []
+
+    while True:
+        email_data = await asyncio.to_thread(fetch_new_target_email, skip_ids)
+        if email_data is None:
+            break
+
+        result = await _persist_email(job_id, email_data)
+        ingested.append(result)
+        skip_ids.add(email_data["message_id"])
+        logger.info(
+            "Ingested parent email %d — %s (%d attachments)",
+            len(ingested),
+            email_data["subject"][:80],
+            result["attachment_count"],
+        )
+
+    if not ingested:
+        await sse_manager.send(job_id, "ingestion_skipped", {
+            "message": "No new forwarded emails to fetch. Matching mails are already in the database.",
+        })
+    else:
+        await sse_manager.send(job_id, "batch_ingestion_complete", {
+            "emails_found": len(ingested),
+            "total_attachments": sum(item["attachment_count"] for item in ingested),
+            "message": f"Found {len(ingested)} new parent email(s). Starting extraction…",
+        })
+
+    return ingested
+
+
+async def run_ingestion(job_id: str) -> dict[str, Any]:
+    """
+    Ingest a single new email (used by LangGraph workflow nodes).
+    Returns empty ids when no new email is found.
+    """
+    await sse_manager.send(job_id, "ingestion_started", {"message": "Connecting to Gmail…"})
+
+    skip_ids = _stored_message_ids()
+    email_data = await asyncio.to_thread(fetch_new_target_email, skip_ids)
+
+    if email_data is None:
+        await sse_manager.send(job_id, "ingestion_skipped", {
+            "message": "No new forwarded emails to fetch. Matching mails are already in the database.",
+        })
+        return {
+            "email_id": "",
+            "attachment_ids": [],
+            "attachment_count": 0,
+        }
+
+    return await _persist_email(job_id, email_data)

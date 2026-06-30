@@ -23,6 +23,10 @@ export const fetchEmails = () => request("POST", "/fetch-emails");
 export const retryExtraction = (emailId) =>
   request("POST", `/emails/${emailId}/retry-extraction`);
 
+/** Retry extraction + signatures for one attachment only. Returns { job_id }. */
+export const retryAttachment = (attId) =>
+  request("POST", `/attachments/${attId}/retry-extraction`);
+
 // ── Inbox data ──────────────────────────────────────────────────────────────
 
 /** Returns all parent emails with attachment summaries. */
@@ -74,6 +78,17 @@ export const deleteVessel = (vesselId) =>
 /** Create a new blank vessel row for manual entry. */
 export const createVessel = (emailId) =>
   request("POST", `/emails/${emailId}/vessels`);
+
+// ── Attachment verification ─────────────────────────────────────────────────
+
+export const setAttachmentVerified = (attId, verified) =>
+  request("PUT", `/attachments/${attId}/verified`, { verified });
+
+export const verifyAllAttachments = () =>
+  request("POST", "/attachments/verify-all");
+
+export const verifyEmailAttachments = (emailId) =>
+  request("POST", `/emails/${emailId}/verify-attachments`);
 
 // ── Phase 2 ─────────────────────────────────────────────────────────────────
 

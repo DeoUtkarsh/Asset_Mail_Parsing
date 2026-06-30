@@ -67,7 +67,7 @@ flowchart TB
    - Frontend opens `GET /api/events/{job_id}` (SSE) for live attachment status.
 
 2. **Phase 1 (LangGraph)** — `workflow.py`  
-   - **Ingestion** — IMAP: find matching parent email, save rows, discover `.eml` / `message/rfc822` parts. **`MAX_ATTACHMENTS`** in `.env` caps how many parts are stored when set to a positive integer; **`0`** keeps **all** parts.  
+   - **Ingestion** — IMAP: find **all** matching parent emails not yet in the DB (newest first) and save them immediately, then run extraction on each. **`MAX_ATTACHMENTS`** in `.env` caps how many parts are stored when set to a positive integer; **`0`** keeps **all** parts.  
    - **Extraction** — For each attachment, call NVIDIA LLM → JSON vessel list → upsert into DB. A **vertical tonnage parser** (`vertical_tonnage.py`) handles broker layouts that use stacked PORT OPEN / DWT blocks; regex fallback runs when the LLM returns zero rows.  
    - **Signature pass** — For each attachment body tail: NVIDIA LLM extracts broker **emails** / **phones**, merged with a **regex fallback**. Values are stored on **`attachments`** (`signature_emails`, `signature_phones`).  
    - **Normalization** — Maps raw LLM keys into the **standard 22-field schema** stored in `vessels.dynamic_data`.

@@ -31,14 +31,29 @@ from sse_starlette.sse import EventSourceResponse
 
 from config import settings
 from database import supabase, get_supabase
-from models import GenerateDraftRequest, UpdateVesselRequest, UpdateAttachmentContactsRequest
+from models import (
+    GenerateDraftRequest,
+    UpdateVesselRequest,
+    UpdateAttachmentContactsRequest,
+    SetAttachmentVerifiedRequest,
+)
 from sse_manager import sse_manager
-from workflow import phase1_graph, phase2_graph
+from workflow import phase2_graph
+from agents.ingestion import run_batch_ingestion
+from agents.extraction import run_extraction
+from agents.normalization import run_normalization
+from agents.signature_extract import run_parent_signature_extraction
 from column_defs import (
     STANDARD_DYNAMIC_KEYS,
     ensure_column_definitions,
+    sync_column_definitions,
     migrate_all_vessel_rows,
     get_column_definitions,
+)
+from verification import (
+    set_attachment_verified,
+    verify_all_eligible,
+    assert_attachment_editable,
 )
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
@@ -105,6 +120,7 @@ async def startup_event():
         db.table("parent_emails").select("id").limit(1).execute()
         logger.info("  PostgreSQL connection: OK ✓")
         ensure_column_definitions(db)
+        sync_column_definitions(db)
         migrated = migrate_all_vessel_rows(db)
         if migrated:
             logger.info("  Vessel data migration: %d rows updated to standard columns", migrated)
@@ -118,32 +134,62 @@ async def startup_event():
 # ── Background runner ────────────────────────────────────────────────────────
 
 async def _run_phase1(job_id: str) -> None:
-    logger.info("[Phase1] Starting job_id=%s", job_id)
-    initial_state = {
-        "job_id": job_id,
-        "email_id": "",
-        "attachment_ids": [],
-        "attachment_count": 0,
-        "superset_columns": [],
-        "error": "",
-    }
+    """Ingest all new parent emails first, then extract/normalize each one."""
+    logger.info("[Phase1] Starting job_id=%s (all new inbox emails)", job_id)
+    final_columns: list = []
+    last_email_id = ""
+
     try:
-        final_state = await phase1_graph.ainvoke(initial_state)
-        if final_state.get("error"):
-            logger.error("[Phase1] Failed: %s", final_state["error"])
-            await sse_manager.send(job_id, "phase1_failed", {"error": final_state["error"]})
-        elif not final_state.get("email_id"):
+        await sse_manager.send(job_id, "phase1_batch_started", {
+            "message": "Scanning inbox for all new matching emails…",
+        })
+
+        ingested = await run_batch_ingestion(job_id)
+        if not ingested:
             logger.info("[Phase1] No new emails to fetch")
             await sse_manager.send(job_id, "phase1_no_new", {
                 "message": "No new forwarded emails to fetch. All matching mails are already in the database.",
             })
-        else:
-            logger.info("[Phase1] Complete — email_id=%s, columns=%d",
-                        final_state["email_id"], len(final_state.get("superset_columns", [])))
-            await sse_manager.send(job_id, "phase1_complete", {
-                "email_id": final_state["email_id"],
-                "columns": final_state.get("superset_columns", []),
+            return
+
+        for idx, item in enumerate(ingested, start=1):
+            email_id = item["email_id"]
+            attachment_ids = item.get("attachment_ids") or []
+
+            try:
+                if attachment_ids:
+                    await run_extraction(job_id, attachment_ids)
+                    await run_parent_signature_extraction(job_id, email_id)
+                cols = await run_normalization(job_id, email_id)
+                if cols:
+                    final_columns = cols
+            except Exception as exc:
+                logger.error("[Phase1] Failed on email_id=%s: %s", email_id, exc)
+                await sse_manager.send(job_id, "phase1_failed", {"error": str(exc)})
+                return
+
+            last_email_id = email_id
+            logger.info(
+                "[Phase1] Parent email %d/%d complete — email_id=%s",
+                idx,
+                len(ingested),
+                email_id,
+            )
+            await sse_manager.send(job_id, "parent_email_done", {
+                "email_id": email_id,
+                "index": idx,
+                "total": len(ingested),
+                "attachment_count": item.get("attachment_count", 0),
+                "subject": item.get("subject", ""),
+                "sender": item.get("sender", ""),
             })
+
+        logger.info("[Phase1] Batch complete — %d parent email(s)", len(ingested))
+        await sse_manager.send(job_id, "phase1_complete", {
+            "email_id": last_email_id,
+            "emails_processed": len(ingested),
+            "columns": final_columns,
+        })
     except Exception as exc:
         logger.exception("[Phase1] Crashed: %s", exc)
         await sse_manager.send(job_id, "phase1_failed", {"error": str(exc)})
@@ -183,6 +229,46 @@ async def _run_retry_extraction(job_id: str, email_id: str) -> None:
         await sse_manager.send(job_id, "phase1_failed", {"error": str(exc)})
 
 
+async def _run_single_attachment_retry(job_id: str, attachment_id: str) -> None:
+    from agents.extraction import prepare_attachments_for_retry, run_extraction
+    from agents.normalization import run_normalization
+    from agents.signature_extract import run_attachment_signature_extraction
+
+    row = (
+        supabase.table("attachments")
+        .select("id, parent_email_id, filename")
+        .eq("id", attachment_id)
+        .execute()
+    )
+    if not row.data:
+        await sse_manager.send(job_id, "retry_no_work", {"message": "Attachment not found."})
+        return
+    att = row.data[0]
+    email_id = att["parent_email_id"]
+    filename = att.get("filename") or ""
+
+    await sse_manager.send(job_id, "retry_started", {
+        "email_id": email_id,
+        "attachment_id": attachment_id,
+        "filename": filename,
+        "message": f"Retrying {filename}…",
+    })
+
+    try:
+        prepare_attachments_for_retry([attachment_id])
+        supabase.table("parent_emails").update({"status": "extracting"}).eq("id", email_id).execute()
+        await run_extraction(job_id, [attachment_id])
+        await run_attachment_signature_extraction(job_id, attachment_id)
+        columns = await run_normalization(job_id, email_id)
+        await sse_manager.send(job_id, "phase1_complete", {
+            "email_id": email_id,
+            "columns": columns,
+        })
+    except Exception as exc:
+        logger.exception("[Retry] Single attachment failed: %s", exc)
+        await sse_manager.send(job_id, "phase1_failed", {"error": str(exc)})
+
+
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 @app.get("/api/health")
@@ -219,6 +305,25 @@ async def retry_extraction(email_id: str, background_tasks: BackgroundTasks):
     return {
         "job_id": job_id,
         "message": "Retry started. Connect to /api/events/{job_id} for updates.",
+    }
+
+
+@app.post("/api/attachments/{att_id}/retry-extraction")
+async def retry_attachment_extraction(att_id: str, background_tasks: BackgroundTasks):
+    logger.info("[API] POST /api/attachments/%s/retry-extraction", att_id)
+    row = (
+        supabase.table("attachments")
+        .select("id")
+        .eq("id", att_id)
+        .execute()
+    )
+    if not row.data:
+        raise HTTPException(status_code=404, detail="Attachment not found.")
+    job_id = str(uuid.uuid4())
+    background_tasks.add_task(_run_single_attachment_retry, job_id, att_id)
+    return {
+        "job_id": job_id,
+        "message": "Attachment retry started. Connect to /api/events/{job_id} for updates.",
     }
 
 
@@ -269,8 +374,9 @@ async def list_emails():
             retry_ids = set(get_retryable_attachment_ids(em["id"]))
             atts = (
                 supabase.table("attachments")
-                .select("id, filename, status, error_message")
+                .select("id, filename, status, error_message, is_verified, created_at")
                 .eq("parent_email_id", em["id"])
+                .order("created_at")
                 .execute()
             )
             att_list = []
@@ -283,9 +389,11 @@ async def list_emails():
                 )
                 att_list.append({
                     **att,
+                    "is_verified": bool(att.get("is_verified")),
                     "vessel_count": len(vrows.data or []),
                     "retry_suggested": att["id"] in retry_ids,
                 })
+            att_list.sort(key=lambda a: (str(a.get("created_at") or ""), (a.get("filename") or "").lower()))
             result.append({**em, "attachments": att_list})
         logger.info("[API] Returning %d emails", len(result))
         return result
@@ -302,6 +410,7 @@ async def get_attachments(email_id: str):
             supabase.table("attachments")
             .select("id, filename, status, error_message, raw_text")
             .eq("parent_email_id", email_id)
+            .order("created_at")
             .execute()
         )
         return rows.data or []
@@ -333,7 +442,7 @@ async def get_raw_text(att_id: str):
         row = (
             supabase.table("attachments")
             .select(
-                "raw_text, filename, signature_emails, signature_phones",
+                "raw_text, filename, signature_emails, signature_phones, status, is_verified",
             )
             .eq("id", att_id)
             .single()
@@ -342,11 +451,20 @@ async def get_raw_text(att_id: str):
         if not row.data:
             raise HTTPException(status_code=404, detail="Attachment not found.")
         att = row.data[0]
+        vrows = (
+            supabase.table("vessels")
+            .select("id")
+            .eq("attachment_id", att_id)
+            .execute()
+        )
         return {
             "raw_text": att.get("raw_text"),
             "filename": att.get("filename"),
             "signature_emails": att.get("signature_emails") or "",
             "signature_phones": att.get("signature_phones") or "",
+            "status": att.get("status"),
+            "is_verified": bool(att.get("is_verified")),
+            "vessel_count": len(vrows.data or []),
         }
     except HTTPException:
         raise
@@ -390,6 +508,7 @@ async def list_all_vessels():
             supabase.table("vessels_full")
             .select(_VESSEL_GRID_COLUMNS)
             .in_("parent_email_id", email_ids)
+            .eq("attachment_is_verified", True)
             .execute()
         )
         data = _sort_vessel_rows(rows.data or [])
@@ -408,6 +527,7 @@ async def get_all_vessels(email_id: str):
             supabase.table("vessels_full")
             .select(_VESSEL_GRID_COLUMNS)
             .eq("parent_email_id", email_id)
+            .eq("attachment_is_verified", True)
             .execute()
         )
         data = _sort_vessel_rows(rows.data or [])
@@ -476,6 +596,39 @@ async def list_contacts():
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@app.put("/api/attachments/{att_id}/verified")
+async def set_attachment_verified_route(att_id: str, body: SetAttachmentVerifiedRequest):
+    logger.info("[API] PUT /api/attachments/%s/verified → %s", att_id, body.verified)
+    try:
+        result = set_attachment_verified(supabase, att_id, body.verified)
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("[API] set_attachment_verified failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/attachments/verify-all")
+async def verify_all_attachments():
+    logger.info("[API] POST /api/attachments/verify-all")
+    try:
+        return verify_all_eligible(supabase, parent_email_id=None)
+    except Exception as exc:
+        logger.error("[API] verify_all_attachments failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/emails/{email_id}/verify-attachments")
+async def verify_email_attachments(email_id: str):
+    logger.info("[API] POST /api/emails/%s/verify-attachments", email_id)
+    try:
+        return verify_all_eligible(supabase, parent_email_id=email_id)
+    except Exception as exc:
+        logger.error("[API] verify_email_attachments failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.put("/api/attachments/{att_id}/contacts")
 async def update_attachment_contacts(att_id: str, body: UpdateAttachmentContactsRequest):
     logger.info("[API] PUT /api/attachments/%s/contacts", att_id)
@@ -514,6 +667,10 @@ async def update_attachment_contacts(att_id: str, body: UpdateAttachmentContacts
 async def update_vessel(vessel_id: str, body: UpdateVesselRequest):
     logger.info("[API] PUT /api/vessels/%s", vessel_id)
     try:
+        try:
+            assert_attachment_editable(supabase, vessel_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
         update_payload: dict[str, Any] = {"dynamic_data": body.dynamic_data}
         if body.region is not None:
             update_payload["region"] = body.region
@@ -537,6 +694,10 @@ async def update_vessel(vessel_id: str, body: UpdateVesselRequest):
 async def delete_vessel(vessel_id: str):
     logger.info("[API] DELETE /api/vessels/%s", vessel_id)
     try:
+        try:
+            assert_attachment_editable(supabase, vessel_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
         supabase.table("vessels").delete().eq("id", vessel_id).execute()
         return {"deleted": vessel_id}
     except Exception as exc:

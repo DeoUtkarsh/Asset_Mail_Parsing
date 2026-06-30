@@ -4,8 +4,10 @@ import {
   getVesselsForAttachment,
   getColumnDefinitions,
   updateVessel,
+  setAttachmentVerified,
 } from "../../services/api";
 import EditableGrid from "../ValidationView/EditableGrid";
+import VerifyButton from "./VerifyButton";
 
 function looksLikeHtml(s) {
   if (!s || s.length < 12) return false;
@@ -34,7 +36,15 @@ function toPreviewPlainText(s) {
     .trim();
 }
 
-export default function PreviewModal({ attachmentId, filename, emailId, onClose }) {
+export default function PreviewModal({
+  attachmentId,
+  filename,
+  emailId,
+  initialVerified = false,
+  vesselCount = 0,
+  onVerifiedChange,
+  onClose,
+}) {
   const [rawText, setRawText] = useState("");
   const [vessels, setVessels] = useState([]);
   const [columnDefs, setColumnDefs] = useState([]);
@@ -42,6 +52,9 @@ export default function PreviewModal({ attachmentId, filename, emailId, onClose 
   const [showRawSource, setShowRawSource] = useState(false);
   const [savedMsg, setSavedMsg] = useState(false);
   const [error, setError] = useState("");
+  const [isVerified, setIsVerified] = useState(initialVerified);
+  const [canVerify, setCanVerify] = useState(false);
+  const [verifyBusy, setVerifyBusy] = useState(false);
   const savedTimer = useRef(null);
   const vesselsRef = useRef(vessels);
 
@@ -59,7 +72,8 @@ export default function PreviewModal({ attachmentId, filename, emailId, onClose 
   useEffect(() => {
     setShowRawSource(false);
     setError("");
-  }, [attachmentId]);
+    setIsVerified(initialVerified);
+  }, [attachmentId, initialVerified]);
 
   useEffect(() => {
     let cancelled = false;
@@ -75,6 +89,9 @@ export default function PreviewModal({ attachmentId, filename, emailId, onClose 
         if (cancelled) return;
         setRawText(rawData.raw_text || "");
         setColumnDefs(colData.columns || []);
+        setIsVerified(Boolean(rawData.is_verified ?? initialVerified));
+        const count = rawData.vessel_count ?? vesselData.length;
+        setCanVerify(rawData.status === "done" && count >= 1);
         const enriched = vesselData.map((v) => ({
           ...v,
           attachment_id: attachmentId,
@@ -94,9 +111,27 @@ export default function PreviewModal({ attachmentId, filename, emailId, onClose 
     }
     load();
     return () => { cancelled = true; };
-  }, [attachmentId, emailId, filename]);
+  }, [attachmentId, emailId, filename, initialVerified]);
+
+  useEffect(() => {
+    setIsVerified(initialVerified);
+  }, [initialVerified]);
+
+  const handleSetVerified = useCallback(async (verified) => {
+    setVerifyBusy(true);
+    try {
+      const result = await setAttachmentVerified(attachmentId, verified);
+      setIsVerified(Boolean(result.is_verified));
+      onVerifiedChange?.();
+    } catch (e) {
+      setError(e.message || "Verify failed.");
+    } finally {
+      setVerifyBusy(false);
+    }
+  }, [attachmentId, onVerifiedChange]);
 
   const handleCellEdit = useCallback(async (rowId, field, value) => {
+    if (isVerified) return;
     if (field === "signature_emails" || field === "signature_phones") return;
     setVessels((prev) =>
       prev.map((v) => {
@@ -111,7 +146,7 @@ export default function PreviewModal({ attachmentId, filename, emailId, onClose 
       ? updateVessel(rowId, vessel.dynamic_data, value)
       : updateVessel(rowId, { ...vessel.dynamic_data, [field]: value }, vessel.region);
     savePromise.then(flashSaved).catch((e) => setError("Failed to save: " + e.message));
-  }, []);
+  }, [isVerified]);
 
   useEffect(() => {
     const onKeyDown = (e) => {
@@ -150,15 +185,23 @@ export default function PreviewModal({ attachmentId, filename, emailId, onClose 
               </span>
             )}
           </div>
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-lg text-lg leading-none font-bold transition-colors"
-            style={{ color: "#7dd3fc", background: "transparent" }}
-            onMouseEnter={e => { e.currentTarget.style.background = "#0284c7"; e.currentTarget.style.color = "#fff"; }}
-            onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "#7dd3fc"; }}
-          >
-            ✕
-          </button>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <VerifyButton
+              verified={isVerified}
+              canVerify={canVerify}
+              busy={verifyBusy}
+              onToggle={() => handleSetVerified(!isVerified)}
+            />
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-lg text-lg leading-none font-bold transition-colors"
+              style={{ color: "#7dd3fc", background: "transparent" }}
+              onMouseEnter={e => { e.currentTarget.style.background = "#0284c7"; e.currentTarget.style.color = "#fff"; }}
+              onMouseLeave={e => { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "#7dd3fc"; }}
+            >
+              ✕
+            </button>
+          </div>
         </div>
 
         {/* ── Body ── */}
@@ -202,6 +245,7 @@ export default function PreviewModal({ attachmentId, filename, emailId, onClose 
                   data={vessels}
                   gridColumns={columnDefs}
                   onCellEdit={handleCellEdit}
+                  readOnly={isVerified}
                   showCheckboxes={false}
                   hideGroupHeaders
                   emptyMessage="No vessels extracted for this attachment. Use Retry Failed on Email Data to re-extract."
@@ -253,8 +297,17 @@ export default function PreviewModal({ attachmentId, filename, emailId, onClose 
         >
           Press <kbd className="px-1.5 py-0.5 rounded text-xs font-mono"
             style={{ background: "#fff", border: "1px solid #bae6fd", color: "#0369a1" }}>Esc</kbd> to close
-          {" · "}
-          Double-click a cell to edit
+          {isVerified ? (
+            <>
+              {" · "}
+              Click ✓ Verified to un-verify and edit again
+            </>
+          ) : (
+            <>
+              {" · "}
+              Double-click a cell to edit
+            </>
+          )}
         </div>
       </div>
     </div>
