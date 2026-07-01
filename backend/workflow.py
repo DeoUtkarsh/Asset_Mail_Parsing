@@ -13,6 +13,7 @@ from agents.extraction import run_extraction
 from agents.normalization import run_normalization
 from agents.drafter import run_drafter
 from agents.signature_extract import run_parent_signature_extraction
+from agents.contact_extract import run_parent_contact_extraction
 
 import logging
 logger = logging.getLogger(__name__)
@@ -62,6 +63,7 @@ async def extraction_node(state: Phase1State) -> Phase1State:
     try:
         await run_extraction(state["job_id"], state["attachment_ids"])
         await run_parent_signature_extraction(state["job_id"], state["email_id"])
+        await run_parent_contact_extraction(state["job_id"], state["email_id"])
         return state
     except Exception as exc:
         return {**state, "error": str(exc)}

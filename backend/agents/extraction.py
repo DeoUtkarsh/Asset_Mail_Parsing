@@ -20,6 +20,8 @@ from agents.vertical_tonnage import (
     parse_vertical_tonnage_vessels,
 )
 from agents.eta_foc import enrich_vessels_eta_foc
+from agents.structured_parsers import is_image_only_attachment
+from agents.vessel_recovery import apply_extraction_fallback, recover_vessels_without_llm
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +78,7 @@ def _retry_delay_seconds(exc: Exception, attempt: int) -> float:
 def get_retryable_attachment_ids(email_id: str) -> list[str]:
     rows = (
         supabase.table("attachments")
-        .select("id, status, raw_text")
+        .select("id, status, raw_text, filename")
         .eq("parent_email_id", email_id)
         .execute()
     )
@@ -97,9 +99,18 @@ def get_retryable_attachment_ids(email_id: str) -> list[str]:
         if vessel_rows.data:
             continue
         raw = row.get("raw_text") or ""
+        fname = row.get("filename") or ""
         if looks_like_vertical_tonnage(raw) and parse_vertical_tonnage_vessels(raw):
             retry_ids.append(row["id"])
+            continue
+        if _rules_would_recover(fname, raw):
+            retry_ids.append(row["id"])
     return retry_ids
+
+
+def _rules_would_recover(filename: str, raw_text: str) -> bool:
+    recovered, _ = recover_vessels_without_llm(filename, raw_text)
+    return bool(recovered)
 
 
 def _prepare_llm_text(raw_text: str) -> str:
@@ -112,18 +123,6 @@ def _prepare_llm_text(raw_text: str) -> str:
             f"{table}\n\n--- ORIGINAL MESSAGE ---\n{body}"
         )
     return body
-
-
-def _apply_extraction_fallback(raw_text: str, vessels_data: list[dict]) -> list[dict]:
-    if not vessels_data:
-        fallback = parse_vertical_tonnage_vessels(raw_text)
-        if fallback:
-            logger.info(
-                "[Extraction] Vertical tonnage fallback recovered %d vessels",
-                len(fallback),
-            )
-        vessels_data = fallback
-    return enrich_vessels_eta_foc(raw_text, vessels_data)
 
 
 def prepare_attachments_for_retry(attachment_ids: list[str]) -> None:
@@ -207,48 +206,79 @@ async def _extract_single_attachment(
             "filename": filename,
         })
 
-        vessels_data: list[dict] = []
-        last_error: str = ""
-        max_attempts = settings.EXTRACTION_MAX_ATTEMPTS
-
-        for attempt in range(1, max_attempts + 1):
-            try:
-                response = await nvidia_client.chat.completions.create(
-                    model=settings.NVIDIA_LLM_MODEL,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "You are a precise shipbroking data extractor. Output only valid JSON.",
-                        },
-                        {
-                            "role": "user",
-                            "content": EXTRACTION_PROMPT.format(
-                                raw_text=_prepare_llm_text(raw_text),
-                            ),
-                        },
-                    ],
-                    temperature=0.05,
-                    max_tokens=8192,
+        if is_image_only_attachment(raw_text, filename):
+            logger.info(
+                "[Extraction] Image-only attachment — skipping LLM: %s",
+                filename,
+            )
+            vessels_data, recovery_source = recover_vessels_without_llm(filename, raw_text)
+            if vessels_data:
+                logger.info(
+                    "[Extraction] Recovered %d vessels from %s via %s (image-only path)",
+                    len(vessels_data),
+                    filename,
+                    recovery_source,
                 )
-                content = response.choices[0].message.content or ""
-                vessels_data = _extract_json_array(content)
-                vessels_data = _apply_extraction_fallback(raw_text, vessels_data)
+            last_error = ""
+        else:
+            vessels_data = []
+            last_error = ""
+            max_attempts = settings.EXTRACTION_MAX_ATTEMPTS
+
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    response = await nvidia_client.chat.completions.create(
+                        model=settings.NVIDIA_LLM_MODEL,
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": "You are a precise shipbroking data extractor. Output only valid JSON.",
+                            },
+                            {
+                                "role": "user",
+                                "content": EXTRACTION_PROMPT.format(
+                                    raw_text=_prepare_llm_text(raw_text),
+                                ),
+                            },
+                        ],
+                        temperature=0.05,
+                        max_tokens=8192,
+                    )
+                    content = response.choices[0].message.content or ""
+                    vessels_data = _extract_json_array(content)
+                    last_error = ""
+                    break
+
+                except Exception as exc:
+                    last_error = str(exc)
+                    logger.warning(
+                        "Extraction attempt %d/%d failed for %s: %s",
+                        attempt, max_attempts, filename, exc,
+                    )
+                    if attempt < max_attempts:
+                        delay = _retry_delay_seconds(exc, attempt)
+                        logger.info("Waiting %.1fs before retry…", delay)
+                        await asyncio.sleep(delay)
+
+            if settings.EXTRACTION_REQUEST_DELAY_SEC > 0:
+                await asyncio.sleep(settings.EXTRACTION_REQUEST_DELAY_SEC)
+
+            vessels_data, recovery_source = apply_extraction_fallback(
+                raw_text, filename, vessels_data,
+            )
+            if vessels_data and recovery_source != "llm":
+                logger.info(
+                    "[Extraction] %s fallback recovered %d vessels from %s",
+                    recovery_source,
+                    len(vessels_data),
+                    filename,
+                )
+            if vessels_data and last_error:
+                logger.info(
+                    "[Extraction] Rule/vertical fallback recovered %s after LLM error",
+                    filename,
+                )
                 last_error = ""
-                break
-
-            except Exception as exc:
-                last_error = str(exc)
-                logger.warning(
-                    "Extraction attempt %d/%d failed for %s: %s",
-                    attempt, max_attempts, filename, exc,
-                )
-                if attempt < max_attempts:
-                    delay = _retry_delay_seconds(exc, attempt)
-                    logger.info("Waiting %.1fs before retry…", delay)
-                    await asyncio.sleep(delay)
-
-        if settings.EXTRACTION_REQUEST_DELAY_SEC > 0:
-            await asyncio.sleep(settings.EXTRACTION_REQUEST_DELAY_SEC)
 
         if last_error and not vessels_data:
             supabase.table("attachments").update({

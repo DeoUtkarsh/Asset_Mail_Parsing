@@ -35,6 +35,9 @@ CREATE TABLE IF NOT EXISTS attachments (
     parent_email_id   UUID NOT NULL REFERENCES parent_emails(id) ON DELETE CASCADE,
     filename          TEXT NOT NULL DEFAULT '',
     raw_text          TEXT,
+    preview_html      TEXT,
+    preview_plain     TEXT,
+    preview_images    JSONB,
     signature_emails  TEXT,
     signature_phones  TEXT,
     status            TEXT NOT NULL DEFAULT 'pending',
@@ -70,6 +73,37 @@ CREATE TABLE IF NOT EXISTS column_definitions (
     read_only       BOOLEAN NOT NULL DEFAULT FALSE,
     storage         TEXT NOT NULL DEFAULT 'dynamic_data'
 );
+
+CREATE TABLE IF NOT EXISTS broker_contacts (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    attachment_id     UUID NOT NULL REFERENCES attachments(id) ON DELETE CASCADE,
+    parent_email_id   UUID REFERENCES parent_emails(id) ON DELETE CASCADE,
+    contact_name      TEXT NOT NULL DEFAULT '',
+    designation       TEXT NOT NULL DEFAULT '',
+    department        TEXT NOT NULL DEFAULT '',
+    company           TEXT NOT NULL DEFAULT '',
+    company_type      TEXT NOT NULL DEFAULT '',
+    vessel_name       TEXT NOT NULL DEFAULT '',
+    email             TEXT NOT NULL DEFAULT '',
+    off_phone         TEXT NOT NULL DEFAULT '',
+    mob_phone         TEXT NOT NULL DEFAULT '',
+    wechat            TEXT NOT NULL DEFAULT '',
+    whatsapp          TEXT NOT NULL DEFAULT '',
+    website_address   TEXT NOT NULL DEFAULT '',
+    office_address    TEXT NOT NULL DEFAULT '',
+    other_info        TEXT NOT NULL DEFAULT '',
+    status            TEXT NOT NULL DEFAULT '',
+    used_fallback     BOOLEAN NOT NULL DEFAULT FALSE,
+    row_order         INT NOT NULL DEFAULT 0,
+    created_at        TIMESTAMPTZ DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_broker_contacts_attachment_id
+    ON broker_contacts(attachment_id);
+
+CREATE INDEX IF NOT EXISTS idx_broker_contacts_parent_email_id
+    ON broker_contacts(parent_email_id);
 """
 
 # After tables exist: add columns on upgraded DBs, then (re)create view (needs those columns).
@@ -79,6 +113,9 @@ ALTER TABLE parent_emails ADD COLUMN IF NOT EXISTS signature_phones TEXT;
 ALTER TABLE attachments ADD COLUMN IF NOT EXISTS signature_emails TEXT;
 ALTER TABLE attachments ADD COLUMN IF NOT EXISTS signature_phones TEXT;
 ALTER TABLE attachments ADD COLUMN IF NOT EXISTS is_verified BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE attachments ADD COLUMN IF NOT EXISTS preview_html TEXT;
+ALTER TABLE attachments ADD COLUMN IF NOT EXISTS preview_plain TEXT;
+ALTER TABLE attachments ADD COLUMN IF NOT EXISTS preview_images JSONB;
 CREATE TABLE IF NOT EXISTS column_definitions (
     id              TEXT PRIMARY KEY,
     header          TEXT NOT NULL,

@@ -1,12 +1,16 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { MapContainer, TileLayer, Marker, Tooltip, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import EditableGrid from "../ValidationView/EditableGrid";
 import { regionToZone, vesselsGroupedByZone } from "../../utils/zoneMapping";
+import { leafletBoundsFromZones } from "../../utils/mapBounds";
 import { getColumnDefinitions } from "../../services/api";
 import { DEFAULT_COLUMNS } from "../../utils/standardColumns";
 import { copyEmailHtml } from "../../utils/copyEmailHtml";
+import { downloadDraftPdf } from "../../utils/downloadDraftPdf";
+import AiSummaryButton from "../AiSummary/AiSummaryButton";
+import { summarizeVessels } from "../../services/api";
 
 const ZONE_COLORS = {
   "STRAITS/SEA":    "#0ea5e9",
@@ -45,13 +49,38 @@ function makePinIcon(count, color) {
   });
 }
 
-function RecenterControl() {
+function FitZoneBounds({ zones }) {
+  const map = useMap();
+
+  useEffect(() => {
+    const points = leafletBoundsFromZones(zones);
+    if (!points?.length) return;
+    if (points.length === 1) {
+      map.setView(points[0], 4);
+      return;
+    }
+    map.fitBounds(L.latLngBounds(points), { padding: [32, 32], maxZoom: 5 });
+  }, [map, zones]);
+
+  return null;
+}
+
+function RecenterControl({ zones }) {
   const map = useMap();
   return (
     <div style={{ position: "absolute", bottom: 10, right: 10, zIndex: 1000 }}>
       <button
-        onClick={() => map.setView([15, 100], 3)}
-        title="Reset view"
+        type="button"
+        onClick={() => {
+          const points = leafletBoundsFromZones(zones);
+          if (!points?.length) return;
+          if (points.length === 1) {
+            map.setView(points[0], 4);
+            return;
+          }
+          map.fitBounds(L.latLngBounds(points), { padding: [32, 32], maxZoom: 5 });
+        }}
+        title="Fit all zone markers"
         style={{
           background: "#fff",
           border: "2px solid rgba(0,0,0,0.2)",
@@ -72,7 +101,16 @@ function RecenterControl() {
   );
 }
 
-function ZoneMap({ zones }) {
+function MapCaptureBridge({ onMapReady }) {
+  const map = useMap();
+  useEffect(() => {
+    onMapReady?.(map);
+    return () => onMapReady?.(null);
+  }, [map, onMapReady]);
+  return null;
+}
+
+function ZoneMap({ zones, onMapReady }) {
   if (!zones || zones.length === 0) return null;
 
   return (
@@ -88,8 +126,11 @@ function ZoneMap({ zones }) {
       <TileLayer
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         attribution="© OpenStreetMap contributors"
+        crossOrigin="anonymous"
       />
-      <RecenterControl />
+      <FitZoneBounds zones={zones} />
+      <MapCaptureBridge onMapReady={onMapReady} />
+      <RecenterControl zones={zones} />
       {zones.map((z) => (
         <Marker
           key={z.name}
@@ -117,7 +158,13 @@ export default function DraftView({
   title = "Contact List",
 }) {
   const [copied, setCopied] = useState(false);
+  const [downloading, setDownloading] = useState(false);
   const [columnDefs, setColumnDefs] = useState(DEFAULT_COLUMNS);
+  const mapWrapperRef = useRef(null);
+  const leafletMapRef = useRef(null);
+  const onMapReady = useCallback((map) => {
+    leafletMapRef.current = map;
+  }, []);
 
   useEffect(() => {
     getColumnDefinitions()
@@ -129,6 +176,12 @@ export default function DraftView({
 
   const gridVessels = useMemo(() => vesselsGroupedByZone(vessels), [vessels]);
 
+  const gridColumns = useMemo(() => {
+    if (!columns?.length) return columnDefs;
+    const allowed = new Set(columns);
+    return columnDefs.filter((c) => allowed.has(c.id));
+  }, [columnDefs, columns]);
+
   const zoneCount = useMemo(
     () => new Set(vessels.map((v) => regionToZone(v.region))).size,
     [vessels]
@@ -136,15 +189,41 @@ export default function DraftView({
 
   const hasGrid = vessels.length > 0;
   const hasContent = !emptyOnly && (hasGrid || Boolean(html));
+  const showPdfDownload = gridColumns.length > 9;
+
+  const fetchDraftSummary = useCallback(
+    () => summarizeVessels(gridVessels.map((v) => v.id)),
+    [gridVessels],
+  );
 
   const handleCopy = async () => {
     try {
-      await copyEmailHtml(html, { vessels: gridVessels });
+      await copyEmailHtml(html, { vessels: gridVessels, columns: gridColumns });
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (e) {
       console.error("Copy failed:", e);
       alert("Could not copy to clipboard. Try again or use Ctrl+V in your email compose window.");
+    }
+  };
+
+  const handleDownloadPdf = async () => {
+    setDownloading(true);
+    try {
+      const stamp = new Date().toISOString().slice(0, 10);
+      await downloadDraftPdf({
+        vessels: gridVessels,
+        columns: gridColumns,
+        zones,
+        mapWrapperEl: mapWrapperRef.current,
+        leafletMap: leafletMapRef.current,
+        filename: `vessel-draft-${stamp}.pdf`,
+      });
+    } catch (e) {
+      console.error("PDF download failed:", e);
+      alert("Could not generate PDF. Try again or use Copy to Clipboard.");
+    } finally {
+      setDownloading(false);
     }
   };
 
@@ -159,18 +238,38 @@ export default function DraftView({
           <h2 className="text-base font-bold text-white tracking-wide">{title}</h2>
         </div>
 
-        <button
-          onClick={handleCopy}
-          disabled={!hasGrid && !html}
-          className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-medium transition-all shadow-sm disabled:opacity-40 disabled:cursor-not-allowed ${
-            copied
-              ? ""
-              : "bg-sky-600 text-white hover:bg-sky-700 disabled:hover:bg-sky-600"
-          }`}
-          style={copied ? { background: "#6ee7b7", color: "#064e3b" } : undefined}
-        >
-          {copied ? "Copied!" : "Copy to Clipboard"}
-        </button>
+        <div className="flex items-center gap-2">
+          {hasGrid && (
+            <AiSummaryButton
+              fetchSummary={fetchDraftSummary}
+              title={`Draft — ${gridVessels.length} vessels`}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all shadow-sm bg-sky-500/30 text-white hover:bg-sky-500/50 disabled:opacity-40 disabled:cursor-not-allowed"
+            />
+          )}
+          {showPdfDownload && (
+            <button
+              type="button"
+              onClick={handleDownloadPdf}
+              disabled={!hasGrid || downloading}
+              className="flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-medium transition-all shadow-sm bg-white text-sky-800 hover:bg-sky-50 disabled:opacity-40 disabled:cursor-not-allowed"
+              style={{ border: "1px solid #bae6fd" }}
+            >
+              {downloading ? "Generating…" : "Download PDF"}
+            </button>
+          )}
+          <button
+            onClick={handleCopy}
+            disabled={!hasGrid && !html}
+            className={`flex items-center gap-2 px-4 py-1.5 rounded-lg text-xs font-medium transition-all shadow-sm disabled:opacity-40 disabled:cursor-not-allowed ${
+              copied
+                ? ""
+                : "bg-sky-600 text-white hover:bg-sky-700 disabled:hover:bg-sky-600"
+            }`}
+            style={copied ? { background: "#6ee7b7", color: "#064e3b" } : undefined}
+          >
+            {copied ? "Copied!" : "Copy to Clipboard"}
+          </button>
+        </div>
       </div>
 
       {emptyOnly ? (
@@ -203,7 +302,7 @@ export default function DraftView({
           <div className="flex gap-2 px-4 py-2 flex-shrink-0" style={{ background: "#e0f2fe", borderBottom: "1px solid #bae6fd" }}>
             <Stat label="Vessels" value={vessels.length} />
             <Stat label="Zones" value={zoneCount} />
-            <Stat label="Columns" value={columnDefs.length} />
+            <Stat label="Columns" value={gridColumns.length} />
           </div>
 
           <div className="flex-1 min-h-0 flex flex-row gap-3 p-3 overflow-hidden">
@@ -212,10 +311,11 @@ export default function DraftView({
             {zones.length > 0 && (
               <div className="flex flex-col gap-2 flex-shrink-0 min-h-0" style={{ width: "28%" }}>
                 <div
-                  className="flex-1 min-h-0 rounded-lg overflow-hidden shadow-sm"
-                  style={{ border: "1px solid #94a3b8" }}
+                  ref={mapWrapperRef}
+                  className="flex-1 min-h-0 rounded-lg overflow-hidden shadow-sm draft-map-capture"
+                  style={{ border: "1px solid #94a3b8", aspectRatio: "16 / 10", minHeight: 160 }}
                 >
-                  <ZoneMap zones={zones} />
+                  <ZoneMap zones={zones} onMapReady={onMapReady} />
                 </div>
                 <div
                   className="flex flex-col gap-1.5 px-3 py-2 rounded-lg flex-shrink-0"
@@ -239,14 +339,15 @@ export default function DraftView({
             <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
               <EditableGrid
                 data={gridVessels}
-                gridColumns={columnDefs}
+                gridColumns={gridColumns}
                 onCellEdit={() => {}}
                 readOnly
                 showCheckboxes={false}
                 groupHeaderIcon={null}
               />
               <p className="text-[10px] text-right pt-1 flex-shrink-0" style={{ color: "#7dd3fc" }}>
-                Copy to Clipboard pastes intro text + standard vessel columns into Gmail/Outlook.
+                Copy uses the same columns as this grid.
+                {showPdfDownload ? " Download PDF (10+ columns) exports map + full table in one flow." : ""}
               </p>
             </div>
           </div>

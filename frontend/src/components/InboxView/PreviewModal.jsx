@@ -8,6 +8,13 @@ import {
 } from "../../services/api";
 import EditableGrid from "../ValidationView/EditableGrid";
 import VerifyButton from "./VerifyButton";
+import AllColumnsToggle from "../ValidationView/AllColumnsToggle";
+import { sanitizeEmailHtml, resolvePreviewMode } from "../../utils/emailPreview";
+import {
+  filterPositionListGridColumns,
+  readPreviewShowAllColumnsPref,
+  writePreviewShowAllColumnsPref,
+} from "../../utils/standardColumns";
 
 function looksLikeHtml(s) {
   if (!s || s.length < 12) return false;
@@ -15,8 +22,8 @@ function looksLikeHtml(s) {
   return head.startsWith("<!doctype") || head.startsWith("<html") || head.startsWith("<meta");
 }
 
-/** Prefer readable text when stored content is HTML (e.g. Word-exported bodies). */
-function toPreviewPlainText(s) {
+/** Fallback when no stored preview fields (older attachments). */
+function toFallbackPlainText(s) {
   if (!s) return "";
   if (!looksLikeHtml(s)) return s;
   try {
@@ -26,7 +33,8 @@ function toPreviewPlainText(s) {
   } catch {
     /* fall through */
   }
-  return s.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, " ")
+  return s
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, " ")
     .replace(/<style\b[^<]*(?:(?!<\/style>)<[^<]*)*<\/style>/gi, " ")
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<\/(p|div|tr|li|h[1-6])>/gi, "\n")
@@ -34,6 +42,94 @@ function toPreviewPlainText(s) {
     .replace(/[ \t\r\f\v]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function OriginalMessagePanel({
+  previewMode,
+  previewHtml,
+  previewPlain,
+  previewImages,
+  rawText,
+  view,
+}) {
+  if (view === "plain" && previewPlain) {
+    return (
+      <pre
+        className="flex-1 min-h-0 overflow-y-auto p-4 text-[12px] font-mono whitespace-pre-wrap leading-relaxed"
+        style={{ background: "#fff", color: "#0c4a6e" }}
+      >
+        {previewPlain}
+      </pre>
+    );
+  }
+
+  if (view === "fallback") {
+    const text = toFallbackPlainText(rawText);
+    return (
+      <pre
+        className="flex-1 min-h-0 overflow-y-auto p-4 text-[12px] font-mono whitespace-pre-wrap leading-relaxed"
+        style={{ background: "#fff", color: "#0c4a6e" }}
+      >
+        {text || (
+          <span style={{ color: "#94a3b8", fontStyle: "italic" }}>
+            No message content available. Re-fetch this email to load a formatted preview.
+          </span>
+        )}
+      </pre>
+    );
+  }
+
+  const showHtml = (previewMode === "html" || previewMode === "html_images") && previewHtml;
+  const showImages =
+    previewMode === "images" ||
+    previewMode === "html_images" ||
+    (previewImages?.length > 0 && !showHtml);
+
+  if (!showHtml && !showImages) {
+    if (previewPlain) {
+      return (
+        <pre
+          className="flex-1 min-h-0 overflow-y-auto p-4 text-[12px] font-mono whitespace-pre-wrap leading-relaxed"
+          style={{ background: "#fff", color: "#0c4a6e" }}
+        >
+          {previewPlain}
+        </pre>
+      );
+    }
+    return (
+      <div className="flex-1 min-h-0 overflow-y-auto p-4 text-sm" style={{ color: "#64748b" }}>
+        No original message to display.
+      </div>
+    );
+  }
+
+  const safeHtml = showHtml ? sanitizeEmailHtml(previewHtml) : "";
+
+  return (
+    <div
+      className="flex-1 min-h-0 overflow-y-auto p-4 email-preview-body"
+      style={{ background: "#fff", color: "#0f172a" }}
+    >
+      {showHtml && (
+        <div
+          className="email-preview-html text-sm leading-relaxed"
+          dangerouslySetInnerHTML={{ __html: safeHtml }}
+        />
+      )}
+      {showImages && previewImages?.length > 0 && (
+        <div className={showHtml ? "mt-4 space-y-3" : "space-y-3"}>
+          {previewImages.map((img, idx) => (
+            <img
+              key={idx}
+              src={img.data_url}
+              alt={`Inline attachment ${idx + 1}`}
+              className="max-w-full h-auto rounded border border-slate-200 shadow-sm"
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function PreviewModal({
@@ -46,22 +142,42 @@ export default function PreviewModal({
   onClose,
 }) {
   const [rawText, setRawText] = useState("");
+  const [previewHtml, setPreviewHtml] = useState("");
+  const [previewPlain, setPreviewPlain] = useState("");
+  const [previewImages, setPreviewImages] = useState([]);
+  const [previewMode, setPreviewMode] = useState("fallback");
   const [vessels, setVessels] = useState([]);
   const [columnDefs, setColumnDefs] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [showRawSource, setShowRawSource] = useState(false);
+  const [messageView, setMessageView] = useState("original");
   const [savedMsg, setSavedMsg] = useState(false);
   const [error, setError] = useState("");
   const [isVerified, setIsVerified] = useState(initialVerified);
   const [canVerify, setCanVerify] = useState(false);
   const [verifyBusy, setVerifyBusy] = useState(false);
+  const [showAllColumns, setShowAllColumns] = useState(() => readPreviewShowAllColumnsPref());
   const savedTimer = useRef(null);
   const vesselsRef = useRef(vessels);
 
   useEffect(() => { vesselsRef.current = vessels; }, [vessels]);
 
-  const plainPreview = useMemo(() => toPreviewPlainText(rawText), [rawText]);
-  const hasHtmlLike = useMemo(() => looksLikeHtml(rawText), [rawText]);
+  const hasPlainToggle = useMemo(
+    () => Boolean(previewPlain) && previewMode !== "plain" && previewMode !== "fallback",
+    [previewPlain, previewMode],
+  );
+
+  const previewGridColumns = useMemo(
+    () => filterPositionListGridColumns(columnDefs, showAllColumns),
+    [columnDefs, showAllColumns],
+  );
+
+  const toggleShowAllColumns = useCallback((next) => {
+    setShowAllColumns((prev) => {
+      const value = typeof next === "boolean" ? next : !prev;
+      writePreviewShowAllColumnsPref(value);
+      return value;
+    });
+  }, []);
 
   const flashSaved = () => {
     setSavedMsg(true);
@@ -70,7 +186,7 @@ export default function PreviewModal({
   };
 
   useEffect(() => {
-    setShowRawSource(false);
+    setMessageView("original");
     setError("");
     setIsVerified(initialVerified);
   }, [attachmentId, initialVerified]);
@@ -88,6 +204,10 @@ export default function PreviewModal({
         ]);
         if (cancelled) return;
         setRawText(rawData.raw_text || "");
+        setPreviewHtml(rawData.preview_html || "");
+        setPreviewPlain(rawData.preview_plain || "");
+        setPreviewImages(Array.isArray(rawData.preview_images) ? rawData.preview_images : []);
+        setPreviewMode(resolvePreviewMode(rawData));
         setColumnDefs(colData.columns || []);
         setIsVerified(Boolean(rawData.is_verified ?? initialVerified));
         const count = rawData.vessel_count ?? vesselData.length;
@@ -156,6 +276,13 @@ export default function PreviewModal({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
 
+  const messageViewLabel =
+    messageView === "plain"
+      ? "Plain text"
+      : previewMode === "fallback"
+        ? "Message text"
+        : "Original message";
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center"
       style={{ background: "rgba(12, 74, 110, 0.55)" }}>
@@ -185,7 +312,15 @@ export default function PreviewModal({
               </span>
             )}
           </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
+          <div className="flex items-center gap-3 flex-shrink-0">
+            {!loading && vessels.length > 0 && columnDefs.length > 0 && (
+              <AllColumnsToggle
+                enabled={showAllColumns}
+                onChange={toggleShowAllColumns}
+                visibleCount={previewGridColumns.length}
+                totalCount={columnDefs.length}
+              />
+            )}
             <VerifyButton
               verified={isVerified}
               canVerify={canVerify}
@@ -240,51 +375,60 @@ export default function PreviewModal({
                 </div>
               )}
 
-              <div className="flex-1 min-h-0 px-1 pb-1 flex flex-col">
+              <div className="flex-1 min-h-0 px-1 pb-1 flex flex-col" style={{ background: "#f0f9ff" }}>
                 <EditableGrid
                   data={vessels}
-                  gridColumns={columnDefs}
+                  gridColumns={previewGridColumns}
                   onCellEdit={handleCellEdit}
                   readOnly={isVerified}
                   showCheckboxes={false}
                   hideGroupHeaders
+                  stretchToFill={!showAllColumns}
+                  isActive
                   emptyMessage="No vessels extracted for this attachment. Use Retry Failed on Email Data to re-extract."
                 />
               </div>
             </div>
 
-            {/* ── Bottom: message text ── */}
+            {/* ── Bottom: original message ── */}
             <div className="flex flex-col min-h-0 flex-1">
               <div
                 className="px-3 py-1 flex-shrink-0 flex items-center justify-between gap-2"
                 style={{ background: "#e0f2fe", borderBottom: "1px solid #bae6fd" }}
               >
                 <span className="text-xs font-bold uppercase tracking-wider" style={{ color: "#0369a1" }}>
-                  {showRawSource ? "Raw source" : "Message text (readable)"}
+                  {messageViewLabel}
                 </span>
-                {hasHtmlLike && rawText && (
-                  <button
-                    type="button"
-                    onClick={() => setShowRawSource((v) => !v)}
-                    className="text-[11px] font-semibold px-2 py-1 rounded-md shrink-0"
-                    style={{
-                      background: "#fff",
-                      color: "#0369a1",
-                      border: "1px solid #bae6fd",
-                    }}
-                  >
-                    {showRawSource ? "Show readable text" : "Show HTML source"}
-                  </button>
-                )}
+                <div className="flex items-center gap-2">
+                  {hasPlainToggle && (
+                    <button
+                      type="button"
+                      onClick={() => setMessageView((v) => (v === "original" ? "plain" : "original"))}
+                      className="text-[11px] font-semibold px-2 py-1 rounded-md shrink-0"
+                      style={{
+                        background: "#fff",
+                        color: "#0369a1",
+                        border: "1px solid #bae6fd",
+                      }}
+                    >
+                      {messageView === "original" ? "Show plain text" : "Show original"}
+                    </button>
+                  )}
+                  {previewMode === "fallback" && rawText && (
+                    <span className="text-[10px]" style={{ color: "#64748b" }}>
+                      Re-fetch for formatted preview
+                    </span>
+                  )}
+                </div>
               </div>
-              <pre
-                className="flex-1 min-h-0 overflow-y-auto p-3 text-[11px] font-mono whitespace-pre-wrap leading-snug"
-                style={{ background: "#fff", color: "#0c4a6e" }}
-              >
-                {(showRawSource ? rawText : plainPreview) || (
-                  <span style={{ color: "#bae6fd", fontStyle: "italic" }}>No text extracted.</span>
-                )}
-              </pre>
+              <OriginalMessagePanel
+                previewMode={previewMode}
+                previewHtml={previewHtml}
+                previewPlain={previewPlain}
+                previewImages={previewImages}
+                rawText={rawText}
+                view={messageView === "plain" ? "plain" : previewMode === "fallback" ? "fallback" : "original"}
+              />
             </div>
 
           </div>

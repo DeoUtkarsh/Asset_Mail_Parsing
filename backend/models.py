@@ -32,9 +32,35 @@ class UpdateAttachmentContactsRequest(BaseModel):
     signature_phones: Optional[str] = None
 
 
+class UpdateBrokerContactRequest(BaseModel):
+    """Update one structured broker contact row."""
+    contact_name: Optional[str] = None
+    designation: Optional[str] = None
+    department: Optional[str] = None
+    company: Optional[str] = None
+    company_type: Optional[str] = None
+    vessel_name: Optional[str] = None
+    email: Optional[str] = None
+    off_phone: Optional[str] = None
+    mob_phone: Optional[str] = None
+    wechat: Optional[str] = None
+    whatsapp: Optional[str] = None
+    website_address: Optional[str] = None
+    office_address: Optional[str] = None
+    other_info: Optional[str] = None
+    status: Optional[str] = None
+
+
 class SetAttachmentVerifiedRequest(BaseModel):
     """Verify or un-verify an attachment (all its vessels follow)."""
     verified: bool
+
+
+class SummaryScopeRequest(BaseModel):
+    """Optional ID filters — empty list means current tab has no rows; omit for all in DB."""
+    email_ids: Optional[list[str]] = None
+    vessel_ids: Optional[list[str]] = None
+    contact_ids: Optional[list[str]] = None
 
 # ── API response shapes ───────────────────────────────────────────
 

@@ -135,23 +135,24 @@ function buildTableHtml(cols, vessels, zoneLabel, startRowNum) {
   };
 }
 
-function buildZoneTables(zoneName, vessels, startRowNum) {
+function buildZoneTables(zoneName, vessels, startRowNum, columns) {
   const count = vessels.length;
   const baseLabel = `${zoneName} (${count} vessel${count !== 1 ? "s" : ""})`;
-  const pin = pinColumns(STANDARD_COLUMNS);
-  const chunks = splitColumnsForEmail(STANDARD_COLUMNS);
+  const cols = columns?.length ? columns : STANDARD_COLUMNS;
+  const pin = pinColumns(cols);
+  const chunks = splitColumnsForEmail(cols);
 
   const html = chunks
-    .map((cols, idx) => {
-      const label = idx === 0 ? baseLabel : continuedLabel(baseLabel, cols, pin);
-      return buildTableHtml(cols, vessels, label, startRowNum).html;
+    .map((chunkCols, idx) => {
+      const label = idx === 0 ? baseLabel : continuedLabel(baseLabel, chunkCols, pin);
+      return buildTableHtml(chunkCols, vessels, label, startRowNum).html;
     })
     .join("");
 
   return { html, nextRowNum: startRowNum + vessels.length };
 }
 
-export function buildContactListEmailHtml(fullHtml, vessels) {
+export function buildContactListEmailHtml(fullHtml, vessels, columns = STANDARD_COLUMNS) {
   const { introHtml, outroHtml } = parseIntroOutroFromDraft(fullHtml);
   const grouped = vesselsGroupedByZone(vessels || []);
 
@@ -165,7 +166,7 @@ export function buildContactListEmailHtml(fullHtml, vessels) {
   let rowNum = 1;
   const tables = ZONE_ORDER.filter((z) => byZone[z]?.length)
     .map((zone) => {
-      const { html, nextRowNum } = buildZoneTables(zone, byZone[zone], rowNum);
+      const { html, nextRowNum } = buildZoneTables(zone, byZone[zone], rowNum, columns);
       rowNum = nextRowNum;
       return html;
     })
@@ -232,10 +233,11 @@ async function writeClipboard(htmlFragment, plainText) {
   });
 }
 
-export async function copyEmailHtml(fullHtml, { vessels = [] } = {}) {
+export async function copyEmailHtml(fullHtml, { vessels = [], columns = null } = {}) {
+  const colDefs = columns?.length ? columns : STANDARD_COLUMNS;
   const htmlFragment =
     vessels.length > 0
-      ? buildContactListEmailHtml(fullHtml, vessels)
+      ? buildContactListEmailHtml(fullHtml, vessels, colDefs)
       : (() => {
           const doc = new DOMParser().parseFromString(fullHtml || "", "text/html");
           return doc.body?.innerHTML || fullHtml || "";

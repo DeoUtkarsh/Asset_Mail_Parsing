@@ -80,6 +80,161 @@ export function hasDisplayValue(val) {
   return true;
 }
 
+/** Always visible in compact mode (_num, vessel name, IMO). */
+export const COMPACT_ALWAYS_VISIBLE_COLUMN_IDS = new Set(["_num", "vessel_name", "imo"]);
+
+/** @deprecated use COMPACT_ALWAYS_VISIBLE_COLUMN_IDS */
+export const PREVIEW_ALWAYS_VISIBLE_COLUMN_IDS = COMPACT_ALWAYS_VISIBLE_COLUMN_IDS;
+
+const PREVIEW_COMPACT_STORAGE_KEY = "emailPreviewCompactColumns";
+const PREVIEW_ALL_COLUMNS_KEY = "emailPreviewShowAllColumns";
+
+export function readPreviewCompactColumnsPref() {
+  return readCompactColumnsPref(PREVIEW_COMPACT_STORAGE_KEY);
+}
+
+export function writePreviewCompactColumnsPref(compact) {
+  writeCompactColumnsPref(PREVIEW_COMPACT_STORAGE_KEY, compact);
+}
+
+export function readPreviewShowAllColumnsPref() {
+  try {
+    const stored = sessionStorage.getItem(PREVIEW_ALL_COLUMNS_KEY);
+    if (stored === null) return false;
+    return stored === "true";
+  } catch {
+    return false;
+  }
+}
+
+export function writePreviewShowAllColumnsPref(showAll) {
+  try {
+    sessionStorage.setItem(PREVIEW_ALL_COLUMNS_KEY, showAll ? "true" : "false");
+  } catch {
+    /* ignore */
+  }
+}
+
+function readCompactColumnsPref(key) {
+  try {
+    const stored = sessionStorage.getItem(key);
+    if (stored === null) return true;
+    return stored === "true";
+  } catch {
+    return true;
+  }
+}
+
+function writeCompactColumnsPref(key, compact) {
+  try {
+    sessionStorage.setItem(key, compact ? "true" : "false");
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Compact grid: hide columns empty on every vessel row.
+ * A column stays if any row has a display value (— / blank / n/a = empty).
+ */
+export function filterCompactGridColumns(
+  vessels,
+  columnDefs,
+  compact,
+  alwaysVisible = COMPACT_ALWAYS_VISIBLE_COLUMN_IDS,
+) {
+  const defs = columnDefs?.length ? columnDefs : DEFAULT_COLUMNS;
+  if (!compact || !vessels?.length) return defs;
+  return defs.filter((col) => {
+    if (alwaysVisible.has(col.id)) return true;
+    return vessels.some((v, i) =>
+      hasDisplayValue(resolveStandardCellValue(v, col.id, i + 1)),
+    );
+  });
+}
+
+/** @deprecated use filterCompactGridColumns */
+export function filterPreviewGridColumns(vessels, columnDefs, compact) {
+  return filterCompactGridColumns(vessels, columnDefs, compact);
+}
+
+/** Vessel Position List default view — fixed summary columns (broker position list layout). */
+export const POSITION_LIST_SUMMARY_COLUMN_ORDER = [
+  "_num",
+  "imo",
+  "vessel_name",
+  "region",
+  "dwt_sdwt",
+  "year_built",
+  "tank_coating",
+  "open_location",
+  "opening_date",
+  "cargo_history_combo",
+];
+
+export const POSITION_LIST_SUMMARY_COLUMN_IDS = new Set(POSITION_LIST_SUMMARY_COLUMN_ORDER);
+
+const POSITION_LIST_ALL_COLUMNS_KEY = "vesselPositionListShowAllColumns";
+
+export function readPositionListShowAllColumnsPref() {
+  try {
+    const stored = sessionStorage.getItem(POSITION_LIST_ALL_COLUMNS_KEY);
+    if (stored === null) return false;
+    return stored === "true";
+  } catch {
+    return false;
+  }
+}
+
+export function writePositionListShowAllColumnsPref(showAll) {
+  try {
+    sessionStorage.setItem(POSITION_LIST_ALL_COLUMNS_KEY, showAll ? "true" : "false");
+  } catch {
+    /* ignore */
+  }
+}
+
+export function filterPositionListGridColumns(columnDefs, showAllColumns) {
+  const defs = columnDefs?.length ? columnDefs : DEFAULT_COLUMNS;
+  const byId = new Map(defs.map((c) => [c.id, c]));
+  const summary = POSITION_LIST_SUMMARY_COLUMN_ORDER.map((id) => byId.get(id)).filter(Boolean);
+  if (!showAllColumns) return summary;
+  const summaryIdSet = POSITION_LIST_SUMMARY_COLUMN_IDS;
+  const rest = defs.filter((col) => !summaryIdSet.has(col.id));
+  return [...summary, ...rest];
+}
+
+/** Always included in draft email tables (no checkbox in grid). */
+export const DRAFT_LOCKED_COLUMN_IDS = new Set(["vessel_name", "region", "imo"]);
+
+/** Grid-only columns — not sent to draft API. */
+export const DRAFT_NON_SELECTABLE_COLUMN_IDS = new Set(["_num", "attachments"]);
+
+export function defaultDraftSelectedColumnIds(columnDefs = DEFAULT_COLUMNS) {
+  const allowed = new Set(columnDefs.map((c) => c.id));
+  return new Set(
+    POSITION_LIST_SUMMARY_COLUMN_ORDER.filter(
+      (id) => allowed.has(id) && !DRAFT_NON_SELECTABLE_COLUMN_IDS.has(id),
+    ),
+  );
+}
+
+export function isDraftColumnSelectable(columnId) {
+  if (columnId === "_select") return false;
+  if (DRAFT_NON_SELECTABLE_COLUMN_IDS.has(columnId)) return false;
+  if (DRAFT_LOCKED_COLUMN_IDS.has(columnId)) return false;
+  return true;
+}
+
+/** Ordered column ids for draft API from user selection + locked columns. */
+export function buildDraftColumnIdList(selectedIds, columnDefs = DEFAULT_COLUMNS) {
+  const defs = columnDefs?.length ? columnDefs : DEFAULT_COLUMNS;
+  const merged = new Set([...selectedIds, ...DRAFT_LOCKED_COLUMN_IDS]);
+  return defs
+    .filter((c) => merged.has(c.id) && !DRAFT_NON_SELECTABLE_COLUMN_IDS.has(c.id))
+    .map((c) => c.id);
+}
+
 export function headerForStandardColumn(id, columnDefs = DEFAULT_COLUMNS) {
   const col = columnDefs.find((c) => c.id === id);
   return col?.header ?? id.replace(/_/g, " ").toUpperCase();

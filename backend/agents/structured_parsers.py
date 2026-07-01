@@ -1,6 +1,6 @@
 """
 Rule-based parsers for broker emails where LLM extraction fails.
-Used for offline backfill and format-specific extraction fallbacks.
+Used as live fallbacks in extraction.py and for format-specific recovery.
 """
 from __future__ import annotations
 
@@ -643,6 +643,242 @@ def parse_kosichang_summary(text: str) -> list[dict[str, Any]]:
     return _dedupe_vessels(vessels)
 
 
+_CLEARLAKE_HEADERS = ["dwt", "draft", "cubic", "imo", "ice", "open", "date", "comment"]
+_CLEARLAKE_SECTION = re.compile(
+    r"^(?:Cont\s*/\s*Med|Americas|WAF/SAF|Middle East|India|Far East|"
+    r"COMMON EMAILS|CPP Report|DPP Report).*$",
+    re.IGNORECASE,
+)
+_IMO_TYPE_RE = re.compile(r"^[\d,\s/]+$")
+
+
+def _clearlake_content_lines(text: str) -> list[str]:
+    """Non-empty lines only (empty cubic/ice cells omitted in flattened text)."""
+    lines: list[str] = []
+    for raw in _strip_email_noise(text).splitlines():
+        line = _clean_cell(raw)
+        if not line:
+            continue
+        if _is_footer_line(line) and lines:
+            break
+        lines.append(line)
+    return lines
+
+
+def _parse_clearlake_fields(fields: list[str]) -> dict[str, str]:
+    """Map 6-8 trailing cells after vessel name."""
+    padded = (fields + [""] * 8)[:8]
+    dwt, draft, cubic, imo, ice, open_loc, open_date, comment = padded
+    if cubic and _IMO_TYPE_RE.match(cubic) and not imo:
+        imo, cubic = cubic, ""
+    if ice and _IMO_TYPE_RE.match(ice) and not imo:
+        imo, ice = ice, ""
+    out: dict[str, str] = {
+        "dwt_sdwt": dwt,
+        "draft": draft,
+        "open_location": open_loc,
+        "opening_date": open_date,
+        "remarks": comment,
+        "region": open_loc,
+    }
+    if cubic and not _IMO_TYPE_RE.match(cubic):
+        out["cbm"] = cubic
+    if imo:
+        out["vessel_type"] = imo
+    return out
+
+
+def _is_dwt_value_line(line: str) -> bool:
+    s = (line or "").replace(",", "").strip()
+    return bool(re.match(r"^[\d.]+$", s))
+
+
+def parse_clearlake_report(text: str) -> list[dict[str, Any]]:
+    """Clearlake CPP/DPP vertical reports (multi-section)."""
+    lines = _clearlake_content_lines(text)
+    vessels: list[dict[str, Any]] = []
+    i = 0
+    while i < len(lines):
+        if (
+            i + 7 < len(lines)
+            and [_norm_header(lines[i + k]) for k in range(8)] == _CLEARLAKE_HEADERS
+        ):
+            i += 8
+            while i < len(lines):
+                if (
+                    i + 7 < len(lines)
+                    and [_norm_header(lines[i + k]) for k in range(8)] == _CLEARLAKE_HEADERS
+                ):
+                    break
+                if _CLEARLAKE_SECTION.match(lines[i]):
+                    i += 1
+                    continue
+                if i + 1 >= len(lines) or not _is_dwt_value_line(lines[i + 1]):
+                    i += 1
+                    continue
+                name = lines[i]
+                if not _looks_like_vessel_name(name):
+                    i += 1
+                    continue
+                i += 1
+                fields: list[str] = []
+                while i < len(lines) and len(fields) < 8:
+                    if _CLEARLAKE_SECTION.match(lines[i]):
+                        break
+                    if (
+                        i + 7 < len(lines)
+                        and [_norm_header(lines[i + k]) for k in range(8)] == _CLEARLAKE_HEADERS
+                    ):
+                        break
+                    if (
+                        i + 1 < len(lines)
+                        and _looks_like_vessel_name(lines[i])
+                        and _is_dwt_value_line(lines[i + 1])
+                        and len(fields) >= 5
+                    ):
+                        break
+                    fields.append(lines[i])
+                    i += 1
+                row = _parse_clearlake_fields(fields)
+                row["vessel_name"] = name
+                vessels.append(row)
+            continue
+        i += 1
+    return _dedupe_vessels(vessels)
+
+
+_PROSE_OPEN_LINE = re.compile(
+    r"(?:M/?T|MV)\s+([A-Za-z0-9 .\-']+?)\s*-\s*Open\s+([^-\n]+?)\s*-\s*([^\n]+)",
+    re.IGNORECASE,
+)
+_PROSE_VESSEL_LINE = re.compile(
+    r"(?:^|\n)\s*(?:M/?T|MV)\s+([A-Za-z0-9 .\-']+)\s*(?:\r?\n|$)",
+    re.IGNORECASE,
+)
+
+
+def parse_prose_single_vessel(text: str) -> list[dict[str, Any]]:
+    """Single-vessel prose blocks (e.g. MT KENJI)."""
+    raw = _strip_email_noise(text)
+    open_m = _PROSE_OPEN_LINE.search(raw)
+
+    vessel_name = ""
+    for m in re.finditer(
+        r"(?:^|\n)\s*(?:M/?T|MV)\s+([A-Za-z0-9 .\-']+?)\s*(?:\r?\n)",
+        raw,
+        re.IGNORECASE,
+    ):
+        candidate = m.group(1).strip()
+        if re.search(r"\bopen\b", candidate, re.I):
+            continue
+        if len(candidate.split()) <= 4:
+            vessel_name = candidate
+            break
+    if not vessel_name and open_m:
+        vessel_name = open_m.group(1).strip()
+    if not vessel_name:
+        return []
+
+    if not vessel_name.upper().startswith(("MT ", "MV ", "M/T ", "M/V ")):
+        vessel_name = f"MT {vessel_name}"
+
+    open_location = open_m.group(2).strip() if open_m else ""
+    opening_date = open_m.group(3).strip() if open_m else ""
+
+    built_m = re.search(r"Built\s+(\d{4})", raw, re.IGNORECASE)
+    type_m = re.search(r"(?:^|\n)\s*(CPP|DPP|CHEM[^\n,]*)", raw, re.IGNORECASE)
+    flag_m = re.search(
+        r"(?:DOUBLE\s+HULL\s*/?\s*)?([A-Z][A-Za-z .\-]+(?:KITTS[^\n,]*|NEVIS[^\n,]*|"
+        r"INDONESIA|SINGAPORE|MALAYSIA|PANAMA|LIBERIA))",
+        raw,
+    )
+    sdwt_m = re.search(r"SDWT\s+([\d,.]+)", raw, re.IGNORECASE)
+    dwt_m = re.search(r"(\d[\d,.]*)\s*DWT", raw, re.IGNORECASE)
+    cbm_m = re.search(r"([\d,.]+)\s*CBM", raw, re.IGNORECASE)
+    imo_m = re.search(r"IMO\s*(?:No\.?|Number)?\s*[:.]?\s*(\d{7})", raw, re.IGNORECASE)
+    open_at_m = re.search(r"Open\s+(?:at\s+)?([^:\n]+):\s*([^\n]+)", raw, re.IGNORECASE)
+
+    if open_at_m and not open_location:
+        open_location = open_at_m.group(1).strip()
+        opening_date = open_at_m.group(2).strip()
+
+    dwt_val = ""
+    if sdwt_m:
+        dwt_val = sdwt_m.group(1).strip()
+    elif dwt_m:
+        dwt_val = dwt_m.group(1).strip()
+
+    if not _looks_like_vessel_name(vessel_name.replace("MT ", "").replace("MV ", "")):
+        return []
+
+    vessel: dict[str, Any] = {
+        "vessel_name": vessel_name,
+        "open_location": open_location,
+        "opening_date": opening_date,
+        "region": open_location or "UNSPECIFIED",
+    }
+    if built_m:
+        vessel["year_built"] = built_m.group(1)
+    if type_m:
+        vessel["vessel_type"] = type_m.group(1).strip()
+    if flag_m:
+        vessel["flag"] = flag_m.group(1).strip()
+    if dwt_val:
+        vessel["dwt_sdwt"] = dwt_val
+    if cbm_m:
+        vessel["cbm"] = cbm_m.group(1).strip()
+    if imo_m:
+        vessel["imo"] = imo_m.group(1)
+
+    return [vessel] if rules_result_trusted([vessel]) else []
+
+
+def parse_comma_dwt_vessel_lines(text: str) -> list[dict[str, Any]]:
+    """Comma-separated one-liners: Mt Tba ,19000 dwt,stst, Jun 06th open north china ..."""
+    raw = _strip_email_noise(text)
+    vessels: list[dict[str, Any]] = []
+    chunks = re.split(r"(?=\b(?:M/?T|MV)\s+)", raw, flags=re.IGNORECASE)
+    patterns = (
+        re.compile(
+            r"(?:M/?T|MV)\s+(.+?)\s*,\s*([\d,]+)\s*dwt\s*,\s*([^,]+)\s*,\s*"
+            r"(.+?)\s+(?:full\s+)?space\s+open\s+([^,\n]+)",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"(?:M/?T|MV)\s+(.+?)\s*,\s*([\d,]+)\s*dwt\s*,\s*([^,]+)\s*,\s*"
+            r"(.+?)\s+open\s+([^,\n]+)",
+            re.IGNORECASE,
+        ),
+    )
+    for chunk in chunks:
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        matched = None
+        for pat in patterns:
+            matched = pat.search(chunk)
+            if matched:
+                break
+        if not matched:
+            continue
+        name = matched.group(1).strip()
+        if name.upper() not in ("TBA",) and not _looks_like_vessel_name(name):
+            continue
+        open_date = matched.group(4).strip().rstrip(",")
+        open_loc = matched.group(5).strip().split(",")[0].strip()
+        display_name = name if name.upper().startswith("MT") else f"MT {name}"
+        vessels.append({
+            "vessel_name": display_name,
+            "dwt_sdwt": matched.group(2).replace(",", "").strip(),
+            "tank_coating": matched.group(3).strip(),
+            "opening_date": open_date,
+            "open_location": open_loc,
+            "region": open_loc,
+            "remarks": chunk[:200],
+        })
+    return _dedupe_vessels(vessels)
+
+
 def _is_header_line(line: str) -> bool:
     norm = _norm_header(line)
     return norm in {"dates", "open", "vessel", "dwtcbm", "imo", "lastcargos", "comments"}
@@ -686,6 +922,7 @@ _PARSER_RULES: list[tuple[str, Callable[[str], list[dict[str, Any]]]]] = [
     ("d'amico", parse_damico_sections),
     ("high pool", parse_damico_sections),
     ("kosichang", parse_kosichang_summary),
+    ("clearlake", parse_clearlake_report),
 ]
 
 
@@ -739,18 +976,51 @@ def parse_with_rules(filename: str, raw_text: str) -> list[dict[str, Any]]:
             result = _dedupe_vessels(parser(text))
             if result:
                 return result
+
+    prose = parse_prose_single_vessel(text)
+    if prose:
+        return prose
+
+    comma = parse_comma_dwt_vessel_lines(text)
+    if comma:
+        return comma
+
+    if "clearlake" not in fn and ("cpp report" in text.lower() or "dpp report" in text.lower()):
+        clearlake = parse_clearlake_report(text)
+        if clearlake:
+            return clearlake
+
     return []
+
+
+def _has_recoverable_vessel_data(raw_text: str, filename: str = "") -> bool:
+    """True when rule/vertical parsers can extract rows from text (not image-only)."""
+    from agents.vertical_tonnage import looks_like_vertical_tonnage, parse_vertical_tonnage_vessels
+
+    raw = raw_text or ""
+    if looks_like_vertical_tonnage(raw) and parse_vertical_tonnage_vessels(raw):
+        return True
+    if parse_with_rules(filename, raw):
+        return True
+    if re.search(r"PORT\s+OPEN", raw, re.I) and re.search(r"\bDWT\b", raw, re.I):
+        if parse_vertical_tonnage_vessels(raw):
+            return True
+    return False
 
 
 def is_image_only_attachment(raw_text: str, filename: str = "") -> bool:
     """True when position list is almost certainly an inline image only."""
     raw = raw_text or ""
     fn = (filename or "").lower()
+
+    if _has_recoverable_vessel_data(raw, filename):
+        return False
+
     if "pioneer tanker" in fn and "find attached" in raw.lower():
         return True
     if len(raw.strip()) < 400:
         return True
-    has_cid = "cid:" in raw
+    has_cid = "cid:" in raw.lower()
     has_vessel_text = _has_structured_vessel_text(raw)
     if has_vessel_text:
         return False
@@ -758,12 +1028,9 @@ def is_image_only_attachment(raw_text: str, filename: str = "") -> bool:
         if "maersk" in fn or "handytankers" in fn:
             return True
         return True
-    # signature-only Hafnia-style
     if re.search(r"best regards", raw, re.I) and not has_vessel_text and len(raw) < 3500:
         if "hafnia" in fn or "bahri" in fn or "ncc" in fn:
             return True
     if "bahri" in fn or ("ncc" in fn and "position list" in fn):
         return not has_vessel_text
-    if has_cid and "maersk tankers" in fn:
-        return True
     return False

@@ -17,3 +17,36 @@
 ::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
 }
+
+/* Email preview — broker HTML tables (Cargill, etc.) */
+.email-preview-html table {
+  border-collapse: collapse;
+  width: 100%;
+  max-width: 100%;
+  margin: 0.5rem 0;
+}
+.email-preview-html th,
+.email-preview-html td {
+  border: 1px solid #cbd5e1;
+  padding: 0.35rem 0.5rem;
+  vertical-align: top;
+  font-size: 0.8125rem;
+}
+.email-preview-html img {
+  max-width: 100%;
+  height: auto;
+}
+.email-preview-html a {
+  color: #0369a1;
+  text-decoration: underline;
+}
+
+/* Draft modal map — wider aspect so tiles are not stretched tall */
+.draft-map-capture .leaflet-container {
+  border-radius: 0.75rem;
+}
+
+.pdf-exporting .leaflet-control-container,
+.pdf-exporting [title="Fit all zone markers"] {
+  display: none !important;
+}

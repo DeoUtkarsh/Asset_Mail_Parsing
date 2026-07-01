@@ -4,7 +4,7 @@ import {
   flexRender,
   createColumnHelper,
 } from "@tanstack/react-table";
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useMemo, useState, useRef, useEffect, useLayoutEffect } from "react";
 import {
   DEFAULT_COLUMNS,
   enrichColumnDefs,
@@ -12,15 +12,16 @@ import {
   editFieldForColumn,
   isVesselNameColumn,
   isRegionColumn,
+  isDraftColumnSelectable,
 } from "../../utils/standardColumns";
 
 const helper = createColumnHelper();
 
 const GRID_BORDER = "1px solid #94a3b8";
 
-/** Checkbox (if shown), SR. NO, IMO, VESSEL NAME stay fixed when scrolling. */
+/** Checkbox (if shown), SR. NO, IMO, VESSEL NAME, REGION stay fixed when scrolling. */
 function buildPinnedOrder(showCheckboxes) {
-  const cols = ["_num", "imo", "vessel_name"];
+  const cols = ["_num", "imo", "vessel_name", "region"];
   return showCheckboxes ? ["_select", ...cols] : cols;
 }
 
@@ -152,8 +153,22 @@ export default function EditableGrid({
   selectedIds = new Set(),
   onToggleSelect,
   onToggleAll,
+  stretchToFill = false,
+  isActive = true,
+  showColumnSelect = false,
+  selectedColumnIds = new Set(),
+  onToggleColumnSelect,
 }) {
   const [hoveredRowId, setHoveredRowId] = useState(null);
+  const [containerWidth, setContainerWidth] = useState(0);
+  const scrollRef = useRef(null);
+
+  const measureContainer = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const w = el.clientWidth;
+    if (w > 0) setContainerWidth(w);
+  };
 
   const groupCounts = useMemo(() => {
     const counts = new Map();
@@ -163,6 +178,23 @@ export default function EditableGrid({
     });
     return counts;
   }, [data]);
+
+  useEffect(() => {
+    if (!stretchToFill) {
+      setContainerWidth(0);
+      return;
+    }
+    const el = scrollRef.current;
+    if (!el) return;
+    measureContainer();
+    const ro = new ResizeObserver(measureContainer);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [stretchToFill, data.length]);
+
+  useLayoutEffect(() => {
+    if (stretchToFill && isActive) measureContainer();
+  }, [stretchToFill, isActive, gridColumns]);
 
   const allSelected = showCheckboxes && data.length > 0 && data.every((v) => selectedIds.has(v.id));
   const someSelected = showCheckboxes && data.some((v) => selectedIds.has(v.id));
@@ -332,10 +364,6 @@ export default function EditableGrid({
   const lastPinnedId = pinnedLeafColumns.at(-1)?.id;
   const pinnedColCount = pinnedLeafColumns.length;
   const scrollColCount = colCount - pinnedColCount;
-  const pinnedTotalWidth = pinnedLeafColumns.reduce(
-    (sum, col) => sum + (col.columnDef.size || 100),
-    0
-  );
   const GROUP_HEADER_BG = "#dbeafe";
 
   const totalTableWidth = leafColumns.reduce(
@@ -346,6 +374,81 @@ export default function EditableGrid({
   const colWidth = (columnId) =>
     leafColumns.find((c) => c.id === columnId)?.columnDef.size || 100;
 
+  const lastStretchableColumnId = (() => {
+    for (let i = leafColumns.length - 1; i >= 0; i -= 1) {
+      if (!pinnedColIds.has(leafColumns[i].id)) return leafColumns[i].id;
+    }
+    return null;
+  })();
+
+  /** Summary view: only the last scrollable column grows — keeps widths stable when toggling all columns. */
+  const effectiveColWidth = (columnId) => {
+    const base = colWidth(columnId);
+    if (
+      !stretchToFill
+      || containerWidth <= 0
+      || totalTableWidth >= containerWidth
+      || columnId !== lastStretchableColumnId
+    ) {
+      return base;
+    }
+    const othersWidth = leafColumns.reduce(
+      (sum, col) => sum + (col.id === lastStretchableColumnId ? 0 : colWidth(col.id)),
+      0,
+    );
+    return Math.max(base, containerWidth - othersWidth);
+  };
+
+  const displayTableWidth =
+    stretchToFill && containerWidth > totalTableWidth ? containerWidth : totalTableWidth;
+
+  const pinnedTotalWidth = pinnedLeafColumns.reduce(
+    (sum, col) => sum + effectiveColWidth(col.id),
+    0,
+  );
+
+  const renderColumnHeader = (header) => {
+    const colId = header.column.id;
+
+    if (colId === "_select") {
+      return (
+        <input
+          type="checkbox"
+          checked={allSelected}
+          ref={(el) => { if (el) el.indeterminate = someSelected && !allSelected; }}
+          onChange={() => onToggleAll?.()}
+          className="cursor-pointer accent-sky-300"
+          title={allSelected ? "Deselect all vessels" : "Select all vessels"}
+        />
+      );
+    }
+
+    const label = typeof header.column.columnDef.header === "string"
+      ? header.column.columnDef.header
+      : standardCols.find((c) => c.id === colId)?.header ?? colId;
+
+    if (!showColumnSelect || !isDraftColumnSelectable(colId)) {
+      return label;
+    }
+
+    const checked = selectedColumnIds.has(colId);
+
+    return (
+      <div className="flex items-start gap-1 min-w-0">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={() => onToggleColumnSelect?.(colId)}
+          className="mt-0.5 shrink-0 cursor-pointer accent-emerald-300"
+          title="Include in draft email"
+        />
+        <span className="truncate leading-tight" title={label}>
+          {label}
+        </span>
+      </div>
+    );
+  };
+
   /** Extends sticky cell paint to the left edge so scrolled content cannot peek through. */
   const pinnedShadows = (columnId, bg) => {
     const parts = [];
@@ -355,9 +458,13 @@ export default function EditableGrid({
   };
 
   const thStyle = (columnId) => {
-    const w = colWidth(columnId);
+    const w = effectiveColWidth(columnId);
     const pinned = pinnedLeftById[columnId];
-    const bg = headerStyle.background;
+    const draftOn =
+      showColumnSelect
+      && isDraftColumnSelectable(columnId)
+      && selectedColumnIds.has(columnId);
+    const bg = draftOn ? "#0284c7" : headerStyle.background;
     return {
       ...headerStyle,
       width: w,
@@ -375,7 +482,7 @@ export default function EditableGrid({
   };
 
   const tdStyle = (columnId, rowBg, rowId) => {
-    const w = colWidth(columnId);
+    const w = effectiveColWidth(columnId);
     const pinned = pinnedLeftById[columnId];
     const isVesselName = columnId === "vessel_name";
     const bg = isVesselName
@@ -403,19 +510,23 @@ export default function EditableGrid({
 
   return (
     <div className="flex flex-col flex-1 min-h-0 rounded-lg shadow-sm" style={{ border: GRID_BORDER, background: "#fff" }}>
-      <div className="overflow-auto flex-1 min-h-0 overscroll-contain bg-white">
+      <div
+        ref={scrollRef}
+        className="overflow-auto flex-1 min-h-0 overscroll-contain"
+        style={{ background: stretchToFill ? "#f0f9ff" : "#fff" }}
+      >
         <table
           className="text-[11px] leading-tight bg-white"
           style={{
             ...tableStyle,
             tableLayout: "fixed",
-            width: totalTableWidth,
-            minWidth: totalTableWidth,
+            width: displayTableWidth,
+            minWidth: displayTableWidth,
           }}
         >
           <colgroup>
             {leafColumns.map((col) => (
-              <col key={col.id} style={{ width: col.columnDef.size || 100 }} />
+              <col key={col.id} style={{ width: effectiveColWidth(col.id) }} />
             ))}
           </colgroup>
           <thead>
@@ -424,11 +535,11 @@ export default function EditableGrid({
                 <th
                   key={header.id}
                   style={thStyle(header.column.id)}
-                  className={`py-1.5 text-[11px] whitespace-nowrap select-none ${
+                  className={`py-1.5 text-[11px] select-none ${
                     header.id === "_select" ? "text-center px-1.5" : header.id === "_num" ? "text-left pr-1.5" : "text-left px-1.5"
-                  }`}
+                  } ${header.id === "_select" || showColumnSelect ? "" : "whitespace-nowrap"}`}
                 >
-                  {flexRender(header.column.columnDef.header, header.getContext())}
+                  {renderColumnHeader(header)}
                 </th>
               ))}
             </tr>

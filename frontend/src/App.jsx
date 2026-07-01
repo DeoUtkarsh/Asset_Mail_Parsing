@@ -76,6 +76,7 @@ export default function App() {
           <ValidationView
             draftEmailId={draftEmailId}
             refreshKey={vesselRefreshKey}
+            isActive={view === VIEWS.VALIDATION}
           />
         </div>
         <div

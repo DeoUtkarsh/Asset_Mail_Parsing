@@ -60,10 +60,14 @@ export const getColumnDefinitions = () => request("GET", "/columns");
 export const getColumns = (emailId) =>
   request("GET", `/emails/${emailId}/columns`);
 
-/** Returns all attachments with parent email context and signature contacts. */
+/** Returns all broker contact rows with parent email + attachment context. */
 export const getContacts = () => request("GET", "/contacts");
 
-/** Update broker emails/phones for one attachment. */
+/** Update one structured broker contact row. */
+export const updateBrokerContact = (contactId, fields) =>
+  request("PUT", `/contacts/${contactId}`, fields);
+
+/** Update broker emails/phones for one attachment (vessel grid). */
 export const updateAttachmentContacts = (attId, { signature_emails, signature_phones }) =>
   request("PUT", `/attachments/${attId}/contacts`, { signature_emails, signature_phones });
 
@@ -103,3 +107,14 @@ export const generateDraft = (emailId, vessels, gridColumns = []) =>
     vessels,
     grid_columns: gridColumns,
   });
+
+// ── AI Summary (fresh on each modal open) ───────────────────────────────────
+
+export const summarizeInbox = (emailIds) =>
+  request("POST", "/summary/inbox", emailIds?.length ? { email_ids: emailIds } : {});
+
+export const summarizeVessels = (vesselIds) =>
+  request("POST", "/summary/vessels", vesselIds?.length ? { vessel_ids: vesselIds } : {});
+
+export const summarizeContacts = (contactIds) =>
+  request("POST", "/summary/contacts", contactIds?.length ? { contact_ids: contactIds } : {});

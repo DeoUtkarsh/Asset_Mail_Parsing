@@ -12,7 +12,8 @@ GET  /api/vessels                     → All vessels across ready parent emails
 GET  /api/emails/{email_id}/vessels     → All vessels for one parent email
 GET  /api/columns                     → Column definitions (id + header) from PostgreSQL
 GET  /api/emails/{email_id}/columns     → Same column list (legacy path)
-GET  /api/contacts                      → All attachments with parent email + signature contacts
+GET  /api/contacts                      → All broker contact rows with parent email context
+PUT  /api/contacts/{contact_id}         → Update one structured broker contact row
 PUT  /api/attachments/{att_id}/contacts → Update signature emails/phones for one attachment
 PUT  /api/vessels/{vessel_id}           → Update a single vessel row (cell edit)
 DELETE /api/vessels/{vessel_id}         → Delete a vessel row
@@ -35,7 +36,14 @@ from models import (
     GenerateDraftRequest,
     UpdateVesselRequest,
     UpdateAttachmentContactsRequest,
+    UpdateBrokerContactRequest,
     SetAttachmentVerifiedRequest,
+    SummaryScopeRequest,
+)
+from agents.contact_extract import (
+    CONTACT_FIELD_KEYS,
+    run_parent_contact_extraction,
+    run_attachment_contact_extraction,
 )
 from sse_manager import sse_manager
 from workflow import phase2_graph
@@ -43,6 +51,7 @@ from agents.ingestion import run_batch_ingestion
 from agents.extraction import run_extraction
 from agents.normalization import run_normalization
 from agents.signature_extract import run_parent_signature_extraction
+from agents.summary import summarize_inbox, summarize_vessels, summarize_contacts
 from column_defs import (
     STANDARD_DYNAMIC_KEYS,
     ensure_column_definitions,
@@ -160,6 +169,7 @@ async def _run_phase1(job_id: str) -> None:
                 if attachment_ids:
                     await run_extraction(job_id, attachment_ids)
                     await run_parent_signature_extraction(job_id, email_id)
+                    await run_parent_contact_extraction(job_id, email_id)
                 cols = await run_normalization(job_id, email_id)
                 if cols:
                     final_columns = cols
@@ -198,7 +208,6 @@ async def _run_phase1(job_id: str) -> None:
 async def _run_retry_extraction(job_id: str, email_id: str) -> None:
     from agents.extraction import get_retryable_attachment_ids, run_retry_extraction_for_email
     from agents.normalization import run_normalization
-    from agents.signature_extract import run_parent_signature_extraction
 
     attachment_ids = get_retryable_attachment_ids(email_id)
     if not attachment_ids:
@@ -219,6 +228,7 @@ async def _run_retry_extraction(job_id: str, email_id: str) -> None:
     try:
         await run_retry_extraction_for_email(job_id, email_id)
         await run_parent_signature_extraction(job_id, email_id)
+        await run_parent_contact_extraction(job_id, email_id)
         columns = await run_normalization(job_id, email_id)
         await sse_manager.send(job_id, "phase1_complete", {
             "email_id": email_id,
@@ -259,6 +269,7 @@ async def _run_single_attachment_retry(job_id: str, attachment_id: str) -> None:
         supabase.table("parent_emails").update({"status": "extracting"}).eq("id", email_id).execute()
         await run_extraction(job_id, [attachment_id])
         await run_attachment_signature_extraction(job_id, attachment_id)
+        await run_attachment_contact_extraction(job_id, attachment_id)
         columns = await run_normalization(job_id, email_id)
         await sse_manager.send(job_id, "phase1_complete", {
             "email_id": email_id,
@@ -442,7 +453,8 @@ async def get_raw_text(att_id: str):
         row = (
             supabase.table("attachments")
             .select(
-                "raw_text, filename, signature_emails, signature_phones, status, is_verified",
+                "raw_text, preview_html, preview_plain, preview_images, "
+                "filename, signature_emails, signature_phones, status, is_verified",
             )
             .eq("id", att_id)
             .single()
@@ -457,8 +469,27 @@ async def get_raw_text(att_id: str):
             .eq("attachment_id", att_id)
             .execute()
         )
+        preview_images = att.get("preview_images")
+        if isinstance(preview_images, str):
+            try:
+                preview_images = json.loads(preview_images)
+            except json.JSONDecodeError:
+                preview_images = None
+        preview_mode = "fallback"
+        if att.get("preview_html"):
+            preview_mode = "html"
+            if preview_images:
+                preview_mode = "html_images"
+        elif preview_images:
+            preview_mode = "images"
+        elif att.get("preview_plain"):
+            preview_mode = "plain"
         return {
             "raw_text": att.get("raw_text"),
+            "preview_html": att.get("preview_html"),
+            "preview_plain": att.get("preview_plain"),
+            "preview_images": preview_images,
+            "preview_mode": preview_mode,
             "filename": att.get("filename"),
             "signature_emails": att.get("signature_emails") or "",
             "signature_phones": att.get("signature_phones") or "",
@@ -560,39 +591,127 @@ async def get_superset_columns(email_id: str):
 
 @app.get("/api/contacts")
 async def list_contacts():
-    """Flat list: one row per attachment with parent email context and signature contacts."""
+    """Flat list: one row per broker contact with parent email + attachment context."""
     logger.info("[API] GET /api/contacts")
     try:
-        emails = (
-            supabase.table("parent_emails")
-            .select("id, subject, sender, date_received")
-            .order("date_received", desc=True)
-            .execute()
-        )
-        result = []
-        for em in emails.data or []:
-            atts = (
-                supabase.table("attachments")
-                .select("id, filename, signature_emails, signature_phones")
-                .eq("parent_email_id", em["id"])
-                .order("filename")
-                .execute()
+        contact_rows = (
+            supabase.table("broker_contacts")
+            .select(
+                "id, attachment_id, parent_email_id, row_order, used_fallback, "
+                + ", ".join(CONTACT_FIELD_KEYS)
             )
-            for att in atts.data or []:
-                result.append({
-                    "attachment_id": att["id"],
-                    "filename": att.get("filename") or "",
-                    "signature_emails": att.get("signature_emails") or "",
-                    "signature_phones": att.get("signature_phones") or "",
-                    "parent_email_id": em["id"],
-                    "subject": em.get("subject") or "",
-                    "sender": em.get("sender") or "",
-                    "date_received": em.get("date_received"),
-                })
-        logger.info("[API] Returning %d contact rows", len(result))
+            .order("row_order")
+            .execute()
+        ).data or []
+
+        parents = {
+            p["id"]: p
+            for p in (
+                supabase.table("parent_emails")
+                .select("id, subject, sender, date_received")
+                .execute()
+            ).data
+            or []
+        }
+        attachments = {
+            a["id"]: a
+            for a in (
+                supabase.table("attachments")
+                .select("id, filename")
+                .execute()
+            ).data
+            or []
+        }
+
+        result = []
+        for row in contact_rows:
+            parent = parents.get(row.get("parent_email_id") or "", {})
+            att = attachments.get(row.get("attachment_id") or "", {})
+            item = {
+                "contact_id": row["id"],
+                "attachment_id": row.get("attachment_id") or "",
+                "filename": att.get("filename") or "",
+                "parent_email_id": row.get("parent_email_id") or "",
+                "subject": parent.get("subject") or "",
+                "sender": parent.get("sender") or "",
+                "date_received": parent.get("date_received"),
+                "used_fallback": bool(row.get("used_fallback")),
+                "row_order": row.get("row_order") or 0,
+            }
+            for key in CONTACT_FIELD_KEYS:
+                item[key] = row.get(key) or ""
+            result.append(item)
+
+        result.sort(
+            key=lambda r: (
+                r.get("date_received") or "",
+                r.get("filename") or "",
+                r.get("row_order") or 0,
+            ),
+            reverse=True,
+        )
+        logger.info("[API] Returning %d broker contact rows", len(result))
         return result
     except Exception as exc:
         logger.error("[API] list_contacts failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.put("/api/contacts/{contact_id}")
+async def update_broker_contact(contact_id: str, body: UpdateBrokerContactRequest):
+    logger.info("[API] PUT /api/contacts/%s", contact_id)
+    try:
+        from datetime import datetime, timezone
+
+        update_payload: dict[str, Any] = {}
+        for key in CONTACT_FIELD_KEYS:
+            val = getattr(body, key, None)
+            if val is not None:
+                update_payload[key] = val.strip()
+        if not update_payload:
+            raise HTTPException(status_code=400, detail="No fields to update.")
+        update_payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+        result = (
+            supabase.table("broker_contacts")
+            .update(update_payload)
+            .eq("id", contact_id)
+            .execute()
+        )
+        if not result.data:
+            raise HTTPException(status_code=404, detail="Contact not found.")
+        row = result.data[0]
+        att = (
+            supabase.table("attachments")
+            .select("filename")
+            .eq("id", row.get("attachment_id") or "")
+            .execute()
+        ).data
+        parent = (
+            supabase.table("parent_emails")
+            .select("subject, sender, date_received")
+            .eq("id", row.get("parent_email_id") or "")
+            .execute()
+        ).data
+        att_row = att[0] if att else {}
+        parent_row = parent[0] if parent else {}
+        out = {
+            "contact_id": row["id"],
+            "attachment_id": row.get("attachment_id") or "",
+            "filename": att_row.get("filename") or "",
+            "parent_email_id": row.get("parent_email_id") or "",
+            "subject": parent_row.get("subject") or "",
+            "sender": parent_row.get("sender") or "",
+            "date_received": parent_row.get("date_received"),
+            "used_fallback": bool(row.get("used_fallback")),
+            "row_order": row.get("row_order") or 0,
+        }
+        for key in CONTACT_FIELD_KEYS:
+            out[key] = row.get(key) or ""
+        return out
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("[API] update_broker_contact failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -742,6 +861,42 @@ async def create_vessel(email_id: str):
     except Exception as exc:
         logger.error("[API] create_vessel failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/summary/inbox")
+async def summary_inbox(body: SummaryScopeRequest | None = None):
+    """Fresh AI summary for Email Data tab (optional email_ids = current page)."""
+    logger.info("[API] POST /api/summary/inbox")
+    try:
+        ids = body.email_ids if body else None
+        return await summarize_inbox(ids)
+    except Exception as exc:
+        logger.error("[API] summary_inbox failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/summary/vessels")
+async def summary_vessels(body: SummaryScopeRequest | None = None):
+    """Fresh AI summary for Vessel Position List (optional vessel_ids = selection)."""
+    logger.info("[API] POST /api/summary/vessels")
+    try:
+        ids = body.vessel_ids if body else None
+        return await summarize_vessels(ids)
+    except Exception as exc:
+        logger.error("[API] summary_vessels failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/summary/contacts")
+async def summary_contacts(body: SummaryScopeRequest | None = None):
+    """Fresh AI summary for Contact List tab."""
+    logger.info("[API] POST /api/summary/contacts")
+    try:
+        ids = body.contact_ids if body else None
+        return await summarize_contacts(ids)
+    except Exception as exc:
+        logger.error("[API] summary_contacts failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.post("/api/generate-draft")

@@ -12,6 +12,8 @@ import { useSSE } from "../../hooks/useSSE";
 import PreviewModal from "./PreviewModal";
 import VerifyButton from "./VerifyButton";
 import VerifyAllButton from "./VerifyAllButton";
+import AiSummaryButton from "../AiSummary/AiSummaryButton";
+import { summarizeInbox } from "../../services/api";
 
 function mapDbStatus(status) {
   if (status === "done") return "downloaded";
@@ -246,6 +248,11 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
   const fetchBusy = fetching;
   const anyJobActive = Boolean(jobId);
 
+  const fetchInboxSummary = useCallback(
+    () => summarizeInbox(emails.map((e) => e.id)),
+    [emails],
+  );
+
   const resolveAttStatus = (att) => {
     if (attStatuses[att.id]) return attStatuses[att.id];
     return mapDbStatus(att.status);
@@ -302,6 +309,11 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
               )}
             </button>
           ) : null}
+          <AiSummaryButton
+            fetchSummary={fetchInboxSummary}
+            title="Email Data — AI Summary"
+            disabled={emails.length === 0 || anyJobActive}
+          />
           <button
             onClick={handleFetch}
             disabled={fetchBusy || anyJobActive}

@@ -15,6 +15,7 @@ from typing import Optional
 from urllib.parse import unquote
 
 from config import settings
+from email_preview import extract_preview_from_bytes, extract_preview_from_message
 from mail_targets import MAIL_TARGETS
 
 logger = logging.getLogger(__name__)
@@ -348,15 +349,20 @@ def _extract_attachments_from_message(target_msg: email.message.Message) -> list
         # Extract raw bytes
         raw_bytes: Optional[bytes] = None
 
+        preview_payload: dict = {}
+        inner_msg: Optional[Message] = None
+
         if content_type == "message/rfc822":
             inner_msg = _get_inner_message_any(part)
             if inner_msg is not None:
                 raw_text = _extract_text_from_message(inner_msg)
+                preview_payload = extract_preview_from_message(inner_msg)
             else:
                 raw = part.get_payload(decode=True)
                 if isinstance(raw, bytes) and raw.strip():
                     try:
                         raw_text = _extract_text_from_bytes(raw)
+                        preview_payload = extract_preview_from_bytes(raw)
                     except Exception:
                         raw_text = ""
                 else:
@@ -368,16 +374,27 @@ def _extract_attachments_from_message(target_msg: email.message.Message) -> list
                 payload_str = part.get_payload()
                 if isinstance(payload_str, str):
                     raw_bytes = payload_str.encode("utf-8", errors="replace")
-            raw_text = _extract_text_from_bytes(raw_bytes) if raw_bytes else ""
+            if raw_bytes:
+                raw_text = _extract_text_from_bytes(raw_bytes)
+                preview_payload = extract_preview_from_bytes(raw_bytes)
+            else:
+                raw_text = ""
 
         filename = _maybe_better_filename(filename, content_type, part, raw_bytes, raw_text)
         filename = _unique_filename(filename, used_filenames)
 
-        if raw_text.strip():
-            if _looks_like_markup(raw_text):
+        if raw_text.strip() or preview_payload.get("preview_html") or preview_payload.get("preview_images"):
+            if raw_text.strip() and _looks_like_markup(raw_text):
                 raw_text = _strip_html_to_text(raw_text)
             logger.info("    Extracted %d chars from '%s'", len(raw_text), filename)
-            attachments.append({"filename": filename, "raw_text": raw_text})
+            attachments.append({
+                "filename": filename,
+                "raw_text": raw_text,
+                "preview_html": preview_payload.get("preview_html"),
+                "preview_plain": preview_payload.get("preview_plain"),
+                "preview_images": preview_payload.get("preview_images"),
+                "preview_mode": preview_payload.get("preview_mode"),
+            })
         else:
             logger.debug("    Part %02d produced empty text — skipping", i)
 

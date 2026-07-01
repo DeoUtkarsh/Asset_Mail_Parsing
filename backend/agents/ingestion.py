@@ -75,7 +75,10 @@ async def _persist_email(job_id: str, email_data: dict) -> dict[str, Any]:
             .insert({
                 "parent_email_id": email_id,
                 "filename": att["filename"],
-                "raw_text": att["raw_text"],
+                "raw_text": att.get("raw_text") or "",
+                "preview_html": att.get("preview_html"),
+                "preview_plain": att.get("preview_plain"),
+                "preview_images": att.get("preview_images"),
                 "status": "pending",
             })
             .execute()
