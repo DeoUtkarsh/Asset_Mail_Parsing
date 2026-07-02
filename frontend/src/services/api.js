@@ -88,12 +88,6 @@ export const createVessel = (emailId) =>
 export const setAttachmentVerified = (attId, verified) =>
   request("PUT", `/attachments/${attId}/verified`, { verified });
 
-export const verifyAllAttachments = () =>
-  request("POST", "/attachments/verify-all");
-
-export const verifyEmailAttachments = (emailId) =>
-  request("POST", `/emails/${emailId}/verify-attachments`);
-
 // ── Phase 2 ─────────────────────────────────────────────────────────────────
 
 /**

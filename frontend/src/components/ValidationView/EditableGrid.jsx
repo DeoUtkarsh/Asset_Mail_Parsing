@@ -45,6 +45,10 @@ function EditableCell({ getValue, row, column, table, vesselName = false, column
   const readOnly = table.options.meta?.readOnly;
   const editField = editFieldForColumn(column.id, columnDefs);
 
+  useEffect(() => {
+    setValue(initial);
+  }, [initial]);
+
   const commit = () => {
     setEditing(false);
     if (value !== initial && editField) {
@@ -94,6 +98,10 @@ function EditableRegionCell({ getValue, row, column, table }) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(initial);
   const readOnly = table.options.meta?.readOnly;
+
+  useEffect(() => {
+    setValue(initial);
+  }, [initial]);
 
   const commit = () => {
     setEditing(false);
@@ -149,7 +157,7 @@ export default function EditableGrid({
   showCheckboxes = false,
   hideGroupHeaders = false,
   groupHeaderIcon = "📎",
-  emptyMessage = "No vessels loaded. Fetch emails on Email Data first.",
+  emptyMessage = "No vessels loaded. Fetch emails on Email Extraction Inbox first.",
   selectedIds = new Set(),
   onToggleSelect,
   onToggleAll,

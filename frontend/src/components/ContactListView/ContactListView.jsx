@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { getContacts, updateBrokerContact, summarizeContacts } from "../../services/api";
 import AiSummaryButton from "../AiSummary/AiSummaryButton";
+import { downloadContactsCsv } from "../../utils/exportContactsCsv";
 
 const GRID_BORDER = "1px solid #94a3b8";
 
@@ -175,6 +176,10 @@ export default function ContactListView({ isActive = false, refreshKey = 0 }) {
     [rows],
   );
 
+  const handleExportCsv = () => {
+    downloadContactsCsv(rows, ALL_COLUMNS, formatDate);
+  };
+
   return (
     <div className="flex flex-col h-full gap-0" style={{ background: "#f0f9ff" }}>
       <div
@@ -185,6 +190,16 @@ export default function ContactListView({ isActive = false, refreshKey = 0 }) {
           <h2 className="text-base font-bold text-white tracking-wide">Contact List</h2>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleExportCsv}
+            disabled={loading || rows.length === 0}
+            className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-medium transition-all shadow-sm bg-white text-sky-800 hover:bg-sky-50 disabled:opacity-40 disabled:cursor-not-allowed"
+            style={{ border: "1px solid #bae6fd" }}
+            title="Download all contacts as CSV (same columns as this table)"
+          >
+            Export CSV
+          </button>
           <AiSummaryButton
             fetchSummary={fetchContactSummary}
             title="Contact List — AI Summary"
@@ -235,7 +250,7 @@ export default function ContactListView({ isActive = false, refreshKey = 0 }) {
               ✉
             </div>
             <p className="text-sm text-center max-w-md px-4" style={{ color: "#7dd3fc" }}>
-              No contacts yet. Fetch emails on the Email Data tab — contacts are extracted
+              No contacts yet. Fetch emails on Email Extraction Inbox — contacts are extracted
               automatically after vessel extraction and signature parsing.
             </p>
           </div>

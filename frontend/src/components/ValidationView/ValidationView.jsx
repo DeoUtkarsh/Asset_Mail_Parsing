@@ -399,7 +399,7 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
             showColumnSelect
             selectedColumnIds={selectedColumnIds}
             onToggleColumnSelect={handleToggleColumnSelect}
-            emptyMessage="No verified vessels yet. Verify attachments on Email Data to add them here."
+            emptyMessage="No verified vessels yet. Verify attachments on Email Extraction Inbox to add them here."
           />
         )}
       </div>

@@ -10,7 +10,7 @@ const VIEWS = {
 };
 
 export default function App() {
-  const [view, setView] = useState(VIEWS.INBOX);
+  const [view, setView] = useState(VIEWS.VALIDATION);
   const [draftEmailId, setDraftEmailId] = useState(null);
   const [vesselRefreshKey, setVesselRefreshKey] = useState(0);
   const [contactRefreshKey, setContactRefreshKey] = useState(0);
@@ -40,8 +40,8 @@ export default function App() {
 
         <div className="ml-auto flex items-center gap-1">
           {[
-            { id: VIEWS.INBOX, label: "Email Data" },
             { id: VIEWS.VALIDATION, label: "Vessel Position List" },
+            { id: VIEWS.INBOX, label: "Email Extraction Inbox" },
             { id: VIEWS.DRAFT, label: "Contact List" },
           ].map(({ id, label }) => (
             <button

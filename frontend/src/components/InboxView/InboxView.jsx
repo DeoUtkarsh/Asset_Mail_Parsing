@@ -5,13 +5,10 @@ import {
   retryExtraction,
   retryAttachment,
   setAttachmentVerified,
-  verifyAllAttachments,
-  verifyEmailAttachments,
 } from "../../services/api";
 import { useSSE } from "../../hooks/useSSE";
 import PreviewModal from "./PreviewModal";
 import VerifyButton from "./VerifyButton";
-import VerifyAllButton from "./VerifyAllButton";
 import AiSummaryButton from "../AiSummary/AiSummaryButton";
 import { summarizeInbox } from "../../services/api";
 
@@ -24,13 +21,6 @@ function mapDbStatus(status) {
 
 function canVerifyAttachment(att, uiStatus) {
   return uiStatus === "downloaded" && (att.vessel_count || 0) >= 1;
-}
-
-function countEligibleToVerify(attachments, resolveStatus) {
-  return (attachments || []).filter((att) => {
-    const status = resolveStatus(att);
-    return canVerifyAttachment(att, status) && !att.is_verified;
-  }).length;
 }
 
 export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUpdated }) {
@@ -219,32 +209,6 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
     }
   };
 
-  const handleVerifyAllGlobal = async () => {
-    try {
-      const result = await verifyAllAttachments();
-      await loadEmails();
-      onVesselsUpdated?.();
-      if (!result.verified_count) {
-        alert("No attachments eligible to verify (need downloaded + at least 1 vessel).");
-      }
-    } catch (e) {
-      alert("Verify all failed: " + e.message);
-    }
-  };
-
-  const handleVerifyAllEmail = async (emailId) => {
-    try {
-      const result = await verifyEmailAttachments(emailId);
-      await loadEmails();
-      onVesselsUpdated?.();
-      if (!result.verified_count) {
-        alert("No attachments eligible to verify in this email.");
-      }
-    } catch (e) {
-      alert("Verify all failed: " + e.message);
-    }
-  };
-
   const fetchBusy = fetching;
   const anyJobActive = Boolean(jobId);
 
@@ -261,17 +225,6 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
   const groupedEmails = emails
     .slice()
     .sort((a, b) => new Date(b.date_received) - new Date(a.date_received));
-
-  const globalEligibleVerify = useMemo(
-    () => groupedEmails.reduce(
-      (sum, em) => sum + countEligibleToVerify(em.attachments, (att) => {
-        if (attStatuses[att.id]) return attStatuses[att.id];
-        return mapDbStatus(att.status);
-      }),
-      0,
-    ),
-    [groupedEmails, attStatuses],
-  );
 
   const fmtDate = (iso) => {
     const d = new Date(iso);
@@ -311,7 +264,7 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
           ) : null}
           <AiSummaryButton
             fetchSummary={fetchInboxSummary}
-            title="Email Data — AI Summary"
+            title="Email Extraction Inbox — AI Summary"
             disabled={emails.length === 0 || anyJobActive}
           />
           <button
@@ -381,16 +334,14 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
                       style={{ color: "#e0f2fe", borderBottom: "2px solid #0284c7" }}>Status</th>
                   <th className="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wide w-44"
                       style={{ color: "#e0f2fe", borderBottom: "2px solid #0284c7" }}>Actions</th>
+                  <th className="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wide w-28"
+                      style={{ color: "#e0f2fe", borderBottom: "2px solid #0284c7" }}
+                      title="Pipeline quality score — review Low before verifying">
+                    Confidence
+                  </th>
                   <th className="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wide w-36"
                       style={{ color: "#e0f2fe", borderBottom: "2px solid #0284c7" }}>
-                    <div className="flex flex-col items-start gap-1.5">
-                      <span>Verified</span>
-                      <VerifyAllButton
-                        label="Verify All Attachments"
-                        disabled={globalEligibleVerify === 0 || anyJobActive}
-                        onClick={handleVerifyAllGlobal}
-                      />
-                    </div>
+                    Verified
                   </th>
                 </tr>
               </thead>
@@ -400,16 +351,12 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
                   const doneCount = attachments.filter(
                     (att) => resolveAttStatus(att) === "downloaded"
                   ).length;
-                  const emailEligibleVerify = countEligibleToVerify(
-                    attachments,
-                    (att) => resolveAttStatus({ ...att, email: em }),
-                  );
                   const verifiedCount = attachments.filter((att) => att.is_verified).length;
 
                   return (
                     <Fragment key={em.id}>
                       <tr style={{ background: "#e0f2fe", borderBottom: "2px solid #7dd3fc" }}>
-                        <td colSpan={6} className="px-4 py-2.5">
+                        <td colSpan={8} className="px-4 py-2.5">
                           <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
                             <span className="font-bold" style={{ color: "#0c4a6e" }}>
                               {fmtDate(em.date_received)} {fmtTime(em.date_received)}
@@ -427,13 +374,6 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
                               )}
                             </span>
                           </div>
-                        </td>
-                        <td className="px-4 py-2.5 align-middle">
-                          <VerifyAllButton
-                            label="Verify all in email"
-                            disabled={emailEligibleVerify === 0 || anyJobActive}
-                            onClick={() => handleVerifyAllEmail(em.id)}
-                          />
                         </td>
                       </tr>
                       {attachments.map((att, i) => {
@@ -528,6 +468,15 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
                               </div>
                             </td>
                             <td className="px-4 py-3 align-top">
+                              <ConfidenceBadge
+                                score={row.confidence_score}
+                                tier={row.confidence_tier}
+                                label={row.confidence_label}
+                                status={status}
+                                reviewed={Boolean(row.manually_reviewed)}
+                              />
+                            </td>
+                            <td className="px-4 py-3 align-top">
                               <VerifyButton
                                 verified={verified}
                                 canVerify={verifyReady}
@@ -558,10 +507,49 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
             loadEmails();
             onVesselsUpdated?.();
           }}
+          onDataChange={() => {
+            loadEmails();
+            onVesselsUpdated?.();
+          }}
           onClose={() => setPreviewAtt(null)}
         />
       )}
     </div>
+  );
+}
+
+function ConfidenceBadge({ score, tier, label, status, reviewed = false }) {
+  if (status === "in_progress" || status === "pending" || tier === "unknown" || score == null) {
+    return (
+      <span className="text-xs" style={{ color: "#94a3b8" }} title="Score available after extraction">
+        —
+      </span>
+    );
+  }
+
+  const styles = {
+    high: { bg: "#dcfce7", color: "#166534", border: "#86efac" },
+    medium: { bg: "#fffbeb", color: "#b45309", border: "#fcd34d" },
+    low: { bg: "#fef2f2", color: "#b91c1c", border: "#fca5a5" },
+  };
+  const s = styles[tier] || styles.low;
+
+  const triageHint =
+    tier === "high"
+      ? "usually safe to verify quickly"
+      : tier === "medium"
+        ? "quick preview recommended"
+        : "inspect before verifying";
+  const reviewedHint = reviewed ? " · Edited in preview (not verified)" : "";
+
+  return (
+    <span
+      className="inline-flex items-center px-2 py-0.5 rounded text-xs font-bold whitespace-nowrap"
+      style={{ background: s.bg, color: s.color, border: `1px solid ${s.border}` }}
+      title={`Pipeline confidence ${score}/100 — ${triageHint}${reviewedHint}`}
+    >
+      {label || `${score} ${tier}`}
+    </span>
   );
 }
 

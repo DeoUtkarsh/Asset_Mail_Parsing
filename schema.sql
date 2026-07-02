@@ -92,6 +92,8 @@ ALTER TABLE parent_emails ADD COLUMN IF NOT EXISTS signature_phones TEXT;
 ALTER TABLE attachments ADD COLUMN IF NOT EXISTS signature_emails TEXT;
 ALTER TABLE attachments ADD COLUMN IF NOT EXISTS signature_phones TEXT;
 ALTER TABLE attachments ADD COLUMN IF NOT EXISTS is_verified BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE attachments ADD COLUMN IF NOT EXISTS manually_reviewed BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE attachments ADD COLUMN IF NOT EXISTS review_baseline JSONB;
 ALTER TABLE attachments ADD COLUMN IF NOT EXISTS preview_html TEXT;
 ALTER TABLE attachments ADD COLUMN IF NOT EXISTS preview_plain TEXT;
 ALTER TABLE attachments ADD COLUMN IF NOT EXISTS preview_images JSONB;

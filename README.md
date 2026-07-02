@@ -1,97 +1,193 @@
 # AI-Powered Shipbroking Email Parser
 
-Agentic pipeline that fetches `.eml` attachments from Gmail (IMAP), extracts vessel position rows with **NVIDIA NIM**, stores everything in **PostgreSQL**, and serves a **three-tab React UI**: Email Data → Vessel Position List → Contact List. Draft output opens in a **map + grid modal** on the validation tab. Real-time progress uses **Server-Sent Events (SSE)**.
+Agentic pipeline that fetches `.eml` attachments from Gmail (IMAP), extracts vessel position rows with **NVIDIA NIM**, recovers missed rows with **rule-based parsers**, extracts **structured broker contacts**, and stores everything in **PostgreSQL**. A **three-tab React UI** covers **Vessel Position List** → **Email Extraction Inbox** → **Contact List**. Draft output opens in a **map + grid modal** with copy, PDF export, and **AI Summary** briefings. Real-time progress uses **Server-Sent Events (SSE)**.
 
 Repository: [github.com/DeoUtkarsh/Asset_Mail_Parsing](https://github.com/DeoUtkarsh/Asset_Mail_Parsing)
 
 ---
 
-## Architecture (high level)
+## Features at a glance
+
+| Area | What you get |
+|------|----------------|
+| **Email Extraction Inbox** | Fetch inbox, live SSE status, attachment preview (HTML/plain/screenshots), **confidence scoring**, per-attachment verify, retry failed extractions |
+| **Vessel extraction** | NVIDIA LLM → JSON vessels; automatic **fallback** via vertical tonnage + broker-specific rule parsers when LLM returns zero rows |
+| **Confidence triage** | Rule-based 0–100 score per attachment (High / Medium / Low); **· Reviewed** label after preview edits; clears when data matches extraction baseline |
+| **Signatures** | Per-attachment broker emails/phones (LLM + regex fallback) on `attachments` |
+| **Contacts** | Per-attachment structured rows in `broker_contacts` (15 fields, LLM + signature fallback, vessel name enrichment); **Export CSV** |
+| **Vessel Position List** | Verified vessels only, 26-column grid, column picker for draft, select-all vessels, **All columns** toggle (summary vs full) |
+| **Draft** | Zone-grouped HTML email, Leaflet map, copy to clipboard (selected columns only), landscape **PDF** when 10+ columns |
+| **AI Summary** | Fresh broker-style briefing + bar charts on every tab (stats computed in code, LLM writes the narrative) |
+
+---
+
+## Architecture
 
 ```mermaid
 flowchart TB
-  subgraph client [Browser — Vite React]
-    UI[Email Data / Vessel Position List / Contact List]
+  subgraph client [Browser — Vite React :5173]
+    T1[Vessel Position List]
+    T2[Email Extraction Inbox]
+    T3[Contact List]
     Modal[Map and Draft modal]
-    SSEHook[useSSE — EventSource]
-    APIjs[api.js — fetch /api/*]
-  end
-
-  subgraph vite [Vite dev server :5173]
-    Proxy["proxy /api → localhost:8000"]
+    AISum[AI Summary modal]
+    SSEHook[useSSE]
+    APIjs[api.js]
   end
 
   subgraph backend [FastAPI :8000]
-    Routes[REST + SSE routes]
-    LG1[LangGraph Phase 1]
-    LG2[LangGraph Phase 2]
-    A1[ingestion]
-    A2[extraction — NVIDIA LLM + vertical parser]
-    A3[normalization]
-    A4[drafter — grid-aligned HTML + intro LLM]
+    Routes[REST + SSE]
+    P1[Phase 1 batch]
+    P2[Phase 2 draft]
+    Ing[ingestion]
+    Ext[extraction]
+    Rec[vessel_recovery]
+    Norm[normalization]
     Sig[signature_extract]
+    Con[contact_extract]
+    Conf[confidence_score]
+    Rev[review_state]
+    Sum[summary]
+    Draft[drafter]
   end
 
-  subgraph external [External services]
+  subgraph external [External]
     Gmail[IMAP Gmail]
-    NIM[NVIDIA NIM API]
+    NIM[NVIDIA NIM]
   end
 
-  subgraph data [Data]
-    PG[(PostgreSQL)]
+  subgraph data [PostgreSQL]
+    PG[(parent_emails · attachments · vessels · broker_contacts · column_definitions)]
   end
 
-  UI --> APIjs
-  UI --> SSEHook
-  Modal --> APIjs
-  APIjs --> Proxy --> Routes
+  T1 & T2 & T3 & Modal & AISum --> APIjs --> Routes
   SSEHook --> Routes
-  Routes --> LG1
-  Routes --> LG2
-  LG1 --> A1 --> A2 --> A3
-  LG1 --> Sig
-  LG2 --> A4
-  A1 --> Gmail
-  A2 --> NIM
-  A4 --> NIM
-  Sig --> NIM
-  A1 & A2 & A3 & A4 & Sig --> PG
+  Routes --> P1 & P2 & Sum
+  P1 --> Ing --> Ext --> Norm
+  Ext --> Rec
+  Ext --> Sig --> Con
+  Routes --> Conf & Rev
+  P2 --> Draft
+  Ing --> Gmail
+  Ext & Sig & Con & Draft & Sum --> NIM
+  Ing & Ext & Norm & Sig & Con & Draft --> PG
 ```
 
 ---
 
-## End-to-end flow
+## End-to-end pipeline
 
-1. **User clicks “Fetch Mails”**  
-   - `POST /api/fetch-emails` starts **Phase 1** in the background and returns a `job_id`.  
-   - Frontend opens `GET /api/events/{job_id}` (SSE) for live attachment status.
+### Phase 1 — Fetch and extract (automatic)
 
-2. **Phase 1 (LangGraph)** — `workflow.py`  
-   - **Ingestion** — IMAP: find **all** matching parent emails not yet in the DB (newest first) and save them immediately, then run extraction on each. **`MAX_ATTACHMENTS`** in `.env` caps how many parts are stored when set to a positive integer; **`0`** keeps **all** parts.  
-   - **Extraction** — For each attachment, call NVIDIA LLM → JSON vessel list → upsert into DB. A **vertical tonnage parser** (`vertical_tonnage.py`) handles broker layouts that use stacked PORT OPEN / DWT blocks; regex fallback runs when the LLM returns zero rows.  
-   - **Signature pass** — For each attachment body tail: NVIDIA LLM extracts broker **emails** / **phones**, merged with a **regex fallback**. Values are stored on **`attachments`** (`signature_emails`, `signature_phones`).  
-   - **Normalization** — Maps raw LLM keys into the **standard 22-field schema** stored in `vessels.dynamic_data`.
+Triggered by **Fetch Emails** (`POST /api/fetch-emails`). Runs in the background; UI listens on `GET /api/events/{job_id}`.
 
-3. **Email Data tab**  
-   - Lists parent emails and attachments with extraction status.  
-   - **Preview** loads raw text + vessels per attachment.  
-   - **Retry extraction** for attachments that failed or returned zero vessels when a vertical layout is detected.
+```
+Ingestion (IMAP)
+  → Extraction (NVIDIA LLM per attachment)
+  → Vessel recovery fallback (if LLM returned 0 rows)
+  → Signature extraction (LLM + regex → attachments.signature_*)
+  → Contact extraction (LLM + signature fallback → broker_contacts)
+  → Normalization (standard column keys in vessels.dynamic_data)
+  → Review baseline saved per attachment (for confidence + Reviewed tracking)
+```
 
-4. **Vessel Position List tab**  
-   - `GET /api/vessels` loads **all vessels** from every validation-ready parent email in the DB (not just the latest fetch).  
-   - `GET /api/columns` returns the **25-column grid schema** from PostgreSQL `column_definitions` (22 dynamic keys + SR. NO, REGION, ATTACHMENTS).  
-   - Double-click cells to edit; changes `PUT /api/vessels/{id}`. Delete key removes selected rows.  
-   - **Checkboxes** — draft can use **selected rows only**; if none selected, **all rows** are sent.  
-   - **Generate Draft** runs Phase 2. On success a **Map & Draft modal** opens automatically (zone map, legend, read-only grid, **Copy to Clipboard**). A green **View Map & Draft** button reopens the modal; it hides while a new draft is generating.
+| Step | Module | Details |
+|------|--------|---------|
+| **Ingestion** | `agents/ingestion.py` | Finds matching parent emails not yet in DB; saves `.eml` parts. `MAX_ATTACHMENTS=0` processes **all** parts; `N>0` caps at first N. |
+| **Extraction** | `agents/extraction.py` | NVIDIA chat → JSON vessel array → insert into `vessels`. Throttled concurrency + retries on rate limits. Saves `review_baseline` on completion. |
+| **Vessel recovery** | `agents/vessel_recovery.py` | If LLM returns empty: **vertical tonnage** parser, then **structured rule parsers** (`structured_parsers.py`). Same logic on every fetch and retry. |
+| **Signatures** | `agents/signature_extract.py` | Broker emails/phones from attachment body tail; regex fills gaps. |
+| **Contacts** | `agents/contact_extract.py` | Up to 15 structured fields per contact row; signature fallback; vessel name enrichment. Runs after signatures on fetch, email retry, and single-attachment retry. |
+| **Normalization** | `agents/normalization.py` | Maps raw keys to standard schema; sets parent email `ready_for_validation`. |
+| **Confidence** | `agents/confidence_score.py` | Rule-based 0–100 score per attachment for inbox triage (computed on `GET /api/emails`). |
+| **Review state** | `agents/review_state.py` | Tracks `manually_reviewed` vs extraction `review_baseline` when users edit cells in Preview. |
 
-5. **Draft generation**  
-   - `POST /api/generate-draft` with `{ email_id, vessels, grid_columns }` starts **Phase 2**, returns `job_id`.  
-   - SSE delivers `drafting_done` with `draft_html` + `zones` (lat/lng/count per broad zone).  
-   - **Drafter** groups rows by mapped zone (e.g. STRAITS/SEA, FAR EAST), builds **HTML tables with the same columns as the grid**. A short **intro paragraph** is generated via LLM.
+**Retry paths** (same contact + recovery logic):
 
-6. **Contact List tab**  
-   - `GET /api/contacts` — one row per attachment: date received, subject, sender, filename, broker emails, broker phones.  
-   - Double-click **Broker emails** or **Broker phones** to edit; saves via `PUT /api/attachments/{id}/contacts`.
+- `POST /api/emails/{id}/retry-extraction` — all failed/pending attachments on one email  
+- `POST /api/attachments/{id}/retry-extraction` — one attachment only  
+
+### Verification gate
+
+Attachments must be **verified** before their vessels appear on the **Vessel Position List**:
+
+- **Per-attachment Verify** on Email Extraction Inbox (and in Preview modal)  
+- Un-verify to edit vessel rows again  
+
+Only rows from verified attachments are returned by `GET /api/vessels` (via `vessels_full` view).
+
+### Phase 2 — Draft email
+
+Triggered by **Generate Draft** on the Vessel Position List (`POST /api/generate-draft`).
+
+- Input: selected vessel rows (or all if none checked) + **selected column ids** for the email table  
+- **Drafter** (`agents/drafter.py`): groups by trade zone, builds HTML tables aligned with grid columns, short intro via LLM  
+- SSE `drafting_done` delivers `draft_html` + `zones` for the Leaflet map  
+- **Map & Draft modal**: map + legend + read-only grid, **Copy to Clipboard**, **Download PDF** (landscape, 10+ columns), **AI Summary** for draft vessels  
+
+---
+
+## UI tabs
+
+Default landing tab: **Vessel Position List**.
+
+### 1. Vessel Position List (`ValidationView`)
+
+- `GET /api/vessels` — all verified vessels across validation-ready emails  
+- **26 columns** from `GET /api/columns` (PostgreSQL `column_definitions`)  
+- **All columns** toggle — summary columns (10) vs full grid (26)  
+- **Column checkboxes** in headers — pick which columns go into the draft email; stat shows **Columns selected** count  
+- **Vessel checkboxes** — draft uses selection only; if none checked, all rows are sent  
+- Inline cell edit → `PUT /api/vessels/{id}`  
+- **Generate Draft** → Phase 2 → opens Map & Draft modal  
+- **AI Summary** — all vessels or **selected vessels only** when checkboxes are ticked  
+
+### 2. Email Extraction Inbox (`InboxView`)
+
+- Lists parent emails and attachments with extraction status  
+- **Confidence** column — rule-based score with High (green) / Medium (orange) / Low (red) badges  
+- **Preview** — sanitized HTML/plain/inline images + editable extracted vessels  
+- **Verify** — per attachment only (moves vessels into the position list)  
+- **Reviewed** — appears on confidence badge after preview edits; clears when saved data matches extraction baseline  
+- **Retry** failed or zero-vessel attachments  
+- **AI Summary** — emails in view: counts, verification backlog, zone/type charts, narrative  
+
+#### Confidence scoring (summary)
+
+| Tier | Score | Meaning |
+|------|--------|---------|
+| **High** | ≥ 75 | Usually safe to verify quickly |
+| **Medium** | 55–74 | Quick preview recommended |
+| **Low** | &lt; 55 | Inspect before verifying |
+
+Score = field completeness (5 key columns) + critical presence + extraction consistency − anomaly penalties + text quality. See `agents/confidence_score.py` for full rules.
+
+### 3. Contact List (`ContactListView`)
+
+- `GET /api/contacts` — flat list: 4 context columns (date, subject, sender, attachment) + **15 contact fields**  
+- Populated automatically on fetch  
+- Yellow rows = `used_fallback` (signature fallback filled gaps LLM missed)  
+- Double-click to edit → `PUT /api/contacts/{contact_id}`  
+- **Export CSV** — download all visible contacts  
+- **AI Summary** — contact counts, email/phone coverage, top companies  
+
+---
+
+## AI Summary
+
+Available on **every tab** (+ draft modal). Each click **fetches fresh data** (no client cache).
+
+1. Backend aggregates facts in SQL/Python (counts, zones, vessel types, opening buckets, etc.)  
+2. Small JSON brief is sent to NVIDIA LLM to write a 3–5 sentence broker briefing  
+3. Modal shows stat pills, **horizontal bar charts**, narrative, and **Copy summary**  
+
+| Endpoint | Scope |
+|----------|--------|
+| `POST /api/summary/inbox` | `{ email_ids: [...] }` — Email Extraction Inbox rows |
+| `POST /api/summary/vessels` | `{ vessel_ids: [...] }` — selected or all position-list vessels |
+| `POST /api/summary/contacts` | `{ contact_ids: [...] }` — current contact rows |
+
+Numbers always come from code; the LLM only narrates provided facts.
 
 ---
 
@@ -100,73 +196,94 @@ flowchart TB
 | Layer | Technology |
 |--------|------------|
 | Backend | Python 3.11+, FastAPI, uvicorn |
-| Orchestration | LangGraph (Phase 1 + Phase 2) |
-| LLM | NVIDIA NIM (configurable, e.g. `nvidia/nemotron-3-super-120b-a12b`) |
-| Database | PostgreSQL (local or RDS; accessed via `pg_db.py` Supabase-style API) |
+| Orchestration | LangGraph (Phase 1 graph + Phase 2 drafter) |
+| LLM | NVIDIA NIM (`NVIDIA_LLM_MODEL`, e.g. Nemotron) |
+| Database | PostgreSQL (`pg_db.py` Supabase-style client) |
 | Real-time | SSE (`sse-starlette`), `useSSE.js` |
 | Frontend | React 18, Vite, TailwindCSS |
 | Grid | TanStack Table v8 |
 | Map | Leaflet / react-leaflet |
+| PDF | jsPDF + html2canvas (Leaflet capture) + OpenStreetMap tiles |
 
 ---
 
 ## Repository layout
 
 ```
-├── schema.sql                 # DDL — run once on your PostgreSQL database
-├── .gitignore
+├── schema.sql                    # DDL — parent_emails, attachments, vessels, broker_contacts, views
 ├── README.md
-├── docs/aws-deployment/       # ECS / RDS / S3 / CloudFront runbook
+├── docs/aws-deployment/          # ECS / RDS / S3 / CloudFront runbook
 ├── backend/
-│   ├── .env.example           # Template — copy to .env
+│   ├── .env.example
 │   ├── Dockerfile
-│   ├── main.py                # FastAPI routes, SSE, CORS
-│   ├── config.py              # Pydantic Settings → env vars
-│   ├── database.py            # DB singleton (alias `supabase` for agents)
-│   ├── pg_db.py               # PostgreSQL query builder (Supabase-like)
-│   ├── column_defs.py         # Standard 22 keys, column_definitions seed, migration
-│   ├── models.py              # Request/response models
-│   ├── imap_client.py         # Gmail IMAP + .eml parsing
-│   ├── sse_manager.py         # In-memory SSE fan-out per job_id
-│   ├── workflow.py            # LangGraph graphs
+│   ├── main.py                   # FastAPI routes, SSE, Phase 1/2 runners
+│   ├── config.py
+│   ├── database.py
+│   ├── pg_db.py                  # PostgreSQL client + startup migrations
+│   ├── column_defs.py            # Standard keys + column_definitions seed/migration
+│   ├── email_preview.py          # Sanitized HTML/plain preview
+│   ├── imap_client.py
+│   ├── mail_targets.py           # IMAP fetch rules (sender/subject targets)
+│   ├── models.py
+│   ├── sse_manager.py
+│   ├── verification.py           # Attachment verify / un-verify
+│   ├── workflow.py               # LangGraph Phase 1 + Phase 2
 │   └── agents/
 │       ├── ingestion.py
-│       ├── extraction.py
-│       ├── vertical_tonnage.py   # Vertical PORT OPEN / DWT block parser
+│       ├── extraction.py         # LLM extraction + calls vessel_recovery
+│       ├── vessel_recovery.py    # Vertical + rule parsers (live fallback)
+│       ├── structured_parsers.py
+│       ├── vertical_tonnage.py
+│       ├── eta_foc.py
 │       ├── normalization.py
-│       ├── signature_extract.py  # LLM + regex fallback → attachments.signature_*
-│       └── drafter.py            # Zone grouping + grid-aligned HTML + intro LLM
+│       ├── signature_extract.py
+│       ├── contact_extract.py
+│       ├── confidence_score.py   # Attachment confidence triage
+│       ├── review_state.py       # Reviewed flag vs extraction baseline
+│       ├── drafter.py
+│       └── summary.py            # AI Summary aggregation + narrative
 └── frontend/
-    ├── vite.config.js         # Dev server + proxy /api → :8000, allowedHosts for ngrok
+    ├── vite.config.js            # Proxy /api → :8000
     ├── package.json
     └── src/
-        ├── App.jsx            # Top nav + tab routing
-        ├── services/api.js    # All REST calls under /api
+        ├── App.jsx
+        ├── services/api.js
         ├── hooks/useSSE.js
-        └── components/
-            ├── InboxView/         # Email Data
-            ├── ValidationView/    # Vessel Position List + DraftModal
-            ├── ContactListView/   # Broker contacts table
-            └── DraftView/         # Map + grid content (used inside modal)
+        ├── components/
+        │   ├── InboxView/        # Email Extraction Inbox
+        │   ├── ValidationView/   # Position list + DraftModal + AllColumnsToggle
+        │   ├── ContactListView/
+        │   ├── DraftView/        # Map, grid, PDF, copy, AI Summary
+        │   └── AiSummary/        # Shared summary modal + button
+        └── utils/
+            ├── standardColumns.js
+            ├── copyEmailHtml.js
+            ├── downloadDraftPdf.js
+            ├── exportContactsCsv.js
+            ├── mapBounds.js
+            ├── zoneMapping.js
+            └── emailPreview.js
 ```
+
+There are **no standalone dev scripts** in this repo — extraction, recovery, and contacts all run inside the main pipeline (`workflow.py` / `main.py`).
 
 ---
 
-## AWS deployment (step-by-step)
+## AWS deployment
 
 Full runbook: **[docs/aws-deployment/README.md](docs/aws-deployment/README.md)** (Phases 0–7, troubleshooting, prod cutover).
 
-**Dev environment (live):** https://d2bt5vx8sl8jq9.cloudfront.net — ECS + RDS + S3 + CloudFront in `ap-southeast-1` (`emailparsing-dev`).
+**Dev environment:** https://d2bt5vx8sl8jq9.cloudfront.net — ECS + RDS + S3 + CloudFront in `ap-southeast-1` (`emailparsing-dev`).
 
 ---
 
 ## Prerequisites
 
 - **Python 3.11+**
-- **Node.js 18+** (for Vite)
-- **PostgreSQL** (e.g. local via pgAdmin) — database created and `schema.sql` applied
-- **Gmail** account with an **App Password** for IMAP
-- **NVIDIA NIM** API key ([NVIDIA API](https://integrate.api.nvidia.com))
+- **Node.js 18+**
+- **PostgreSQL** — database created; `schema.sql` applied (backend also migrates on startup)
+- **Gmail** with **App Password** for IMAP
+- **NVIDIA NIM** API key — [integrate.api.nvidia.com](https://integrate.api.nvidia.com)
 
 ---
 
@@ -174,8 +291,8 @@ Full runbook: **[docs/aws-deployment/README.md](docs/aws-deployment/README.md)**
 
 ### 1. Database
 
-Create a database (e.g. `email_parser`), then run the full **`schema.sql`** in pgAdmin or `psql`.  
-On backend startup, `column_defs.py` seeds `column_definitions` and migrates existing vessel rows to the standard schema.
+Create a database (e.g. `email_parser`), then run **`schema.sql`** in pgAdmin or `psql`.  
+On backend startup, `pg_db.py` applies column migrations and `column_defs.py` seeds `column_definitions`.
 
 ### 2. Backend
 
@@ -186,7 +303,7 @@ copy .env.example .env
 ```
 
 ```powershell
-# From repo root — create venv if needed
+# From repo root
 python -m venv venv
 .\venv\Scripts\Activate.ps1
 cd backend
@@ -212,8 +329,8 @@ cd backend
 uvicorn main:app --reload --port 8000
 ```
 
-- API: `http://localhost:8000`  
-- Docs: `http://localhost:8000/docs`
+- API: http://localhost:8000  
+- OpenAPI: http://localhost:8000/docs  
 
 **Terminal 2 — UI**
 
@@ -222,19 +339,30 @@ cd frontend
 npm run dev
 ```
 
-- App: `http://localhost:5173`
+- App: http://localhost:5173  
+
+### Typical workflow
+
+1. Open **Vessel Position List** (default tab) — empty until you verify attachments  
+2. Go to **Email Extraction Inbox** → **Fetch Emails** — wait for SSE to finish  
+3. Check **Confidence** badges; **Preview** attachments; edit cells if needed  
+4. **Verify** attachments with good extractions (per attachment)  
+5. Return to **Vessel Position List** — edit cells, select vessels/columns  
+6. **Generate Draft** → review map + grid → **Copy** or **Download PDF**  
+7. **Contact List** fills automatically; edit contacts or **Export CSV** as needed  
+8. Use **AI Summary** on any tab for a quick briefing  
 
 ---
 
 ## Optional: share via ngrok
 
-Tunnel the **Vite** port so `/api` is still proxied on your machine:
+Tunnel the **Vite** port so `/api` stays proxied locally:
 
 ```text
 ngrok http 5173
 ```
 
-Ensure `frontend/vite.config.js` allows your ngrok host (`allowedHosts`). Keep **backend + frontend + ngrok** running.
+Add your ngrok host to `frontend/vite.config.js` (`allowedHosts`). Keep backend, frontend, and ngrok running.
 
 ---
 
@@ -245,63 +373,77 @@ Ensure `frontend/vite.config.js` allows your ngrok host (`allowedHosts`). Keep *
 | `EMAIL_USER` | Gmail address |
 | `EMAIL_PASSWORD` | Gmail **App Password** |
 | `IMAP_SERVER` / `IMAP_PORT` | Default `imap.gmail.com` / `993` |
-| `FILTER_SENDER` | Only process emails from this sender |
-| `TARGET_SUBJECT` | Subject substring filter |
+| `FILTER_SENDER` | Legacy optional filter (fetch rules also in `mail_targets.py`) |
+| `TARGET_SUBJECT` | Legacy optional subject filter |
 | `NVIDIA_API_KEY` | NVIDIA NIM key |
-| `NVIDIA_LLM_MODEL` | Chat model for vessel extraction, signature extraction, and draft intro |
+| `NVIDIA_LLM_MODEL` | Chat model — extraction, signatures, contacts, draft intro, AI summary |
 | `NVIDIA_API_BASE_URL` | Default NVIDIA integrate endpoint |
-| `PG_HOST` / `PG_PORT` / `PG_DATABASE` / `PG_USER` / `PG_PASSWORD` | PostgreSQL connection |
-| `MAX_ATTACHMENTS` | **`0`** = process **all** `.eml` parts; set **`N > 0`** to cap at the first N parts |
+| `PG_HOST` / `PG_PORT` / `PG_DATABASE` / `PG_USER` / `PG_PASSWORD` | PostgreSQL |
+| `MAX_ATTACHMENTS` | `0` = all `.eml` parts; `N>0` = first N only |
+| `EXTRACTION_CONCURRENCY` | Parallel LLM attachment jobs (default `2`) |
+| `EXTRACTION_REQUEST_DELAY_SEC` | Pause between attachment LLM calls |
 
 ---
 
-## API summary (prefix `/api`)
+## API reference (prefix `/api`)
 
 | Method | Path | Role |
 |--------|------|------|
-| GET | `/health` | Health check |
-| POST | `/fetch-emails` | Start Phase 1 → `job_id` |
-| POST | `/emails/{id}/retry-extraction` | Retry failed / zero-vessel attachments |
+| GET | `/health` | Health + DB check |
+| POST | `/fetch-emails` | Start Phase 1 batch → `job_id` |
+| POST | `/emails/{id}/retry-extraction` | Retry failed attachments on one email |
+| POST | `/attachments/{id}/retry-extraction` | Retry one attachment |
 | GET | `/events/{job_id}` | SSE stream |
-| GET | `/emails` | List parent emails + attachment summaries |
+| GET | `/emails` | Parent emails + attachments (includes confidence + reviewed) |
 | GET | `/emails/{id}/attachments` | Attachments for one email |
-| GET | `/attachments/{id}/raw` | Raw text + signature fields for preview |
-| GET | `/attachments/{id}/vessels` | Vessels for one attachment |
-| GET | `/vessels` | All vessels across validation-ready emails (Position List grid) |
-| GET | `/emails/{id}/vessels` | Vessels for one parent email |
-| GET | `/columns` | Column definitions from PostgreSQL |
-| GET | `/emails/{id}/columns` | Same column list (legacy path) |
-| GET | `/contacts` | All attachments with parent context + broker contacts |
-| PUT | `/attachments/{id}/contacts` | Update `signature_emails` / `signature_phones` |
-| PUT | `/vessels/{id}` | Update vessel row |
+| GET | `/attachments/{id}/raw` | Preview payload + signature fields + `manually_reviewed` |
+| GET | `/attachments/{id}/vessels` | Vessels for preview modal |
+| PUT | `/attachments/{id}/verified` | Verify / un-verify attachment |
+| GET | `/vessels` | Verified vessels (position list) |
+| GET | `/emails/{id}/vessels` | Verified vessels for one email |
+| GET | `/columns` | Column definitions |
+| PUT | `/vessels/{id}` | Update vessel row (sets reviewed state) |
 | DELETE | `/vessels/{id}` | Delete vessel row |
-| POST | `/emails/{id}/vessels` | Add blank row |
+| POST | `/emails/{id}/vessels` | Add blank vessel row |
+| GET | `/contacts` | Broker contact rows with email context |
+| PUT | `/contacts/{contact_id}` | Update one contact row |
+| PUT | `/attachments/{id}/contacts` | Update attachment signature emails/phones |
+| POST | `/summary/inbox` | AI summary — Email Extraction Inbox |
+| POST | `/summary/vessels` | AI summary — position list / selection |
+| POST | `/summary/contacts` | AI summary — contact list |
 | POST | `/generate-draft` | Phase 2 → `job_id`, then SSE `drafting_done` |
+
+---
+
+## Database tables (summary)
+
+| Table / column | Purpose |
+|----------------|---------|
+| `parent_emails` | One row per fetched Gmail message |
+| `attachments` | `.eml` files, raw text, preview fields, signatures, `is_verified`, `manually_reviewed`, `review_baseline` |
+| `vessels` | Extracted rows; `dynamic_data` JSONB + `region` |
+| `broker_contacts` | Structured contact rows per attachment |
+| `column_definitions` | Grid headers and draft column order |
+| `vessels_full` (view) | Vessels joined with email/attachment context |
 
 ---
 
 ## Gmail App Password
 
-1. Google Account → Security → **2-Step Verification** on.  
-2. **App passwords** → create for Mail.  
-3. Use the 16-character value as `EMAIL_PASSWORD` (no spaces).
+1. Google Account → Security → **2-Step Verification** on  
+2. **App passwords** → create for Mail  
+3. Use the 16-character value as `EMAIL_PASSWORD` (no spaces)
+
+---
+
+## Security notes
+
+- Do **not** commit `backend/.env` or real credentials (see `.gitignore`)  
+- Preview HTML is sanitized (`email_preview.py`) before display in the browser  
+- CORS allows `localhost:5173` in development  
 
 ---
 
 ## License / usage
 
-Demo-oriented local stack; do not commit `.env` or real credentials. This repo uses **MIT-friendly** frontend dependencies (e.g. TanStack Table, Leaflet).
-
----
-
-## Push to `dev_testing`
-
-From the repo root:
-
-```powershell
-cd D:\Asset_Modules\Email_Parser_Two
-git status
-git add .
-git commit -m "feat: contact list, draft modal, standard columns, vertical parser"
-git push origin dev_testing
-```
+Demo-oriented stack for shipbroking email workflows. Frontend dependencies include TanStack Table, Leaflet, jsPDF (check respective licenses for production use).

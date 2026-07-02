@@ -131,6 +131,8 @@ def prepare_attachments_for_retry(attachment_ids: list[str]) -> None:
         supabase.table("attachments").update({
             "status": "pending",
             "error_message": None,
+            "manually_reviewed": False,
+            "review_baseline": None,
         }).eq("id", att_id).execute()
 
 
@@ -305,7 +307,10 @@ async def _extract_single_attachment(
         supabase.table("attachments").update({
             "status": "done",
             "error_message": None,
+            "manually_reviewed": False,
         }).eq("id", attachment_id).execute()
+        from agents.review_state import save_review_baseline
+        save_review_baseline(attachment_id)
         await sse_manager.send(job_id, "extraction_done", {
             "attachment_id": attachment_id,
             "filename": filename,

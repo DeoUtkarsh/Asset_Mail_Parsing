@@ -52,6 +52,7 @@ from agents.extraction import run_extraction
 from agents.normalization import run_normalization
 from agents.signature_extract import run_parent_signature_extraction
 from agents.summary import summarize_inbox, summarize_vessels, summarize_contacts
+from agents.confidence_score import compute_attachment_confidence
 from column_defs import (
     STANDARD_DYNAMIC_KEYS,
     ensure_column_definitions,
@@ -385,24 +386,47 @@ async def list_emails():
             retry_ids = set(get_retryable_attachment_ids(em["id"]))
             atts = (
                 supabase.table("attachments")
-                .select("id, filename, status, error_message, is_verified, created_at")
+                .select("id, filename, status, error_message, is_verified, manually_reviewed, created_at, raw_text")
                 .eq("parent_email_id", em["id"])
                 .order("created_at")
                 .execute()
             )
-            att_list = []
-            for att in atts.data or []:
-                vrows = (
+            att_rows = atts.data or []
+            att_ids = [a["id"] for a in att_rows]
+            vessels_by_att: dict[str, list] = {aid: [] for aid in att_ids}
+            if att_ids:
+                vall = (
                     supabase.table("vessels")
-                    .select("id")
-                    .eq("attachment_id", att["id"])
+                    .select("id, attachment_id, dynamic_data, region")
+                    .in_("attachment_id", att_ids)
                     .execute()
                 )
+                for v in vall.data or []:
+                    aid = v.get("attachment_id")
+                    if aid in vessels_by_att:
+                        vessels_by_att[aid].append(v)
+
+            att_list = []
+            for att in att_rows:
+                aid = att["id"]
+                vlist = vessels_by_att.get(aid, [])
+                vessel_count = len(vlist)
+                conf = compute_attachment_confidence(
+                    status=att.get("status") or "",
+                    vessel_count=vessel_count,
+                    vessels=vlist,
+                    raw_text=att.get("raw_text"),
+                    retry_suggested=att["id"] in retry_ids,
+                    manually_reviewed=bool(att.get("manually_reviewed")),
+                )
                 att_list.append({
-                    **att,
+                    k: v for k, v in att.items() if k != "raw_text"
+                } | {
                     "is_verified": bool(att.get("is_verified")),
-                    "vessel_count": len(vrows.data or []),
+                    "manually_reviewed": bool(att.get("manually_reviewed")),
+                    "vessel_count": vessel_count,
                     "retry_suggested": att["id"] in retry_ids,
+                    **conf,
                 })
             att_list.sort(key=lambda a: (str(a.get("created_at") or ""), (a.get("filename") or "").lower()))
             result.append({**em, "attachments": att_list})
@@ -454,7 +478,7 @@ async def get_raw_text(att_id: str):
             supabase.table("attachments")
             .select(
                 "raw_text, preview_html, preview_plain, preview_images, "
-                "filename, signature_emails, signature_phones, status, is_verified",
+                "filename, signature_emails, signature_phones, status, is_verified, manually_reviewed",
             )
             .eq("id", att_id)
             .single()
@@ -495,6 +519,7 @@ async def get_raw_text(att_id: str):
             "signature_phones": att.get("signature_phones") or "",
             "status": att.get("status"),
             "is_verified": bool(att.get("is_verified")),
+            "manually_reviewed": bool(att.get("manually_reviewed")),
             "vessel_count": len(vrows.data or []),
         }
     except HTTPException:
@@ -790,6 +815,18 @@ async def update_vessel(vessel_id: str, body: UpdateVesselRequest):
             assert_attachment_editable(supabase, vessel_id)
         except ValueError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
+        from agents.review_state import ensure_review_baseline, sync_manually_reviewed
+
+        existing = (
+            supabase.table("vessels")
+            .select("attachment_id")
+            .eq("id", vessel_id)
+            .execute()
+        )
+        att_id = (existing.data or [{}])[0].get("attachment_id")
+        if att_id:
+            ensure_review_baseline(att_id)
+
         update_payload: dict[str, Any] = {"dynamic_data": body.dynamic_data}
         if body.region is not None:
             update_payload["region"] = body.region
@@ -801,7 +838,10 @@ async def update_vessel(vessel_id: str, body: UpdateVesselRequest):
         )
         if not result.data:
             raise HTTPException(status_code=404, detail="Vessel not found.")
-        return result.data[0]
+        row = result.data[0]
+        if att_id:
+            sync_manually_reviewed(att_id)
+        return row
     except HTTPException:
         raise
     except Exception as exc:
@@ -817,7 +857,20 @@ async def delete_vessel(vessel_id: str):
             assert_attachment_editable(supabase, vessel_id)
         except ValueError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
+        from agents.review_state import ensure_review_baseline, sync_manually_reviewed
+
+        existing = (
+            supabase.table("vessels")
+            .select("attachment_id")
+            .eq("id", vessel_id)
+            .execute()
+        )
+        att_id = (existing.data or [{}])[0].get("attachment_id")
+        if att_id:
+            ensure_review_baseline(att_id)
         supabase.table("vessels").delete().eq("id", vessel_id).execute()
+        if att_id:
+            sync_manually_reviewed(att_id)
         return {"deleted": vessel_id}
     except Exception as exc:
         logger.error("[API] delete_vessel failed: %s", exc)
@@ -840,6 +893,9 @@ async def create_vessel(email_id: str):
         if not att.data:
             raise HTTPException(status_code=404, detail="No attachments found for this email. Fetch emails first.")
         att_row = att.data[0]
+        from agents.review_state import ensure_review_baseline, sync_manually_reviewed
+
+        ensure_review_baseline(att_row["id"])
         result = (
             supabase.table("vessels")
             .insert({
@@ -854,6 +910,7 @@ async def create_vessel(email_id: str):
         new_vessel["filename"] = att_row["filename"]
         new_vessel["signature_emails"] = att_row.get("signature_emails") or ""
         new_vessel["signature_phones"] = att_row.get("signature_phones") or ""
+        sync_manually_reviewed(att_row["id"])
         logger.info("[API] Created blank vessel id=%s", new_vessel["id"])
         return new_vessel
     except HTTPException:
@@ -865,7 +922,7 @@ async def create_vessel(email_id: str):
 
 @app.post("/api/summary/inbox")
 async def summary_inbox(body: SummaryScopeRequest | None = None):
-    """Fresh AI summary for Email Data tab (optional email_ids = current page)."""
+    """Fresh AI summary for Email Extraction Inbox (optional email_ids = current page)."""
     logger.info("[API] POST /api/summary/inbox")
     try:
         ids = body.email_ids if body else None

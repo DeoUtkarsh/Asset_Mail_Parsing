@@ -139,6 +139,7 @@ export default function PreviewModal({
   initialVerified = false,
   vesselCount = 0,
   onVerifiedChange,
+  onDataChange,
   onClose,
 }) {
   const [rawText, setRawText] = useState("");
@@ -265,8 +266,13 @@ export default function PreviewModal({
     const savePromise = field === "__region__"
       ? updateVessel(rowId, vessel.dynamic_data, value)
       : updateVessel(rowId, { ...vessel.dynamic_data, [field]: value }, vessel.region);
-    savePromise.then(flashSaved).catch((e) => setError("Failed to save: " + e.message));
-  }, [isVerified]);
+    savePromise
+      .then(() => {
+        flashSaved();
+        onDataChange?.();
+      })
+      .catch((e) => setError("Failed to save: " + e.message));
+  }, [isVerified, onDataChange]);
 
   useEffect(() => {
     const onKeyDown = (e) => {
@@ -385,7 +391,7 @@ export default function PreviewModal({
                   hideGroupHeaders
                   stretchToFill={!showAllColumns}
                   isActive
-                  emptyMessage="No vessels extracted for this attachment. Use Retry Failed on Email Data to re-extract."
+                  emptyMessage="No vessels extracted for this attachment. Use Retry Failed on Email Extraction Inbox to re-extract."
                 />
               </div>
             </div>
