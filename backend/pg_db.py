@@ -41,6 +41,12 @@ CREATE TABLE IF NOT EXISTS attachments (
 CREATE INDEX IF NOT EXISTS idx_attachments_parent_email_id
     ON attachments(parent_email_id);
 
+-- Real owner-email metadata + its file attachments (migration-safe)
+ALTER TABLE attachments ADD COLUMN IF NOT EXISTS mail_from    TEXT;
+ALTER TABLE attachments ADD COLUMN IF NOT EXISTS mail_subject TEXT;
+ALTER TABLE attachments ADD COLUMN IF NOT EXISTS mail_date    TEXT;
+ALTER TABLE attachments ADD COLUMN IF NOT EXISTS files        JSONB DEFAULT '[]'::jsonb;
+
 CREATE TABLE IF NOT EXISTS vessels (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     attachment_id   UUID NOT NULL REFERENCES attachments(id) ON DELETE CASCADE,

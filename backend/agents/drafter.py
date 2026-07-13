@@ -131,8 +131,8 @@ def _get_cell(dd: dict, keys: list[str]) -> str:
     return ""
 
 
-def _build_html(intro_text: str, zone_groups: dict[str, list[dict]]) -> str:
-    """Build the full HTML email from zone-grouped vessel data."""
+def _build_html(intro_text: str, zone_groups: dict[str, list[dict]], column_map: list) -> str:
+    """Build the full HTML email from zone-grouped vessel data using the given columns."""
 
     zone_html_parts: list[str] = []
 
@@ -143,7 +143,7 @@ def _build_html(intro_text: str, zone_groups: dict[str, list[dict]]) -> str:
         # Only include columns that have at least one non-empty value in this zone
         active_cols = [
             (hdr, keys)
-            for hdr, keys in COLUMN_MAP
+            for hdr, keys in column_map
             if any(_get_cell(v.get("dynamic_data") or {}, keys) for v in vessels)
         ]
 
@@ -211,11 +211,18 @@ async def run_drafter(
     job_id: str,
     email_id: str,
     vessels: list[dict[str, Any]],
+    columns: list[dict[str, Any]] | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """
     Generates one consolidated HTML email for all validated vessels.
+    `columns` (optional) = [{header, keys:[...]}] chosen by the user; else the standard set.
     Returns (draft_html, zones_for_map).
     """
+    # Resolve which columns to render
+    if columns:
+        column_map = [(c.get("header", ""), c.get("keys") or []) for c in columns if c.get("keys")]
+    else:
+        column_map = COLUMN_MAP
     await sse_manager.send(job_id, "drafting_started", {
         "message": f"Generating consolidated draft for {len(vessels)} vessels…",
     })
@@ -239,25 +246,15 @@ async def run_drafter(
         {z: len(v) for z, v in ordered.items()},
     )
 
-    # 2 — Ask LLM for a short intro paragraph only
+    # 2 — Intro paragraph. The reasoning model leaks its chain-of-thought into
+    # `content`, so use a clean professional static intro instead.
     intro_text = (
         "Please find below the latest vessel open positions consolidated "
         "from our network, grouped by trade zone."
     )
-    try:
-        resp = await nvidia_client.chat.completions.create(
-            model=settings.NVIDIA_LLM_MODEL,
-            messages=[{"role": "user", "content": INTRO_PROMPT}],
-            temperature=0.3,
-            max_tokens=120,
-        )
-        intro_text = (resp.choices[0].message.content or "").strip()
-        logger.info("[Drafter] Intro: %d chars", len(intro_text))
-    except Exception as exc:
-        logger.warning("[Drafter] Intro LLM failed, using default: %s", exc)
 
     # 3 — Build HTML email
-    draft_html = _build_html(intro_text, ordered)
+    draft_html = _build_html(intro_text, ordered, column_map)
     logger.info("[Drafter] HTML email: %d chars", len(draft_html))
 
     # 4 — Build zone markers for the Leaflet map

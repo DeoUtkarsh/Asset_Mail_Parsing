@@ -150,6 +150,7 @@ async def _extract_single_attachment(
                     ],
                     temperature=0.05,
                     max_tokens=8192,
+                    timeout=120,  # prevent a hung request from stalling the whole batch
                 )
                 content = response.choices[0].message.content or ""
                 vessels_data = _extract_json_array(content)

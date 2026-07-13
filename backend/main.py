@@ -19,11 +19,15 @@ import json
 import logging
 import logging.config
 import uuid
+from pathlib import Path
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from sse_starlette.sse import EventSourceResponse
+
+FILES_DIR = Path(__file__).resolve().parent / "attachment_files"
 
 from config import settings
 from database import supabase, get_supabase
@@ -187,7 +191,7 @@ async def list_emails():
         for em in emails.data or []:
             atts = (
                 supabase.table("attachments")
-                .select("id, filename, status, error_message")
+                .select("id, filename, status, error_message, mail_from, mail_subject, mail_date, files")
                 .eq("parent_email_id", em["id"])
                 .execute()
             )
@@ -228,6 +232,33 @@ async def get_vessels_for_attachment(att_id: str):
         return rows.data or []
     except Exception as exc:
         logger.error("[API] get_vessels_for_attachment failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/attachments/{att_id}/files/{idx}")
+async def get_attachment_file(att_id: str, idx: int):
+    """Serve a single stored file attachment (PDF/image/xlsx…) of an email."""
+    try:
+        row = supabase.table("attachments").select("files").eq("id", att_id).limit(1).execute()
+        if not row.data:
+            raise HTTPException(status_code=404, detail="Attachment not found.")
+        files = row.data[0].get("files") or []
+        entry = next((f for f in files if f.get("idx") == idx), None)
+        if not entry:
+            raise HTTPException(status_code=404, detail="File not found.")
+        path = FILES_DIR / att_id / entry.get("stored", "")
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="File missing on disk.")
+        return FileResponse(
+            path,
+            media_type=entry.get("content_type") or "application/octet-stream",
+            filename=entry.get("name") or path.name,
+            content_disposition_type="inline",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("[API] get_attachment_file failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -294,6 +325,8 @@ async def update_vessel(vessel_id: str, body: UpdateVesselRequest):
         update_payload: dict[str, Any] = {"dynamic_data": body.dynamic_data}
         if body.region is not None:
             update_payload["region"] = body.region
+        if body.is_validated is not None:
+            update_payload["is_validated"] = body.is_validated
         result = (
             supabase.table("vessels")
             .update(update_payload)
@@ -371,6 +404,7 @@ async def generate_draft(body: GenerateDraftRequest, background_tasks: Backgroun
             "job_id": job_id,
             "email_id": body.email_id,
             "vessels": body.vessels,
+            "columns": body.columns,
             "draft_html": "",
             "zones": [],
             "error": "",

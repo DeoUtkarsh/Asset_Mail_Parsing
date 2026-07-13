@@ -4,20 +4,33 @@ SSE event manager.
 Each job_id (= the parent_email UUID) gets its own set of subscriber
 queues. Background agents push events here; the SSE endpoint drains them
 to the browser.
+
+Events are also buffered per job and replayed to a subscriber that connects
+late — otherwise a fast job (e.g. an instant draft) can fire its terminal
+event before the browser's EventSource has subscribed, and the UI would hang.
 """
 import asyncio
 import json
+from collections import OrderedDict
 from typing import Any
+
+_MAX_EVENTS_PER_JOB = 60
+_MAX_BUFFERED_JOBS = 40
 
 
 class SSEManager:
     def __init__(self) -> None:
         # job_id → list of asyncio.Queue instances (one per browser tab)
         self._subscribers: dict[str, list[asyncio.Queue]] = {}
+        # job_id → recent payloads (replayed to late subscribers)
+        self._buffer: "OrderedDict[str, list[str]]" = OrderedDict()
 
     def subscribe(self, job_id: str) -> asyncio.Queue:
         queue: asyncio.Queue = asyncio.Queue()
         self._subscribers.setdefault(job_id, []).append(queue)
+        # Replay any events that fired before this subscriber connected
+        for payload in self._buffer.get(job_id, []):
+            queue.put_nowait(payload)
         return queue
 
     def unsubscribe(self, job_id: str, queue: asyncio.Queue) -> None:
@@ -28,10 +41,25 @@ class SSEManager:
                 pass
             if not self._subscribers[job_id]:
                 del self._subscribers[job_id]
+                # The buffered events have been delivered; drop them
+                self._buffer.pop(job_id, None)
+
+    def _buffer_event(self, job_id: str, payload: str) -> None:
+        buf = self._buffer.get(job_id)
+        if buf is None:
+            buf = []
+            self._buffer[job_id] = buf
+            # Bound the number of jobs we retain buffers for
+            while len(self._buffer) > _MAX_BUFFERED_JOBS:
+                self._buffer.popitem(last=False)
+        buf.append(payload)
+        if len(buf) > _MAX_EVENTS_PER_JOB:
+            del buf[0]
 
     async def send(self, job_id: str, event_type: str, data: Any) -> None:
-        """Push an event to all subscribers of job_id."""
+        """Push an event to all subscribers of job_id (and buffer it)."""
         payload = json.dumps({"type": event_type, **data} if isinstance(data, dict) else {"type": event_type, "data": data})
+        self._buffer_event(job_id, payload)
         for queue in self._subscribers.get(job_id, []):
             await queue.put(payload)
 

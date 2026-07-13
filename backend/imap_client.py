@@ -70,6 +70,37 @@ def _extract_text_from_bytes(raw_bytes: bytes) -> str:
     return _extract_text_from_message(msg)
 
 
+def _extract_files_from_message(msg: email.message.Message) -> list[dict]:
+    """Return real file attachments of an email: [{filename, content_type, content(bytes)}]."""
+    files: list[dict] = []
+    for part in msg.walk():
+        if part.is_multipart():
+            continue
+        ctype = part.get_content_type()
+        disp = str(part.get("Content-Disposition", "")).lower()
+        fn_raw = part.get_filename()
+        # Skip the message bodies; keep anything that is a named/attached file
+        is_body = ctype in ("text/plain", "text/html") and "attachment" not in disp
+        if is_body:
+            continue
+        if not fn_raw and "attachment" not in disp and "inline" not in disp:
+            continue
+        payload = part.get_payload(decode=True)
+        if not payload:
+            continue
+        filename = _decode_header_value(fn_raw) if fn_raw else f"file_{len(files) + 1}.{ctype.split('/')[-1]}"
+        files.append({"filename": filename, "content_type": ctype, "content": payload})
+    return files
+
+
+def _headers_of(msg: email.message.Message) -> dict:
+    return {
+        "mail_from": _decode_header_value(msg.get("From", "")),
+        "mail_subject": _decode_header_value(msg.get("Subject", "")),
+        "mail_date": msg.get("Date", ""),
+    }
+
+
 def fetch_target_email() -> Optional[dict]:
     """
     Connect to Gmail, find the target email, and return a dict with all
@@ -157,39 +188,45 @@ def fetch_target_email() -> Optional[dict]:
 
         logger.info("  → Found attachment-like part %02d: type=%s filename=%s", i, content_type, filename or "(no name)")
 
-        # Extract raw bytes
-        raw_bytes: Optional[bytes] = None
+        # Parse the .eml into an inner Message so we can pull headers + its files
+        inner_msg: Optional[email.message.Message] = None
 
         if content_type == "message/rfc822":
-            # The payload of a message/rfc822 part is itself a Message object
             inner = part.get_payload()
             if isinstance(inner, list) and inner:
                 inner = inner[0]
             if isinstance(inner, email.message.Message):
-                raw_text = _extract_text_from_message(inner)
+                inner_msg = inner
             elif isinstance(inner, bytes):
-                raw_text = _extract_text_from_bytes(inner)
-            else:
-                raw_text = str(inner)
+                inner_msg = message_from_bytes(inner, policy=email.policy.compat32)
         else:
-            # Regular .eml attachment: payload is the raw bytes
             raw_bytes = part.get_payload(decode=True)
             if raw_bytes is None:
                 payload_str = part.get_payload()
                 if isinstance(payload_str, str):
                     raw_bytes = payload_str.encode("utf-8", errors="replace")
-            raw_text = _extract_text_from_bytes(raw_bytes) if raw_bytes else ""
+            if raw_bytes:
+                inner_msg = message_from_bytes(raw_bytes, policy=email.policy.compat32)
+
+        if inner_msg is not None:
+            raw_text = _extract_text_from_message(inner_msg)
+            headers = _headers_of(inner_msg)
+            files = _extract_files_from_message(inner_msg)
+        else:
+            raw_text = str(part.get_payload())
+            headers = {"mail_from": "", "mail_subject": "", "mail_date": ""}
+            files = []
 
         if not filename:
             filename = f"attachment_{i:03d}.eml"
 
         logger.info(
-            "    Extracted %d chars of text from '%s'",
-            len(raw_text), filename
+            "    Extracted %d chars of text + %d file(s) from '%s' (from=%s)",
+            len(raw_text), len(files), filename, headers.get("mail_from", "")[:40]
         )
 
-        if raw_text.strip():
-            attachments.append({"filename": filename, "raw_text": raw_text})
+        if raw_text.strip() or files:
+            attachments.append({"filename": filename, "raw_text": raw_text, "files": files, **headers})
         else:
             logger.warning("    Part %02d produced empty text — skipping", i)
 

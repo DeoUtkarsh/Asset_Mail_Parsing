@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Position List Automator — Flow</title>
+<style>
+  :root{
+    --bg:#f4f8fb; --panel:#ffffff; --ink:#0f2b3d; --muted:#5f8298; --line:#e4eef4;
+    --brand:#0369a1; --brand-d:#0c4a6e; --accent:#0ea5e9;
+    --hi:#10b981; --hi-bg:#e7f8f1; --mid:#f59e0b; --mid-bg:#fef6e7; --lo:#ef4444; --lo-bg:#fdecec;
+    --radius:16px; --shadow:0 1px 3px rgba(15,43,61,.07),0 10px 30px rgba(15,43,61,.05);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--ink);font-size:14px;-webkit-font-smoothing:antialiased}
+  button{font-family:inherit;cursor:pointer;border:none;background:none}
+  .app{display:flex;height:100vh;overflow:hidden}
+
+  /* ── Sidebar ── */
+  .side{width:246px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:18px 14px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:700;padding:4px 8px 18px}
+  .brand .mark{width:32px;height:32px;border-radius:9px;background:linear-gradient(135deg,#0c4a6e,#0ea5e9);display:grid;place-items:center;color:#fff;font-size:16px}
+  .brand small{display:block;color:var(--muted);font-weight:500;font-size:11px}
+  .nav{display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:11px;color:var(--ink);font-weight:600;font-size:14px;margin-bottom:3px}
+  .nav:hover{background:#f0f6fa}
+  .nav.active{background:#e8f4fb;color:var(--brand)}
+  .nav .ni{width:22px;text-align:center;font-size:16px}
+  .nav .cnt{margin-left:auto;font-size:11.5px;font-weight:700;padding:2px 8px;border-radius:999px;background:#eef4f8;color:var(--muted)}
+  .nav .cnt.warn{background:var(--lo-bg);color:var(--lo)}
+  .nav .cnt.ok{background:var(--hi-bg);color:#0f7a54}
+  .side-foot{margin-top:auto;display:flex;flex-direction:column;gap:12px}
+  .syncrow{display:flex;align-items:center;gap:8px;padding:8px 10px;border-radius:10px;background:var(--hi-bg);color:#0f7a54;font-weight:600;font-size:12px}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--hi);animation:pulse 2s infinite}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(16,185,129,.5)}70%{box-shadow:0 0 0 7px rgba(16,185,129,0)}100%{box-shadow:0 0 0 0 rgba(16,185,129,0)}}
+  .cog{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:10px;color:var(--muted);font-weight:600;font-size:13px}
+  .cog:hover{background:#f0f6fa}
+
+  /* ── Main ── */
+  .main{flex:1;min-width:0;overflow:auto}
+  .wrap{max-width:860px;margin:0 auto;padding:26px 30px 60px}
+  .view{display:none}.view.on{display:block;animation:fade .22s ease}
+  @keyframes fade{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+  .pagehead{margin-bottom:20px}
+  .pagehead h1{margin:0;font-size:22px;letter-spacing:-.2px}
+  .pagehead p{margin:5px 0 0;color:var(--muted);font-size:13.5px}
+  .backlink{display:inline-flex;align-items:center;gap:7px;color:var(--brand);font-weight:600;font-size:13px;margin-bottom:14px}
+
+  /* ── Today hero ── */
+  .hero{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:28px;margin-bottom:18px}
+  .hero-top{display:flex;align-items:center;gap:24px}
+  .ring{--p:97;width:104px;height:104px;border-radius:50%;flex-shrink:0;display:grid;place-items:center;background:conic-gradient(var(--hi) calc(var(--p)*1%), #e9f0f5 0)}
+  .ring .inner{width:82px;height:82px;border-radius:50%;background:#fff;display:grid;place-items:center;text-align:center}
+  .ring .pct{font-size:25px;font-weight:800;line-height:1}
+  .ring .lbl{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;margin-top:3px}
+  .hero-txt h1{margin:0;font-size:24px;letter-spacing:-.3px}
+  .hero-txt p{margin:7px 0 0;color:var(--muted);font-size:14px;line-height:1.5}
+  .hero-txt b{color:var(--ink)}
+  .pipe{display:flex;align-items:center;margin-top:24px;padding-top:22px;border-top:1px solid var(--line)}
+  .step{flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;text-align:center;position:relative}
+  .step .ic{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;font-size:15px;font-weight:800;background:var(--hi-bg);color:var(--hi)}
+  .step.todo .ic{background:var(--mid-bg);color:var(--mid)}
+  .step.wait .ic{background:#eef4f8;color:var(--muted)}
+  .step .st{font-size:12px;font-weight:700}
+  .step .ss{font-size:11px;color:var(--muted)}
+  .step::after{content:"";position:absolute;top:18px;left:calc(50% + 22px);right:calc(-50% + 22px);height:2px;background:var(--line)}
+  .step:last-child::after{display:none}
+  .step.done::after{background:var(--hi)}
+
+  /* action cards on Today */
+  .cards{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .acard{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:18px;cursor:pointer;transition:.15s;display:flex;flex-direction:column;gap:6px}
+  .acard:hover{transform:translateY(-2px);border-color:#cfe4f0}
+  .acard.attn{border-left:3px solid var(--mid)}
+  .acard .big{font-size:26px;font-weight:800}
+  .acard .t{font-weight:700;font-size:14px}
+  .acard .d{color:var(--muted);font-size:12.5px}
+  .acard .go{color:var(--brand);font-weight:700;font-size:12.5px;margin-top:6px}
+
+  /* ── Review exceptions ── */
+  .progress{display:inline-flex;align-items:center;gap:8px;font-size:12.5px;font-weight:700;color:var(--lo);background:var(--lo-bg);padding:5px 12px;border-radius:999px;margin-bottom:14px}
+  .progress.ok{color:#0f7a54;background:var(--hi-bg)}
+  .exc{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--mid);border-radius:13px;padding:16px 18px;margin-bottom:12px;display:flex;align-items:center;gap:16px;box-shadow:var(--shadow);transition:.2s}
+  .exc.cleared{border-left-color:var(--hi);opacity:.5}
+  .exc .q{flex:1;min-width:0}
+  .exc .q .vv{font-weight:700;font-size:14px}
+  .exc .q .vv .tag{font-size:10.5px;font-weight:700;color:var(--mid);background:var(--mid-bg);padding:2px 8px;border-radius:6px;margin-left:8px;text-transform:uppercase;letter-spacing:.3px}
+  .exc .q .why{color:var(--muted);font-size:13px;margin-top:5px;line-height:1.45}
+  .exc .q .why b{color:var(--ink)}
+  .exc .q .src{color:#9db6c6;font-size:11px;margin-top:5px}
+  .guess{flex-shrink:0}
+  .guess .val{font-weight:700;font-size:13px;background:#eef7fc;color:var(--brand);padding:7px 13px;border-radius:9px;border:1px dashed #b9dcef;white-space:nowrap}
+  .exc .acts{display:flex;gap:8px;flex-shrink:0}
+  .exc .acts button{padding:9px 14px;border-radius:10px;font-weight:700;font-size:13px}
+  .b-confirm{background:var(--hi);color:#fff}.b-confirm:hover{filter:brightness(.95)}
+  .b-edit{background:#eef4f8;color:var(--muted)}.b-edit:hover{background:#e2ecf2}
+  .exc .doneflag{font-weight:700;color:#0f7a54;font-size:13px;white-space:nowrap}
+  .allclear{background:var(--hi-bg);border:1px solid #bfe9d5;border-radius:14px;padding:22px;text-align:center;color:#0f7a54;margin-top:6px}
+  .allclear .em{font-size:34px}
+  .allclear h3{margin:8px 0 4px;font-size:17px}
+  .allclear button{margin-top:14px;padding:11px 22px;border-radius:11px;background:var(--brand);color:#fff;font-weight:700;font-size:14px}
+  .allclear button:hover{background:var(--brand-d)}
+
+  /* ── Position list ── */
+  .listgrid{display:grid;grid-template-columns:280px 1fr;gap:18px;align-items:start}
+  .mapbox{height:230px;border-radius:13px;background:radial-gradient(circle at 30% 40%,#cfe9f7,transparent 40%),radial-gradient(circle at 70% 60%,#d7eef8,transparent 45%),linear-gradient(160deg,#e8f4fb,#d3e9f5);position:relative;overflow:hidden;border:1px solid var(--line)}
+  .pin{position:absolute;transform:translate(-50%,-100%)}
+  .pin .p{width:20px;height:20px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:2px solid #fff;display:grid;place-items:center;font-size:9px;font-weight:800;color:#fff;box-shadow:0 2px 4px rgba(0,0,0,.3)}
+  .pin .p span{transform:rotate(45deg)}
+  .sidecard{margin-top:12px;background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:14px}
+  .sidecard h5{margin:0 0 10px;font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted)}
+  .lr{display:flex;align-items:center;gap:9px;font-size:12.5px;padding:3px 0}.lr b{margin-left:auto}
+  .lr .sw{width:11px;height:11px;border-radius:50%}
+  .recip{display:flex;align-items:center;gap:8px;font-size:12.5px;padding:4px 0}
+  .recip .av{width:22px;height:22px;border-radius:50%;background:#e8f4fb;color:var(--brand);display:grid;place-items:center;font-size:10px;font-weight:800}
+  .mail{background:#fff;border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:var(--shadow)}
+  .mail .mh{padding:15px 18px;border-bottom:1px solid var(--line);background:#fbfdfe}
+  .mail .mh .s{font-weight:700;font-size:15px}.mail .mh .meta{color:var(--muted);font-size:12px;margin-top:3px}
+  .mbody{padding:16px 18px;max-height:52vh;overflow:auto}
+  .zh{display:flex;align-items:center;gap:8px;margin:14px 4px 7px;font-size:11.5px;color:var(--brand);text-transform:uppercase;letter-spacing:.5px;font-weight:700}
+  .zh:first-child{margin-top:0}.zh .sw{width:9px;height:9px;border-radius:50%}
+  .vline{display:grid;grid-template-columns:1.3fr .9fr .7fr .8fr;gap:10px;padding:6px 8px;font-size:12.5px;border-radius:7px}
+  .vline:hover{background:#f4fafd}.vline .vn{font-weight:700}.vline .m{color:var(--muted)}
+  .src-tag{font-size:10.5px;color:#9db6c6;padding:2px 8px 8px}
+  .send-actions{display:flex;gap:10px}
+  .btn{padding:11px 20px;border-radius:12px;font-weight:700;font-size:14px}
+  .btn-ghost{background:#eef4f8;color:var(--brand)}.btn-ghost:hover{background:#e2ecf2}
+  .btn-send{background:var(--brand);color:#fff;box-shadow:0 4px 12px rgba(3,105,161,.22)}.btn-send:hover{background:var(--brand-d)}
+  .btn-send:disabled{opacity:.4;cursor:not-allowed;box-shadow:none}
+  .gate{margin-top:12px;font-size:12.5px;color:var(--mid);font-weight:600}
+
+  /* ── Sources table ── */
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);overflow:hidden}
+  table{width:100%;border-collapse:collapse}
+  th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);padding:12px 16px;border-bottom:1px solid var(--line)}
+  td{padding:12px 16px;border-bottom:1px solid var(--line);font-size:13px}
+  tr:last-child td{border-bottom:none}
+  .st-pill{font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;white-space:nowrap}
+  .st-auto{background:var(--hi-bg);color:#0f7a54}
+  .st-rev{background:var(--mid-bg);color:#a86a06}
+  .st-out{background:#f1eee9;color:#96702f}
+
+  /* ── Inbox ── */
+  .toolbar{display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap}
+  .chip{padding:7px 13px;border-radius:999px;font-size:12.5px;font-weight:600;color:var(--muted);background:var(--panel);border:1px solid var(--line)}
+  .chip.on{background:var(--brand);color:#fff;border-color:var(--brand)}
+  .search{margin-left:auto;display:flex;align-items:center;gap:8px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 12px;color:var(--muted);font-size:13px;min-width:200px}
+  .search input{border:none;outline:none;font-family:inherit;font-size:13px;flex:1;background:transparent}
+  tbody tr.click{cursor:pointer;transition:background .12s}
+  tbody tr.click:hover{background:#f4fafd}
+  tr.flag td:first-child{box-shadow:inset 3px 0 0 var(--lo)}
+  tr.stale{opacity:.6}
+  .owner{font-weight:700}
+  .subj{color:var(--muted);font-size:12px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:280px}
+  .vcount{font-weight:700;color:var(--brand)}
+  .conf{display:inline-flex;align-items:center;gap:6px;padding:3px 9px;border-radius:999px;font-weight:700;font-size:11.5px;white-space:nowrap}
+  .conf .cd{width:7px;height:7px;border-radius:50%}
+  .conf.hi{background:var(--hi-bg);color:#0f7a54}.conf.hi .cd{background:var(--hi)}
+  .conf.mid{background:var(--mid-bg);color:#a86a06}.conf.mid .cd{background:var(--mid)}
+  .conf.lo{background:var(--lo-bg);color:#c0392b}.conf.lo .cd{background:var(--lo)}
+  .rowbtn{padding:6px 12px;border-radius:8px;font-weight:600;font-size:12px;background:#eef7fc;color:var(--brand)}
+  .rowbtn:hover{background:#e0f0fa}
+  .rowbtn.p{background:var(--mid);color:#fff}.rowbtn.p:hover{filter:brightness(.96)}
+
+  /* ── Review extras ── */
+  .rev-bar{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+  .confirm-all{margin-left:auto;padding:9px 15px;border-radius:10px;font-weight:700;font-size:13px;background:var(--hi);color:#fff}
+  .confirm-all:hover{filter:brightness(.95)}
+  .editin{font-family:inherit;font-size:13px;font-weight:700;color:var(--brand);padding:6px 11px;border-radius:9px;border:1px solid var(--accent);outline:none;width:130px}
+
+  /* ── Settings ── */
+  .set-card{background:var(--panel);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:20px 22px;margin-bottom:16px}
+  .set-card h3{margin:0 0 4px;font-size:15px}
+  .set-card .sd{color:var(--muted);font-size:12.5px;margin-bottom:14px}
+  .taglist{display:flex;flex-wrap:wrap;gap:8px}
+  .tag2{display:inline-flex;align-items:center;gap:8px;background:#f4f9fc;border:1px solid var(--line);border-radius:999px;padding:6px 12px;font-size:12.5px;font-weight:600}
+  .tag2 .x{color:#a7bfce;font-weight:700;cursor:pointer}.tag2 .x:hover{color:var(--lo)}
+  .addbtn{border:1px dashed #b9dcef;color:var(--brand);border-radius:999px;padding:6px 12px;font-size:12.5px;font-weight:700;background:#fff}
+  .rgroup{display:flex;align-items:center;gap:12px;padding:11px 0;border-bottom:1px solid var(--line)}
+  .rgroup:last-child{border-bottom:none}
+  .rgroup .av{width:30px;height:30px;border-radius:50%;background:#e8f4fb;color:var(--brand);display:grid;place-items:center;font-size:11px;font-weight:800}
+  .rgroup .rn{font-weight:700;font-size:13px}.rgroup .rd{color:var(--muted);font-size:12px}
+  .slider-row{display:flex;align-items:center;gap:14px}
+  .slider-row input[type=range]{flex:1;accent-color:var(--brand)}
+  .thresh-val{font-weight:800;font-size:18px;color:var(--brand);width:56px;text-align:right}
+  .seg{display:flex;gap:4px;background:#eef4f8;padding:3px;border-radius:10px;width:fit-content}
+  .seg button{padding:7px 14px;border-radius:8px;font-size:12.5px;font-weight:600;color:var(--muted)}
+  .seg button.on{background:#fff;color:var(--brand);box-shadow:0 1px 2px rgba(0,0,0,.06)}
+
+  /* ── Empty / first-run ── */
+  .empty{background:var(--panel);border:2px dashed #cfe1ec;border-radius:var(--radius);padding:54px 30px;text-align:center}
+  .empty .em{font-size:44px}
+  .empty h2{margin:14px 0 6px;font-size:20px}
+  .empty p{margin:0 auto;color:var(--muted);font-size:14px;max-width:420px;line-height:1.5}
+  .empty .waiting{display:inline-flex;align-items:center;gap:8px;margin-top:18px;color:#0f7a54;font-weight:600;font-size:13px;background:var(--hi-bg);padding:8px 14px;border-radius:999px}
+
+  /* ── Modal ── */
+  .modal-bg{position:fixed;inset:0;background:rgba(12,74,110,.4);backdrop-filter:blur(3px);display:none;align-items:center;justify-content:center;z-index:70}
+  .modal-bg.on{display:flex}
+  .modal{background:#fff;border-radius:18px;box-shadow:0 20px 60px rgba(0,0,0,.25);width:440px;max-width:92vw;padding:26px;animation:pop .18s ease}
+  @keyframes pop{from{transform:scale(.96);opacity:0}to{transform:scale(1);opacity:1}}
+  .modal h3{margin:0 0 6px;font-size:19px}
+  .modal p{margin:0;color:var(--muted);font-size:13.5px;line-height:1.5}
+  .modal .recap{margin:18px 0;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  .modal .recap .r{display:flex;justify-content:space-between;padding:11px 14px;font-size:13px;border-bottom:1px solid var(--line)}
+  .modal .recap .r:last-child{border-bottom:none}
+  .modal .recap .r b{font-weight:700}
+  .modal .mbtns{display:flex;gap:10px;margin-top:6px}
+  .modal .mbtns button{flex:1;padding:12px;border-radius:12px;font-weight:700;font-size:14px}
+  .m-cancel{background:#eef4f8;color:var(--muted)}.m-cancel:hover{background:#e2ecf2}
+  .m-send{background:var(--brand);color:#fff}.m-send:hover{background:var(--brand-d)}
+
+  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--brand-d);color:#fff;padding:12px 20px;border-radius:11px;font-weight:600;font-size:13.5px;opacity:0;pointer-events:none;transition:.25s;box-shadow:var(--shadow);z-index:80}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ── Sidebar ── -->
+  <div class="side">
+    <div class="brand"><span class="mark">⚓</span><div>Position List<small>Automator</small></div></div>
+    <div class="nav active" data-view="today"><span class="ni">🏠</span> Today</div>
+    <div class="nav" data-view="review"><span class="ni">⚠️</span> Review <span class="cnt warn" id="nav-rev">3</span></div>
+    <div class="nav" data-view="list"><span class="ni">🚢</span> Position List <span class="cnt ok">122</span></div>
+    <div class="nav" data-view="inbox"><span class="ni">📥</span> Inbox <span class="cnt">24</span></div>
+    <div class="side-foot">
+      <div class="syncrow"><span class="dot"></span> Auto-sync on · 2 min ago</div>
+      <button class="cog" data-view="settings">⚙ Settings</button>
+    </div>
+  </div>
+
+  <!-- ── Main ── -->
+  <div class="main"><div class="wrap">
+
+    <!-- ═══ TODAY ═══ -->
+    <section class="view on" id="today">
+      <div style="text-align:right;margin-bottom:8px"><button style="font-size:11px;color:#9db6c6" onclick="toggleEmpty()">⇄ preview empty day</button></div>
+
+      <div id="today-empty" class="empty" style="display:none">
+        <div class="em">📭</div>
+        <h2>No owner emails yet today</h2>
+        <p>As soon as vessel owners send their open positions, they’ll be fetched and parsed here automatically — nothing to do until then.</p>
+        <div class="waiting"><span class="dot"></span> Auto-sync on · watching the inbox</div>
+      </div>
+
+      <div id="today-full">
+      <div class="hero">
+        <div class="hero-top">
+          <div class="ring" id="ring" style="--p:97"><div class="inner"><div><div class="pct" id="ring-pct">97%</div><div class="lbl">ready</div></div></div></div>
+          <div class="hero-txt">
+            <h1 id="hero-h">Almost ready to send</h1>
+            <p id="hero-p">The system fetched <b>24 owner emails</b>, parsed <b>122 positions</b>, and compiled <b>6 zones</b> — automatically. Just <b id="hero-need">3 positions</b> need a quick check.</p>
+          </div>
+        </div>
+        <div class="pipe">
+          <div class="step done"><div class="ic">✓</div><div class="st">Received</div><div class="ss">24 emails</div></div>
+          <div class="step done"><div class="ic">✓</div><div class="st">Parsed</div><div class="ss">122 positions</div></div>
+          <div class="step done"><div class="ic">✓</div><div class="st">Compiled</div><div class="ss">6 zones</div></div>
+          <div class="step todo" id="t-review"><div class="ic" id="t-review-ic">3</div><div class="st">Review</div><div class="ss" id="t-review-ss">3 to check</div></div>
+          <div class="step wait"><div class="ic">↗</div><div class="st">Send</div><div class="ss">to charterers</div></div>
+        </div>
+      </div>
+
+      <div class="cards">
+        <div class="acard attn" data-view="review" id="card-review">
+          <div class="big" style="color:var(--mid)" id="card-need">3</div>
+          <div class="t">Need your review</div>
+          <div class="d">The few positions the system wasn't sure about.</div>
+          <div class="go">Review now →</div>
+        </div>
+        <div class="acard" data-view="list">
+          <div class="big" style="color:var(--brand)">122</div>
+          <div class="t">Positions ready</div>
+          <div class="d">Compiled into 6 zones, ready for charterers.</div>
+          <div class="go">Open position list →</div>
+        </div>
+      </div>
+      </div><!-- /today-full -->
+    </section>
+
+    <!-- ═══ REVIEW ═══ -->
+    <section class="view" id="review">
+      <a class="backlink" data-view="today">← Back to Today</a>
+      <div class="pagehead">
+        <h1>Review</h1>
+        <p>Only the positions the system flagged. Confirm the guess, or edit it — one click each.</p>
+      </div>
+      <div class="rev-bar">
+        <div class="progress" id="rev-progress"><span>⚠️</span> 3 of 122 positions need a check</div>
+        <button class="confirm-all" id="confirm-all" onclick="confirmAll()">✓ Confirm all 3</button>
+      </div>
+
+      <div id="exceptions">
+        <div class="exc" data-id="e1">
+          <div class="q">
+            <div class="vv">MT OCEANIC DREAM <span class="tag">open port unclear</span></div>
+            <div class="why">Text says “OPENING WCI – KANDLA”. Is the open port <b>KANDLA</b>?</div>
+            <div class="src">◦ from Bainbridge Nav · attachment_172.eml · 10:24</div>
+          </div>
+          <div class="guess"><span class="val">KANDLA</span></div>
+          <div class="acts"><button class="b-confirm" onclick="confirmExc('e1')">✓ Confirm</button><button class="b-edit" onclick="editExc('e1')">✎ Edit</button></div>
+        </div>
+        <div class="exc" data-id="e2">
+          <div class="q">
+            <div class="vv">HIGH TRADER <span class="tag">region unspecified</span></div>
+            <div class="why">No open location found. Suggested from context: <b>TAIWAN</b>?</div>
+            <div class="src">◦ from Ocean Fleet · attachment_026.eml · 09:15</div>
+          </div>
+          <div class="guess"><span class="val">TAIWAN</span></div>
+          <div class="acts"><button class="b-confirm" onclick="confirmExc('e2')">✓ Confirm</button><button class="b-edit" onclick="editExc('e2')">✎ Edit</button></div>
+        </div>
+        <div class="exc" data-id="e3">
+          <div class="q">
+            <div class="vv">MT WINTER 79 <span class="tag">possible duplicate</span></div>
+            <div class="why">Same vessel is in a newer email (11:20). Keep the <b>newer</b> position and drop this one?</div>
+            <div class="src">◦ from Sea Lines · attachment_016.eml · 08:40</div>
+          </div>
+          <div class="guess"><span class="val">Use newer</span></div>
+          <div class="acts"><button class="b-confirm" onclick="confirmExc('e3')">✓ Confirm</button><button class="b-edit" onclick="toast('Keep both / choose')">✎ Choose</button></div>
+        </div>
+      </div>
+
+      <div class="allclear" id="allclear" style="display:none">
+        <div class="em">✓</div>
+        <h3>All positions confirmed</h3>
+        <div style="color:#0f7a54;font-size:13.5px">Your list is ready to send to charterers.</div>
+        <button data-view="list">Open position list →</button>
+      </div>
+    </section>
+
+    <!-- ═══ POSITION LIST ═══ -->
+    <section class="view" id="list">
+      <a class="backlink" data-view="today">← Back to Today</a>
+      <div class="pagehead" style="display:flex;align-items:flex-end;justify-content:space-between;gap:16px">
+        <div>
+          <h1>Position List</h1>
+          <p>Auto-compiled from every confirmed owner email · rebuilds as you review.</p>
+        </div>
+        <div class="send-actions">
+          <button class="btn btn-ghost" onclick="toast('✔ Copied — paste into your email client')">⎘ Copy</button>
+          <button class="btn btn-send" id="send-btn" onclick="sendNow()">📤 Send to charterers</button>
+        </div>
+      </div>
+      <div class="gate" id="gate" style="display:none">⚠️ 3 positions still need review before sending.</div>
+
+      <div class="listgrid">
+        <div>
+          <div class="mapbox">
+            <div class="pin" style="top:54%;left:58%"><div class="p" style="background:#0ea5e9"><span>18</span></div></div>
+            <div class="pin" style="top:40%;left:74%"><div class="p" style="background:#f59e0b"><span>30</span></div></div>
+            <div class="pin" style="top:56%;left:42%"><div class="p" style="background:#10b981"><span>6</span></div></div>
+            <div class="pin" style="top:46%;left:30%"><div class="p" style="background:#8b5cf6"><span>6</span></div></div>
+          </div>
+          <div class="sidecard">
+            <h5>Zones · 122 positions</h5>
+            <div class="lr"><span class="sw" style="background:#0ea5e9"></span> Straits / SE Asia <b>18</b></div>
+            <div class="lr"><span class="sw" style="background:#f59e0b"></span> Far East <b>30</b></div>
+            <div class="lr"><span class="sw" style="background:#10b981"></span> India <b>6</b></div>
+            <div class="lr"><span class="sw" style="background:#8b5cf6"></span> AG / Middle East <b>6</b></div>
+          </div>
+          <div class="sidecard">
+            <h5>Recipients</h5>
+            <div class="recip"><span class="av">DC</span> Dry Cargo desk · 22</div>
+            <div class="recip"><span class="av">AG</span> AG charterers · 12</div>
+            <button class="btn btn-ghost" style="margin-top:8px;width:100%;font-size:12.5px;padding:8px" onclick="toast('Manage recipient groups')">Manage recipients</button>
+          </div>
+        </div>
+
+        <div class="mail">
+          <div class="mh"><div class="s">Consolidated Position List — 11 Jul 2026</div><div class="meta">From: Chartering Desk · To: 2 charterer groups · from 24 owner emails</div></div>
+          <div class="mbody">
+            <div class="zh"><span class="sw" style="background:#0ea5e9"></span> Straits / SE Asia</div>
+            <div class="vline"><span class="vn">MT SINAR MOROTAI</span><span class="m">Merak</span><span class="m">3,950</span><span class="m">stainless</span></div>
+            <div class="vline"><span class="vn">CLEAROCEAN MARVEL</span><span class="m">Singapore</span><span class="m">49,995</span><span class="m">—</span></div>
+            <div class="src-tag">◦ Bahri Chem · 09:02 · Clearlake · 10:11</div>
+            <div class="zh"><span class="sw" style="background:#f59e0b"></span> Far East</div>
+            <div class="vline"><span class="vn">MT WINTER 79</span><span class="m">Yangon</span><span class="m">20,819</span><span class="m">2011</span></div>
+            <div class="vline"><span class="vn">HIGH TRADER</span><span class="m">Taiwan</span><span class="m">—</span><span class="m">—</span></div>
+            <div class="src-tag">◦ Sea Lines · 11:20 · Ocean Fleet · 09:15</div>
+            <div class="zh"><span class="sw" style="background:#10b981"></span> India</div>
+            <div class="vline"><span class="vn">MT OCEANIC DREAM</span><span class="m">Kandla</span><span class="m">13,083</span><span class="m">2008</span></div>
+            <div class="src-tag">◦ Bainbridge Nav · 10:24</div>
+            <p style="color:var(--muted);margin-top:16px">Best regards,<br/>Chartering Desk</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ═══ INBOX ═══ -->
+    <section class="view" id="inbox">
+      <a class="backlink" data-view="today">← Back to Today</a>
+      <div class="pagehead">
+        <h1>Inbox — owner emails</h1>
+        <p>Every position email received today, parsed automatically. Most are auto-confirmed into the list — only the flagged ones need you (in Review).</p>
+      </div>
+
+      <div class="toolbar">
+        <button class="chip on" id="f-all" onclick="setFilter('all')">All</button>
+        <button class="chip" id="f-review" onclick="setFilter('review')">⚠️ In review</button>
+        <button class="chip" id="f-auto" onclick="setFilter('auto')">✓ Auto-confirmed</button>
+        <button class="chip" id="f-super" onclick="setFilter('super')">⏰ Superseded</button>
+        <div class="search">🔎 <input placeholder="Search owner, vessel, port…" /></div>
+      </div>
+
+      <div class="card">
+        <table>
+          <thead><tr>
+            <th style="width:70px">Time</th>
+            <th>Owner &amp; email</th>
+            <th style="width:90px">Positions</th>
+            <th style="width:120px">Confidence</th>
+            <th style="width:150px">Status</th>
+            <th style="width:90px"></th>
+          </tr></thead>
+          <tbody id="inbox-rows"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ═══ SETTINGS ═══ -->
+    <section class="view" id="settings">
+      <a class="backlink" data-view="today">← Back to Today</a>
+      <div class="pagehead">
+        <h1>Settings</h1>
+        <p>Tell the system whose emails to read, who to send to, and how sure it must be before auto-confirming.</p>
+      </div>
+
+      <div class="set-card">
+        <h3>Owner senders</h3>
+        <div class="sd">Only emails from these addresses are fetched and parsed as owner positions.</div>
+        <div class="taglist">
+          <span class="tag2">sanjib@iconshipbrokers.com <span class="x" onclick="toast('Removed sender')">✕</span></span>
+          <span class="tag2">tankers@bainbridgenav.com <span class="x" onclick="toast('Removed sender')">✕</span></span>
+          <span class="tag2">chartering@sealines.com <span class="x" onclick="toast('Removed sender')">✕</span></span>
+          <button class="addbtn" onclick="toast('Add owner sender / domain')">＋ Add sender</button>
+        </div>
+      </div>
+
+      <div class="set-card">
+        <h3>Charterer recipients</h3>
+        <div class="sd">Groups the position list is sent to. Pick which zones each group receives.</div>
+        <div class="rgroup"><span class="av">DC</span><div><div class="rn">Dry Cargo desk</div><div class="rd">22 recipients · all zones</div></div><button class="rowbtn" style="margin-left:auto" onclick="toast('Edit group')">Edit</button></div>
+        <div class="rgroup"><span class="av">AG</span><div><div class="rn">AG charterers</div><div class="rd">12 recipients · AG/Middle East only</div></div><button class="rowbtn" style="margin-left:auto" onclick="toast('Edit group')">Edit</button></div>
+        <div class="rgroup"><span class="av">EU</span><div><div class="rn">Europe charterers</div><div class="rd">8 recipients · Europe only</div></div><button class="rowbtn" style="margin-left:auto" onclick="toast('Edit group')">Edit</button></div>
+        <button class="addbtn" style="margin-top:12px" onclick="toast('Add recipient group')">＋ Add group</button>
+      </div>
+
+      <div class="set-card">
+        <h3>Auto-confirm threshold</h3>
+        <div class="sd">Positions the system is at least this confident about are added to the list automatically. Anything below goes to Review.</div>
+        <div class="slider-row">
+          <input type="range" min="70" max="99" value="90" oninput="document.getElementById('threshv').textContent=this.value+'%'">
+          <span class="thresh-val" id="threshv">90%</span>
+        </div>
+        <div class="sd" style="margin:10px 0 0">Higher = safer but more manual review · Lower = more automation, fewer flags.</div>
+      </div>
+
+      <div class="set-card">
+        <h3>Auto-sync interval</h3>
+        <div class="sd">How often the inbox is checked for new owner emails.</div>
+        <div class="seg">
+          <button onclick="segPick(this)">Every 5 min</button>
+          <button class="on" onclick="segPick(this)">Every 15 min</button>
+          <button onclick="segPick(this)">Hourly</button>
+          <button onclick="segPick(this)">Manual only</button>
+        </div>
+      </div>
+    </section>
+
+  </div></div>
+</div>
+
+<!-- ── Send confirmation modal ── -->
+<div class="modal-bg" id="sendModal">
+  <div class="modal">
+    <h3>Send today’s position list?</h3>
+    <p>This emails the consolidated list to your charterer groups. Source emails will be archived.</p>
+    <div class="recap">
+      <div class="r"><span>Positions</span><b>122 · 6 zones</b></div>
+      <div class="r"><span>Recipients</span><b>3 groups · 42 people</b></div>
+      <div class="r"><span>Date</span><b>11 Jul 2026</b></div>
+    </div>
+    <div class="mbtns">
+      <button class="m-cancel" onclick="closeModal()">Cancel</button>
+      <button class="m-send" onclick="confirmSend()">📤 Send now</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  const TOTAL=122;
+  let need=3;
+
+  function refresh(){
+    const ready=Math.round((TOTAL-need)/TOTAL*100);
+    const ring=document.getElementById('ring');
+    ring.style.setProperty('--p',ready);
+    document.getElementById('ring-pct').textContent=ready+'%';
+    document.getElementById('nav-rev').textContent=need;
+    document.getElementById('nav-rev').className='cnt '+(need>0?'warn':'ok');
+    document.getElementById('card-need').textContent=need;
+    const gate=document.getElementById('gate');
+    const sendBtn=document.getElementById('send-btn');
+    if(need>0){
+      document.getElementById('hero-h').textContent='Almost ready to send';
+      document.getElementById('hero-need').textContent=need+(need===1?' position':' positions');
+      document.getElementById('t-review-ic').textContent=need;
+      document.getElementById('t-review-ss').textContent=need+' to check';
+      document.getElementById('t-review').className='step todo';
+      document.getElementById('rev-progress').innerHTML='<span>⚠️</span> '+need+' of '+TOTAL+' positions need a check';
+      document.getElementById('rev-progress').className='progress';
+      gate.style.display='block'; gate.textContent='⚠️ '+need+' position'+(need===1?'':'s')+' still need review before sending.';
+      sendBtn.disabled=true;
+    } else {
+      document.getElementById('hero-h').textContent='Ready to send';
+      document.getElementById('hero-need').textContent='nothing';
+      document.getElementById('t-review-ic').textContent='✓';
+      document.getElementById('t-review-ss').textContent='all clear';
+      document.getElementById('t-review').className='step done';
+      document.getElementById('rev-progress').innerHTML='<span>✓</span> All positions confirmed';
+      document.getElementById('rev-progress').className='progress ok';
+      document.getElementById('allclear').style.display='block';
+      gate.style.display='none';
+      sendBtn.disabled=false;
+    }
+  }
+
+  function confirmExc(id,silent){
+    const el=document.querySelector('.exc[data-id="'+id+'"]');
+    if(el.classList.contains('cleared'))return;
+    el.classList.add('cleared');
+    el.querySelector('.guess').innerHTML='<span class="doneflag">✓ confirmed</span>';
+    el.querySelector('.acts').style.display='none';
+    need--; refresh(); if(!silent)toast('Confirmed — list updated');
+  }
+  function confirmAll(){
+    document.querySelectorAll('.exc:not(.cleared)').forEach(el=>confirmExc(el.dataset.id,true));
+    toast('All positions confirmed — list ready');
+  }
+  function editExc(id){
+    const el=document.querySelector('.exc[data-id="'+id+'"]');
+    if(el.classList.contains('cleared'))return;
+    const g=el.querySelector('.guess');
+    const cur=g.querySelector('.val')?.textContent||'';
+    g.innerHTML='<input class="editin" id="ed-'+id+'" value="'+cur+'">';
+    el.querySelector('.acts').innerHTML='<button class="b-confirm" onclick="confirmExc(\''+id+'\')">✓ Save</button>';
+    document.getElementById('ed-'+id).focus();
+  }
+
+  // send → confirmation modal
+  function sendNow(){ if(need>0){toast('Clear the '+need+' flagged first'); go('review'); return;} document.getElementById('sendModal').classList.add('on'); }
+  function closeModal(){ document.getElementById('sendModal').classList.remove('on'); }
+  function confirmSend(){ closeModal(); toast('📤 Sent to 3 charterer groups · source emails archived'); }
+  document.getElementById('sendModal').addEventListener('click',e=>{if(e.target.id==='sendModal')closeModal();});
+
+  // settings + empty-day demo
+  function segPick(btn){btn.parentElement.querySelectorAll('button').forEach(b=>b.classList.remove('on'));btn.classList.add('on');toast('Sync interval updated');}
+  function toggleEmpty(){const f=document.getElementById('today-full'),e=document.getElementById('today-empty');const show=f.style.display!=='none';f.style.display=show?'none':'';e.style.display=show?'block':'none';}
+
+  function go(id){
+    document.querySelectorAll('.view').forEach(v=>v.classList.remove('on'));
+    document.getElementById(id).classList.add('on');
+    document.querySelectorAll('.nav').forEach(n=>n.classList.toggle('active',n.dataset.view===id));
+    document.querySelector('.main').scrollTop=0;
+  }
+  document.querySelectorAll('[data-view]').forEach(el=>el.addEventListener('click',e=>{e.stopPropagation();go(el.dataset.view);}));
+
+  // ── Inbox ──
+  const INBOX=[
+    {t:'11:20', owner:'Sea Lines', subj:'Handy open Straits · straits.eml', pos:4, conf:96, band:'hi', status:'auto'},
+    {t:'11:05', owner:'Pacific Owners', subj:'Supramax Far East positions · pac_supra.eml', pos:8, conf:94, band:'hi', status:'auto'},
+    {t:'10:24', owner:'Bainbridge Nav', subj:'MT Oceanic Dream — WCI Kandla · attachment_172.eml', pos:1, conf:68, band:'lo', status:'review'},
+    {t:'10:11', owner:'Clearlake', subj:'MR positions AG / India · clearlake.eml', pos:7, conf:92, band:'hi', status:'auto'},
+    {t:'09:42', owner:'Gulf Navigation', subj:'Chem tankers Fujairah · gulf_chem.eml', pos:5, conf:91, band:'hi', status:'auto'},
+    {t:'09:15', owner:'Ocean Fleet', subj:'High fleet — SE Asia · attachment_026.eml', pos:5, conf:72, band:'mid', status:'review'},
+    {t:'09:02', owner:'Bahri Chem', subj:'Clean positions East · bahri.eml', pos:9, conf:95, band:'hi', status:'auto'},
+    {t:'08:40', owner:'Sea Lines', subj:'[old] Straits handy prelim · attachment_016.eml', pos:4, conf:90, band:'hi', status:'super'},
+    {t:'08:14', owner:'Meridian Owners', subj:'Kamsarmax WAF · mer_kam.eml', pos:6, conf:93, band:'hi', status:'auto'},
+    {t:'07:50', owner:'Blue Horizon Bulk', subj:'Panamax ECSA list · bh_pmx.eml', pos:5, conf:96, band:'hi', status:'auto'},
+  ];
+  const STPILL={auto:['st-auto','✓ auto-confirmed'],review:['st-rev','⚠ in review'],super:['st-out','⏰ superseded']};
+  let filter='all';
+  function confPill(c,b){const l={hi:'High',mid:'Medium',lo:'Low'}[b];return `<span class="conf ${b}"><span class="cd"></span>${c}% ${l}</span>`;}
+  function renderInbox(){
+    const rows=INBOX.filter(e=>filter==='all'?true:e.status===filter);
+    document.getElementById('inbox-rows').innerHTML=rows.map(e=>{
+      const [sc,sl]=STPILL[e.status];const isSuper=e.status==='super';
+      const act=e.status==='review'
+        ? `<button class="rowbtn p" onclick="event.stopPropagation();go('review')">Review →</button>`
+        : `<button class="rowbtn" onclick="event.stopPropagation();toast('Open parsed email + grid')">View</button>`;
+      return `<tr class="click ${e.band==='lo'&&!isSuper?'flag':''} ${isSuper?'stale':''}" onclick="${e.status==='review'?"go('review')":"toast('Open parsed email + grid')"}">
+        <td style="color:var(--muted)">${e.t}</td>
+        <td><div class="owner">${e.owner}</div><div class="subj">${e.subj}</div></td>
+        <td><span class="vcount">${e.pos}</span></td>
+        <td>${confPill(e.conf,e.band)}</td>
+        <td><span class="st-pill ${sc}">${sl}</span></td>
+        <td style="text-align:right">${act}</td>
+      </tr>`;
+    }).join('');
+  }
+  function setFilter(f){filter=f;['all','review','auto','super'].forEach(x=>document.getElementById('f-'+x).classList.toggle('on',x===f));renderInbox();}
+  renderInbox();
+
+  let tt;function toast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('show');clearTimeout(tt);tt=setTimeout(()=>t.classList.remove('show'),2200);}
+  refresh();
+</script>
+</body>
+</html>

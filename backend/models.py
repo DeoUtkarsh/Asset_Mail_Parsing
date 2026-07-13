@@ -15,6 +15,8 @@ class GenerateDraftRequest(BaseModel):
     email_id: str
     # List of vessel dicts with user-edited dynamic_data
     vessels: list[dict[str, Any]]
+    # Optional user-chosen columns: [{header, keys:[...]}]. Falls back to the standard set.
+    columns: Optional[list[dict[str, Any]]] = None
 
 
 class UpdateVesselRequest(BaseModel):
@@ -22,6 +24,7 @@ class UpdateVesselRequest(BaseModel):
     vessel_id: str
     dynamic_data: dict[str, Any]
     region: Optional[str] = None
+    is_validated: Optional[bool] = None
 
 
 # ── API response shapes ───────────────────────────────────────────

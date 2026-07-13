@@ -32,6 +32,9 @@ export const getAttachments = (emailId) =>
 export const getAttachmentRaw = (attId) =>
   request("GET", `/attachments/${attId}/raw`);
 
+/** URL to view/download a stored file attachment of an email. */
+export const attachmentFileUrl = (attId, idx) => `/api/attachments/${attId}/files/${idx}`;
+
 /** Returns vessels extracted from one attachment (Preview Modal). */
 export const getVesselsForAttachment = (attId) =>
   request("GET", `/attachments/${attId}/vessels`);
@@ -46,9 +49,12 @@ export const getAllVessels = (emailId) =>
 export const getColumns = (emailId) =>
   request("GET", `/emails/${emailId}/columns`);
 
-/** Update a single vessel row (cell edit). */
-export const updateVessel = (vesselId, dynamicData, region) =>
-  request("PUT", `/vessels/${vesselId}`, { vessel_id: vesselId, dynamic_data: dynamicData, region });
+/** Update a single vessel row (cell edit, region, and/or validated flag). */
+export const updateVessel = (vesselId, dynamicData, region, isValidated) => {
+  const body = { vessel_id: vesselId, dynamic_data: dynamicData, region };
+  if (isValidated !== undefined) body.is_validated = isValidated;
+  return request("PUT", `/vessels/${vesselId}`, body);
+};
 
 /** Delete a vessel row. */
 export const deleteVessel = (vesselId) =>
@@ -65,5 +71,5 @@ export const createVessel = (emailId) =>
  * vessels = array of { id, dynamic_data, region } from the validation grid.
  * Returns { job_id }.
  */
-export const generateDraft = (emailId, vessels) =>
-  request("POST", "/generate-draft", { email_id: emailId, vessels });
+export const generateDraft = (emailId, vessels, columns) =>
+  request("POST", "/generate-draft", { email_id: emailId, vessels, columns });

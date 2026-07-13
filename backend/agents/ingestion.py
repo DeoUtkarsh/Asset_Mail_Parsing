@@ -5,7 +5,9 @@ attachment rows to Supabase, and returns the IDs for Agent 2.
 """
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from config import settings
@@ -14,6 +16,33 @@ from imap_client import fetch_target_email
 from sse_manager import sse_manager
 
 logger = logging.getLogger(__name__)
+
+# Where .eml file attachments (Q88 PDFs, images, xlsx, …) are stored on disk
+FILES_DIR = Path(__file__).resolve().parent.parent / "attachment_files"
+
+
+def _save_files(att_id: str, files: list[dict]) -> list[dict]:
+    """Write each file to disk under attachment_files/<att_id>/ and return JSON metadata."""
+    if not files:
+        return []
+    dest = FILES_DIR / att_id
+    dest.mkdir(parents=True, exist_ok=True)
+    meta: list[dict] = []
+    for idx, f in enumerate(files):
+        safe = (re.sub(r"[^A-Za-z0-9._-]", "_", f.get("filename", "")) or f"file_{idx}")[:120]
+        stored = f"{idx}_{safe}"
+        try:
+            (dest / stored).write_bytes(f["content"])
+            meta.append({
+                "idx": idx,
+                "name": f.get("filename", stored),
+                "content_type": f.get("content_type", "application/octet-stream"),
+                "size": len(f["content"]),
+                "stored": stored,
+            })
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to save file %s for att %s: %s", safe, att_id, exc)
+    return meta
 
 
 async def run_ingestion(job_id: str) -> dict[str, Any]:
@@ -100,12 +129,20 @@ async def run_ingestion(job_id: str) -> dict[str, Any]:
                 "parent_email_id": email_id,
                 "filename": att["filename"],
                 "raw_text": att["raw_text"],
+                "mail_from": att.get("mail_from", ""),
+                "mail_subject": att.get("mail_subject", ""),
+                "mail_date": att.get("mail_date", ""),
                 "status": "pending",
             })
             .execute()
         )
         att_id: str = result.data[0]["id"]
         attachment_ids.append(att_id)
+
+        # Persist the email's real file attachments (PDFs, images, xlsx…) to disk
+        file_meta = _save_files(att_id, att.get("files", []))
+        if file_meta:
+            supabase.table("attachments").update({"files": file_meta}).eq("id", att_id).execute()
 
         await sse_manager.send(job_id, "attachment_saved", {
             "email_id": email_id,

@@ -43,3 +43,9 @@ logs/
 # ── Misc ──────────────────────────────────────────────────────────────────────
 *.bak
 *.tmp
+
+# Stored email file attachments (binary, regenerated on fetch)
+backend/attachment_files/
+
+# Local Claude Code settings
+.claude/settings.local.json
