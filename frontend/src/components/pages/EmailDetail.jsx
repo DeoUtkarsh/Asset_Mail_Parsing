@@ -20,6 +20,11 @@ export default function EmailDetail({ attachment, sender = "Vessel Owner", subje
   const [edits, setEdits] = useState({});
   const [busy, setBusy] = useState(false);
   const [viewFile, setViewFile] = useState(null);
+  const [showDetail, setShowDetail] = useState(false);
+
+  // Full superset of extracted columns for this email's positions
+  const detailCols = [...new Set(positions.flatMap((v) => Object.keys(v.dynamic_data || {})))]
+    .filter((k) => k !== "vessel_name" && k !== "name");
 
   useEffect(() => {
     let cancelled = false;
@@ -81,6 +86,7 @@ export default function EmailDetail({ attachment, sender = "Vessel Owner", subje
           <div className="rd-colhead">
             <Icon name="navigation" size={13} /> Extracted data
             <span className="rd-src">from email body · {positions.length}</span>
+            {positions.length > 0 && <button className="rd-full" onClick={() => setShowDetail(true)}>⤢ Full table</button>}
           </div>
           <div className="rd-scroll rd-positions">
             {positions.length === 0 ? (
@@ -113,6 +119,45 @@ export default function EmailDetail({ attachment, sender = "Vessel Owner", subje
           </div>
         </div>
       </div>
+
+      {/* ── Full extracted-data table (left) ⟷ email (right) ── */}
+      {showDetail && (
+        <div className="modal-bg" onClick={(e) => e.target.classList.contains("modal-bg") && setShowDetail(false)}>
+          <div className="detailmodal">
+            <div className="dm-head">
+              <span className="fv-badge">DATA</span>
+              <span className="t">{subject || attachment.filename} — {positions.length} position{positions.length !== 1 ? "s" : ""} · {detailCols.length + 2} columns</span>
+              <button className="fv-x" onClick={() => setShowDetail(false)}>✕</button>
+            </div>
+            <div className="dm-body">
+              <div className="dm-table">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>#</th><th>Vessel</th><th>Region</th>
+                      {detailCols.map((c) => <th key={c}>{c.replace(/_/g, " ")}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {positions.map((v, i) => (
+                      <tr key={v.id}>
+                        <td style={{ color: "var(--muted)" }}>{i + 1}</td>
+                        <td className="dm-vn">{vesselName(v)}</td>
+                        <td className={regionUnknown(v.region) ? "dm-flag" : "dm-vn"}>{v.region || "—"}</td>
+                        {detailCols.map((c) => <td key={c}>{v.dynamic_data?.[c] || "—"}</td>)}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="dm-email">
+                <div className="dm-email-head"><Icon name="mail" size={13} /> Original email</div>
+                <div className="rd-body">{raw || "Loading…"}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Attachment viewer ── */}
       {viewFile && (
