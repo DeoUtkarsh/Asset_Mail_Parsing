@@ -422,3 +422,107 @@ tr.flag td:first-child{box-shadow:inset 3px 0 0 var(--lo)}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:4px}
 ::-webkit-scrollbar-thumb:hover{background:#94a3b8}
+
+/* ── Vessel Position List (first tab) ── */
+.rpanel-fill{overflow:hidden;display:flex;flex-direction:column;padding:0}
+.rpanel-fill .vgrid-root{flex:1;min-height:0;display:flex;flex-direction:column;background:var(--panel)}
+.vgrid-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid var(--line);background:#fff;flex-shrink:0}
+.vgrid-head h2{margin:0;font-size:18px;font-weight:600;color:var(--ink);letter-spacing:-.2px}
+.vgrid-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+.vgrid-saved{font-size:12px;font-weight:600;color:var(--hi);opacity:0;transition:opacity .25s}
+.vgrid-saved.show{opacity:1}
+.vgrid-stats{display:flex;gap:8px;padding:10px 16px;border-bottom:1px solid var(--line);background:#fbfcfd;flex-shrink:0;flex-wrap:wrap}
+.vgrid-stat{padding:4px 10px;border-radius:8px;font-size:11px;background:#fff;border:1px solid var(--line)}
+.vgrid-stat span{color:var(--muted)}
+.vgrid-stat b{color:var(--brand-d);font-weight:700}
+.vgrid-stat label{display:inline-flex;align-items:center;gap:6px;cursor:pointer}
+.vgrid-body{flex:1;min-height:0;padding:10px 12px;overflow:hidden;display:flex;flex-direction:column;background:var(--bg)}
+.vgrid-err{margin:10px 16px 0;padding:10px 14px;border-radius:10px;font-size:13px;background:var(--lo-bg);border:1px solid #f5c6cb;color:var(--lo-d)}
+.vgrid-allcols{display:inline-flex;align-items:center;gap:8px;font-size:11.5px;font-weight:600;color:var(--muted)}
+.vgrid-switch{position:relative;width:36px;height:20px;border-radius:999px;background:#cbd5e1;border:1px solid var(--line-strong);transition:.2s}
+.vgrid-switch.on{background:var(--brand);border-color:var(--brand-d)}
+.vgrid-switch span{position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(0,0,0,.15);transition:transform .2s}
+.vgrid-switch.on span{transform:translateX(16px)}
+
+/* ── Vessel Position List — data grid (matches dm-table / inbox tokens) ── */
+.vessel-grid-wrap{flex:1;min-height:0;display:flex;flex-direction:column;border:1px solid var(--line);border-radius:var(--radius);background:#fff;box-shadow:var(--shadow);overflow:hidden}
+.vessel-grid-scroll{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;background:#fff}
+.vessel-grid-scroll.stretch{background:var(--bg)}
+.vessel-grid{width:100%;border-collapse:separate;border-spacing:0;font-size:11.5px;line-height:1.35;color:var(--ink)}
+.vessel-grid thead th{position:sticky;top:0;z-index:40;padding:8px 10px;text-align:left;font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.35px;color:#fff;background:var(--brand);border-bottom:1px solid var(--brand-d);border-right:1px solid rgba(255,255,255,.14);white-space:nowrap;box-sizing:border-box}
+.vessel-grid thead th.draft-on{background:var(--brand-d)}
+.vessel-grid thead th.col-select{text-align:center;padding:8px 6px}
+.vessel-grid thead th.col-num{padding-left:10px}
+.vessel-grid thead th .col-hdr{display:flex;align-items:flex-start;gap:5px;min-width:0}
+.vessel-grid thead th .col-hdr span{overflow:hidden;text-overflow:ellipsis;line-height:1.25}
+.vessel-grid tbody td{padding:6px 10px;border-bottom:1px solid var(--line);border-right:1px solid #f0f2f5;background:#fff;vertical-align:top;box-sizing:border-box}
+.vessel-grid tbody tr:hover td{background:#f4fafd}
+.vessel-grid tbody tr:hover td.cell-vname{background:#eef7fc}
+.vessel-grid tbody td.cell-select{text-align:center;padding:6px}
+.vessel-grid tbody td.cell-num{padding-left:10px}
+.vessel-grid tbody td.cell-vname{font-weight:700;color:var(--ink);text-transform:uppercase}
+.vessel-grid tbody td.cell-region{font-weight:700;color:var(--brand-d);text-transform:uppercase}
+.vessel-grid .cell-val{font-size:11.5px;line-height:1.4;max-width:min(260px,32vw);white-space:normal;word-break:break-word;color:var(--ink)}
+.vessel-grid .cell-val.is-empty{color:var(--icon);font-style:italic}
+.vessel-grid .cell-sr{font-size:11.5px;font-weight:500;color:var(--muted);font-variant-numeric:tabular-nums}
+.vessel-grid .cell-edit{width:100%;padding:5px 8px;border-radius:7px;border:1px solid var(--brand-100);background:var(--brand-50);color:var(--ink);font-size:11.5px;font-family:inherit;outline:none}
+.vessel-grid .cell-edit:focus{border-color:var(--brand);box-shadow:0 0 0 2px rgba(33,148,149,.15)}
+.vessel-grid .cell-edit.vname{font-weight:700;min-width:140px}
+.vessel-grid .cell-edit.region{font-weight:700;text-transform:uppercase;min-width:100px}
+.vessel-grid .grp-row td{background:var(--brand-50)!important;border-bottom:1px solid var(--brand-100);border-right:none;padding:7px 10px}
+.vessel-grid .grp-label{display:flex;align-items:center;gap:6px;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.3px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.vessel-grid .grp-label .grp-count{font-weight:500;color:var(--icon)}
+.vessel-grid .grp-icon{color:var(--brand);font-size:12px;line-height:1}
+.vessel-grid-empty{flex:1;display:flex;align-items:center;justify-content:center;padding:24px;text-align:center;font-size:13px;color:var(--muted);font-style:italic}
+.vessel-grid input[type=checkbox]{accent-color:var(--brand);cursor:pointer}
+
+/* ── Inbox — Vessel Extracted Data (matches Vessel Position List shell) ── */
+.inbox-retry-btn{color:var(--mid-d)!important;background:var(--mid-bg)!important}
+.inbox-retry-btn:hover:not(:disabled){background:#fff4e0!important}
+.inbox-log{margin:10px 16px 0;padding:10px 14px;border-radius:10px;font-size:11px;font-family:ui-monospace,monospace;background:var(--brand-50);border:1px solid var(--brand-100);color:var(--muted);max-height:7rem;overflow-y:auto;flex-shrink:0}
+.inbox-log-entry{line-height:1.45}
+.inbox-log-type{color:var(--brand-d);font-weight:600}
+.inbox-log-err{color:var(--lo)}
+.inbox-grid thead th.col-date{width:6.5rem}
+.inbox-grid thead th.col-time{width:4rem}
+.inbox-grid thead th.col-status{width:7rem}
+.inbox-grid thead th.col-actions{width:9rem}
+.inbox-grid thead th.col-conf{width:8rem}
+.inbox-grid thead th.col-verify{width:7rem}
+.inbox-grid tbody td.cell-date{white-space:nowrap;font-variant-numeric:tabular-nums}
+.inbox-grid tbody td.cell-time{font-size:11px;color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
+.inbox-grid tbody td.cell-sender{max-width:220px}
+.inbox-grid tbody td.cell-sender .owner{font-size:11.5px;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.inbox-grid tbody td.cell-sender .subj{font-size:10.5px;color:var(--muted);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.inbox-grid tbody td.cell-file{max-width:min(28rem,36vw)}
+.inbox-grid tbody td.cell-file .file-name{display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--ink);min-width:0}
+.inbox-grid tbody td.cell-file .file-name svg{flex-shrink:0;color:var(--brand)}
+.inbox-grid tbody td.cell-file .file-name span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.inbox-grid .grp-label .grp-subj{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500;text-transform:none;letter-spacing:0;color:var(--ink)}
+.inbox-grp-meta{margin-left:auto;font-weight:600;color:var(--brand-d);white-space:nowrap}
+.inbox-grp-meta .hi{color:var(--hi)}
+.inbox-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.inbox-btn{padding:5px 12px;border-radius:8px;font-size:11.5px;font-weight:600;border:1px solid var(--brand-100);background:#fff;color:var(--brand-d);transition:background .12s,border-color .12s}
+.inbox-btn:hover:not(:disabled){background:var(--brand-50)}
+.inbox-btn:disabled{opacity:.45;cursor:not-allowed}
+.inbox-btn-danger{border-color:#f5c6cb;color:var(--lo)}
+.inbox-btn-danger:hover:not(:disabled){background:var(--lo-bg)}
+.btn-verify{display:inline-flex;align-items:center;justify-content:center;gap:5px;min-width:92px;height:30px;padding:0 12px;border-radius:8px;font-size:11.5px;font-weight:600;border:1px solid var(--line);background:#f8fafc;color:var(--icon);transition:background .12s,border-color .12s}
+.btn-verify.is-verified{background:var(--hi);border-color:var(--hi-d);color:#fff}
+.btn-verify.can-verify{background:#fff;border-color:#86efac;color:var(--hi-d)}
+.btn-verify.can-verify:hover:not(:disabled){background:var(--hi-bg)}
+.btn-verify:disabled{opacity:.45;cursor:not-allowed}
+.st-pill.st-proc{display:inline-flex;align-items:center;gap:4px}
+
+/* ── Contact List grid cells ── */
+.contact-grid tbody tr.contact-fallback td{background:var(--mid-bg)!important}
+.contact-cell{font-size:11.5px;line-height:1.4;padding:2px 0;max-width:min(260px,32vw);white-space:normal;word-break:break-word;color:var(--ink)}
+.contact-cell.is-empty{color:var(--icon);font-style:italic}
+.contact-cell.editable{cursor:text}
+.contact-cell.editable:hover{background:var(--brand-50);border-radius:6px}
+.contact-cell-edit{width:100%;padding:5px 8px;border-radius:7px;border:1px solid var(--brand-100);background:var(--brand-50);color:var(--ink);font-size:11.5px;font-family:inherit;outline:none;resize:vertical;min-height:28px}
+.contact-cell-edit:focus{border-color:var(--brand);box-shadow:0 0 0 2px rgba(33,148,149,.15)}
+.contact-hint{flex-shrink:0;margin:0;padding:6px 16px 10px;font-size:10px;color:var(--muted);text-align:right}
+.email-preview-html{font-size:13px;line-height:1.65;color:var(--ink)}
+.email-preview-html table{border-collapse:collapse;max-width:100%}
+.email-preview-html img{max-width:100%;height:auto}

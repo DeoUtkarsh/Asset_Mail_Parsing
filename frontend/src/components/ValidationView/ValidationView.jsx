@@ -1,60 +1,89 @@
-import { useState, useEffect, useCallback, useRef } from "react";
-import { getAllVessels, getColumns, updateVessel, deleteVessel, createVessel, generateDraft } from "../../services/api";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { getAllVesselsCombined, getColumnDefinitions, updateVessel, deleteVessel, generateDraft } from "../../services/api";
 import { useSSE } from "../../hooks/useSSE";
 import EditableGrid from "./EditableGrid";
+import DraftModal from "./DraftModal";
+import AllColumnsToggle from "./AllColumnsToggle";
+import AiSummaryButton from "../AiSummary/AiSummaryButton";
+import { summarizeVessels } from "../../services/api";
+import {
+  filterPositionListGridColumns,
+  readPositionListShowAllColumnsPref,
+  writePositionListShowAllColumnsPref,
+  defaultDraftSelectedColumnIds,
+  buildDraftColumnIdList,
+  DRAFT_LOCKED_COLUMN_IDS,
+  DRAFT_NON_SELECTABLE_COLUMN_IDS,
+  isDraftColumnSelectable,
+} from "../../utils/standardColumns";
 
-export default function ValidationView({ emailId, onDraftGenerated }) {
+function buildDraftSelectionSignature(vesselIds, columnIds) {
+  const vessels = [...vesselIds].sort((a, b) => String(a).localeCompare(String(b))).join(",");
+  const columns = [...columnIds].sort().join(",");
+  return `${vessels}|${columns}`;
+}
+
+export default function ValidationView({ draftEmailId, refreshKey = 0, isActive = true }) {
   const [vessels, setVessels]       = useState([]);
-  const [columns, setColumns]       = useState([]);
+  const [columnDefs, setColumnDefs] = useState([]);
   const [loading, setLoading]       = useState(false);
   const [generating, setGenerating] = useState(false);
   const [draftJobId, setDraftJobId] = useState(null);
   const [error, setError]           = useState("");
   const [savedMsg, setSavedMsg]     = useState(false);
-  const [deleteMode, setDeleteMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState(new Set());
+  const [draftData, setDraftData]   = useState(null);
+  const [draftModalOpen, setDraftModalOpen] = useState(false);
+  const [showAllColumns, setShowAllColumns] = useState(() => readPositionListShowAllColumnsPref());
+  const [selectedColumnIds, setSelectedColumnIds] = useState(() => defaultDraftSelectedColumnIds());
+  const [lastDraftSignature, setLastDraftSignature] = useState(null);
   const savedTimer                  = useRef(null);
+  const draftSourceRef              = useRef({ vessels: [], columns: [] });
 
   const vesselsRef = useRef(vessels);
   useEffect(() => { vesselsRef.current = vessels; }, [vessels]);
 
-  useEffect(() => {
-    if (!emailId) return;
-    load();
-  }, [emailId]);
-
-  const load = async () => {
-    setLoading(true);
+  const load = useCallback(async () => {
+    const hasExistingData = vesselsRef.current.length > 0;
+    if (!hasExistingData) setLoading(true);
     setError("");
     try {
       const [vesselData, colData] = await Promise.all([
-        getAllVessels(emailId),
-        getColumns(emailId),
+        getAllVesselsCombined(),
+        getColumnDefinitions(),
       ]);
-      // Sort by filename so group headers are contiguous
-      vesselData.sort((a, b) =>
-        (a.filename || a.attachment_id || "").localeCompare(b.filename || b.attachment_id || "")
-      );
       setVessels(vesselData);
-      setColumns(colData.columns || []);
+      setColumnDefs(colData.columns || []);
+      setSelectedColumnIds(defaultDraftSelectedColumnIds(colData.columns || []));
     } catch (e) {
       setError(e.message);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load, refreshKey]);
 
   const handleDraftEvent = useCallback((evt) => {
     if (evt.type === "drafting_done") {
       setGenerating(false);
       setDraftJobId(null);
-      onDraftGenerated(evt.draft_html || "", evt.zones || []);
+      setDraftData({
+        html: evt.draft_html || "",
+        zones: evt.zones || [],
+        vessels: draftSourceRef.current.vessels,
+        columns: draftSourceRef.current.columns,
+      });
+      setLastDraftSignature(draftSourceRef.current.signature ?? null);
+      setDraftModalOpen(true);
     } else if (evt.type === "phase2_failed") {
       setGenerating(false);
       setDraftJobId(null);
       setError("Draft generation failed: " + (evt.error || "Unknown error"));
     }
-  }, [onDraftGenerated]);
+  }, []);
 
   useSSE(draftJobId, handleDraftEvent);
 
@@ -65,6 +94,7 @@ export default function ValidationView({ emailId, onDraftGenerated }) {
   };
 
   const handleCellEdit = useCallback(async (rowId, field, value) => {
+    if (field === "signature_emails" || field === "signature_phones") return;
     setVessels((prev) =>
       prev.map((v) => {
         if (v.id !== rowId) return v;
@@ -77,13 +107,35 @@ export default function ValidationView({ emailId, onDraftGenerated }) {
     const savePromise = field === "__region__"
       ? updateVessel(rowId, vessel.dynamic_data, value)
       : updateVessel(rowId, { ...vessel.dynamic_data, [field]: value }, vessel.region);
-    savePromise.then(flashSaved).catch(console.error);
+    savePromise.then(flashSaved).catch((e) => setError("Failed to save: " + e.message));
   }, []);
 
-  const handleDeleteRow = useCallback(async (rowId) => {
-    setVessels((prev) => prev.filter((v) => v.id !== rowId));
-    deleteVessel(rowId).catch(console.error);
-  }, []);
+  const handleDeleteSelected = useCallback(async () => {
+    if (selectedIds.size === 0) return;
+    const ids = [...selectedIds];
+    setVessels((prev) => prev.filter((v) => !selectedIds.has(v.id)));
+    setSelectedIds(new Set());
+    try {
+      await Promise.all(ids.map((id) => deleteVessel(id)));
+      flashSaved();
+    } catch (e) {
+      setError("Failed to delete rows: " + e.message);
+      load();
+    }
+  }, [selectedIds, load]);
+
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (selectedIds.size === 0) return;
+      if (e.key !== "Delete") return;
+      const tag = e.target?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea") return;
+      e.preventDefault();
+      handleDeleteSelected();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selectedIds, handleDeleteSelected]);
 
   const handleToggleSelect = useCallback((id) => {
     setSelectedIds((prev) => {
@@ -101,35 +153,112 @@ export default function ValidationView({ emailId, onDraftGenerated }) {
     });
   }, [vessels]);
 
-  const handleAddRow = async () => {
-    if (!emailId) return;
-    try {
-      const newVessel = await createVessel(emailId);
-      setVessels((prev) => [...prev, newVessel]);
-      flashSaved();
-    } catch (e) {
-      setError("Failed to add row: " + e.message);
-    }
-  };
-
   const sourceCount = new Set(vessels.map((v) => v.attachment_id).filter(Boolean)).size;
 
+  const gridColumns = useMemo(
+    () => filterPositionListGridColumns(columnDefs, showAllColumns),
+    [columnDefs, showAllColumns],
+  );
+
+  const draftColumnIds = useMemo(
+    () => buildDraftColumnIdList(selectedColumnIds, columnDefs),
+    [selectedColumnIds, columnDefs],
+  );
+
+  const currentDraftSignature = useMemo(
+    () => buildDraftSelectionSignature(selectedIds, draftColumnIds),
+    [selectedIds, draftColumnIds],
+  );
+
+  const draftMatchesLastGeneration =
+    lastDraftSignature !== null && lastDraftSignature === currentDraftSignature;
+
+  useEffect(() => {
+    if (!draftMatchesLastGeneration) {
+      setDraftModalOpen(false);
+    }
+  }, [draftMatchesLastGeneration]);
+
+  const toggleShowAllColumns = useCallback((next) => {
+    setShowAllColumns((prev) => {
+      const value = typeof next === "boolean" ? next : !prev;
+      writePositionListShowAllColumnsPref(value);
+      return value;
+    });
+  }, []);
+
+  const handleToggleColumnSelect = useCallback((colId) => {
+    if (DRAFT_LOCKED_COLUMN_IDS.has(colId) || DRAFT_NON_SELECTABLE_COLUMN_IDS.has(colId)) return;
+    setSelectedColumnIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(colId)) next.delete(colId);
+      else next.add(colId);
+      DRAFT_LOCKED_COLUMN_IDS.forEach((id) => next.add(id));
+      return next;
+    });
+  }, []);
+
+  const handleToggleVisibleColumnsForDraft = useCallback(() => {
+    const visibleIds = gridColumns
+      .map((c) => c.id)
+      .filter((id) => isDraftColumnSelectable(id));
+    setSelectedColumnIds((prev) => {
+      const allVisible = visibleIds.length > 0 && visibleIds.every((id) => prev.has(id));
+      const next = new Set(prev);
+      if (allVisible) {
+        visibleIds.forEach((id) => next.delete(id));
+      } else {
+        visibleIds.forEach((id) => next.add(id));
+      }
+      DRAFT_LOCKED_COLUMN_IDS.forEach((id) => next.add(id));
+      return next;
+    });
+  }, [gridColumns]);
+
+  const draftableVisibleIds = useMemo(
+    () => gridColumns.map((c) => c.id).filter((id) => isDraftColumnSelectable(id)),
+    [gridColumns],
+  );
+
+  const allVisibleDraftSelected =
+    draftableVisibleIds.length > 0 && draftableVisibleIds.every((id) => selectedColumnIds.has(id));
+  const someVisibleDraftSelected = draftableVisibleIds.some((id) => selectedColumnIds.has(id));
+
+  const fetchVesselSummary = useCallback(() => {
+    const ids =
+      selectedIds.size > 0
+        ? [...selectedIds]
+        : vessels.map((v) => v.id);
+    return summarizeVessels(ids);
+  }, [selectedIds, vessels]);
+
   const handleGenerateDraft = async () => {
-    if (!emailId) { setError("No email selected."); return; }
+    if (selectedIds.size === 0) return;
+    const emailId =
+      draftEmailId ||
+      vessels.find((v) => v.parent_email_id)?.parent_email_id;
+    if (!emailId) {
+      setError("No validation-ready email found for draft generation.");
+      return;
+    }
     setGenerating(true);
     setError("");
-    const sourceVessels = selectedIds.size > 0
-      ? vessels.filter((v) => selectedIds.has(v.id))
-      : vessels;
+    setDraftData(null);
+    setDraftModalOpen(false);
+    const sourceVessels = vessels.filter((v) => selectedIds.has(v.id));
+    const signature = buildDraftSelectionSignature(selectedIds, draftColumnIds);
+    draftSourceRef.current = { vessels: sourceVessels, columns: draftColumnIds, signature };
     const payload = sourceVessels.map((v) => ({
       id: v.id,
       dynamic_data: v.dynamic_data,
       region: v.region,
       attachment_id: v.attachment_id,
       filename: v.filename,
+      signature_emails: v.signature_emails ?? "",
+      signature_phones: v.signature_phones ?? "",
     }));
     try {
-      const { job_id } = await generateDraft(emailId, payload);
+      const { job_id } = await generateDraft(emailId, payload, draftColumnIds);
       setDraftJobId(job_id);
     } catch (e) {
       setGenerating(false);
@@ -138,143 +267,160 @@ export default function ValidationView({ emailId, onDraftGenerated }) {
   };
 
   return (
-    <div className="flex flex-col h-full gap-0" style={{ background: "#f0f9ff" }}>
+    <div className="vgrid-root">
 
-      {/* ── Top bar — ocean gradient ── */}
-      <div
-        className="flex items-center justify-between px-6 py-4 flex-shrink-0 shadow-md"
-        style={{ background: "linear-gradient(135deg, #0c4a6e 0%, #0369a1 100%)" }}
-      >
-        <div>
-          <h2 className="text-base font-bold text-white tracking-wide">⚓ Validation Grid</h2>
-          <p className="text-xs mt-0.5" style={{ color: "#bae6fd" }}>
-            {emailId
-              ? `${vessels.length} vessels across ${sourceCount} source file${sourceCount !== 1 ? "s" : ""} — double-click any cell to edit`
-              : "Select an email from the Inbox to load vessels."}
-          </p>
-        </div>
+      <div className="vgrid-head">
+        <h2>Vessel Position List</h2>
 
-        <div className="flex items-center gap-3">
-          {/* Auto-save indicator */}
-          <span
-            className={`text-xs font-semibold transition-all duration-300 ${savedMsg ? "opacity-100" : "opacity-0"}`}
-            style={{ color: "#6ee7b7" }}
-          >
-            ✓ Saved
-          </span>
+        <div className="vgrid-actions">
+          <span className={`vgrid-saved ${savedMsg ? "show" : ""}`}>✓ Saved</span>
 
-          {emailId && (
-            <button
-              onClick={load}
-              disabled={loading}
-              className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors shadow-sm disabled:opacity-50"
-              style={{ background: "rgba(255,255,255,0.12)", color: "#e0f2fe", border: "1px solid rgba(186,230,253,0.4)" }}
-              onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.22)"}
-              onMouseLeave={e => e.currentTarget.style.background = "rgba(255,255,255,0.12)"}
-            >
-              ↺ Reload
-            </button>
+          {!loading && vessels.length > 0 && columnDefs.length > 0 && (
+            <AllColumnsToggle
+              enabled={showAllColumns}
+              onChange={toggleShowAllColumns}
+              visibleCount={gridColumns.length}
+              totalCount={columnDefs.length}
+            />
           )}
 
-          {emailId && (
-            <button
-              onClick={handleAddRow}
-              disabled={loading}
-              className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors shadow-sm disabled:opacity-50"
-              style={{ background: "rgba(255,255,255,0.12)", color: "#7dd3fc", border: "1px solid rgba(125,211,252,0.4)" }}
-              onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.22)"}
-              onMouseLeave={e => e.currentTarget.style.background = "rgba(255,255,255,0.12)"}
-            >
-              ＋ Add Row
-            </button>
-          )}
-
-          {emailId && vessels.length > 0 && (
-            <button
-              onClick={() => setDeleteMode((d) => !d)}
-              className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors shadow-sm"
-              style={deleteMode
-                ? { background: "#ef4444", color: "#fff", border: "1px solid #dc2626" }
-                : { background: "rgba(239,68,68,0.15)", color: "#fca5a5", border: "1px solid rgba(252,165,165,0.4)" }
-              }
-              onMouseEnter={e => e.currentTarget.style.background = deleteMode ? "#dc2626" : "rgba(239,68,68,0.25)"}
-              onMouseLeave={e => e.currentTarget.style.background = deleteMode ? "#ef4444" : "rgba(239,68,68,0.15)"}
-            >
-              🗑 {deleteMode ? "Exit Delete Mode" : "Delete Mode"}
-            </button>
-          )}
+          <AiSummaryButton
+            fetchSummary={fetchVesselSummary}
+            title={
+              selectedIds.size > 0
+                ? `Vessel List — ${selectedIds.size} selected`
+                : "Vessel Position List — AI Summary"
+            }
+            disabled={loading || vessels.length === 0}
+            className="tb-btn"
+          />
 
           <button
+            type="button"
             onClick={handleGenerateDraft}
-            disabled={!emailId || generating || loading || vessels.length === 0}
-            className="flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-semibold transition-all shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
-            style={{ background: "#fff", color: "#0c4a6e", border: "none" }}
-            onMouseEnter={e => { if (!generating) e.currentTarget.style.background = "#e0f2fe"; }}
-            onMouseLeave={e => { if (!generating) e.currentTarget.style.background = "#fff"; }}
+            disabled={
+              generating
+              || loading
+              || vessels.length === 0
+              || selectedIds.size === 0
+              || draftMatchesLastGeneration
+            }
+            className="btn btn-send"
+            style={{ fontSize: 13, padding: "9px 15px" }}
+            title={
+              selectedIds.size === 0
+                ? "Select at least one vessel"
+                : draftMatchesLastGeneration
+                  ? "Draft already generated for this selection — change vessels or columns to regenerate"
+                  : undefined
+            }
           >
             {generating ? (
-              <>
-                <span className="inline-block w-4 h-4 border-2 border-t-transparent rounded-full animate-spin"
-                  style={{ borderColor: "#0369a1", borderTopColor: "transparent" }} />
-                Generating draft…
-              </>
+              <><span className="spin-ring" /> Generating draft…</>
+            ) : draftMatchesLastGeneration ? (
+              "Draft generated — change selection"
             ) : selectedIds.size > 0 ? (
-              `✔ Generate Draft — ${selectedIds.size} selected`
+              `Draft Email — ${selectedIds.size} selected`
             ) : (
-              `✔ Generate Draft — All ${vessels.length}`
+              "Draft Email — select vessels"
             )}
           </button>
+
+          {draftData && !generating && draftMatchesLastGeneration && (
+            <button
+              type="button"
+              onClick={() => setDraftModalOpen(true)}
+              className="btn btn-ghost"
+              style={{ fontSize: 13, padding: "9px 15px" }}
+            >
+              ✓ View Map &amp; Draft
+            </button>
+          )}
         </div>
       </div>
 
-      {/* ── Stats bar ── */}
       {vessels.length > 0 && (
-        <div className="flex gap-3 px-6 py-3 flex-shrink-0" style={{ background: "#e0f2fe", borderBottom: "1px solid #bae6fd" }}>
+        <div className="vgrid-stats">
           <Stat label="Vessels" value={vessels.length} />
           <Stat label="Sources" value={sourceCount} />
           <Stat label="Regions" value={new Set(vessels.map((v) => v.region).filter(Boolean)).size} />
-          <Stat label="Columns" value={columns.length} />
+          <ColumnsStat
+            selectedCount={draftColumnIds.length}
+            allVisibleDraftSelected={allVisibleDraftSelected}
+            someVisibleDraftSelected={someVisibleDraftSelected}
+            onToggleVisibleColumnsForDraft={handleToggleVisibleColumnsForDraft}
+          />
         </div>
       )}
 
-      {/* ── Error ── */}
-      {error && (
-        <div className="flex-shrink-0 mx-6 mt-3 px-4 py-2 rounded-lg text-sm"
-          style={{ background: "#fef2f2", border: "1px solid #fca5a5", color: "#dc2626" }}>
-          {error}
-        </div>
-      )}
+      {error && <div className="vgrid-err">{error}</div>}
 
-      {/* ── Grid ── */}
-      <div className="flex-1 min-h-0 px-4 py-3 overflow-hidden flex flex-col">
-        {loading ? (
-          <div className="flex-1 flex items-center justify-center text-sm" style={{ color: "#7dd3fc" }}>
-            <span className="inline-block w-5 h-5 border-2 border-sky-400 border-t-transparent rounded-full animate-spin mr-2" />
-            Loading vessels…
-          </div>
+      <div className="vgrid-body">
+        {loading && vessels.length === 0 ? (
+          <div className="center-load"><span className="spin-ring" /> Loading vessels…</div>
         ) : (
           <EditableGrid
             data={vessels}
-            columns={columns}
+            gridColumns={gridColumns}
             onCellEdit={handleCellEdit}
-            onDeleteRow={handleDeleteRow}
-            deleteMode={deleteMode}
+            readOnly
+            showCheckboxes
             selectedIds={selectedIds}
             onToggleSelect={handleToggleSelect}
             onToggleAll={handleToggleAll}
+            stretchToFill={!showAllColumns}
+            isActive={isActive}
+            showColumnSelect
+            selectedColumnIds={selectedColumnIds}
+            onToggleColumnSelect={handleToggleColumnSelect}
+            emptyMessage="No vessels yet. Sync owner emails from Inbox to populate the list."
           />
         )}
       </div>
+
+      <DraftModal
+        open={draftModalOpen}
+        onClose={() => setDraftModalOpen(false)}
+        html={draftData?.html}
+        zones={draftData?.zones}
+        vessels={draftData?.vessels}
+        columns={draftData?.columns}
+      />
     </div>
   );
 }
 
 function Stat({ label, value }) {
   return (
-    <div className="px-3 py-1.5 rounded-lg text-xs shadow-sm"
-      style={{ background: "#fff", border: "1px solid #bae6fd" }}>
-      <span style={{ color: "#7dd3fc" }}>{label}: </span>
-      <span className="font-bold" style={{ color: "#0369a1" }}>{value}</span>
+    <div className="vgrid-stat">
+      <span>{label}: </span>
+      <b>{value}</b>
     </div>
+  );
+}
+
+function ColumnsStat({
+  selectedCount,
+  allVisibleDraftSelected,
+  someVisibleDraftSelected,
+  onToggleVisibleColumnsForDraft,
+}) {
+  return (
+    <label
+      className="vgrid-stat"
+      title="Select all visible columns for draft email"
+    >
+      <input
+        type="checkbox"
+        checked={allVisibleDraftSelected}
+        ref={(el) => {
+          if (el) el.indeterminate = someVisibleDraftSelected && !allVisibleDraftSelected;
+        }}
+        onChange={onToggleVisibleColumnsForDraft}
+        className="cursor-pointer accent-[var(--brand)]"
+      />
+      <span>Columns selected: </span>
+      <b>{selectedCount}</b>
+    </label>
   );
 }

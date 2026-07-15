@@ -6,12 +6,13 @@ The LLM is used only for the short introductory paragraph.
 """
 import logging
 from collections import defaultdict
-from typing import Any
+from typing import Any, Optional
 
 from openai import AsyncOpenAI
 from database import supabase
 from config import settings
 from sse_manager import sse_manager
+from column_defs import get_column_definitions, resolve_cell_value, header_for_column
 
 logger = logging.getLogger(__name__)
 
@@ -105,10 +106,15 @@ COLUMN_MAP = [
 ]
 
 INTRO_PROMPT = """\
-You are a professional shipbroker. Write a single concise paragraph (2-3 sentences) \
-for a vessel position list email being sent to a charterer. \
-Mention that the email consolidates open positions across multiple regions. \
-Be professional and direct. Output ONLY the paragraph, no salutation or sign-off."""
+Write one concise paragraph (2–3 sentences) for a shipbroker vessel-position email to a charterer. \
+Say that the message consolidates open positions across multiple regions. \
+Professional and direct. \
+Reply with ONLY that paragraph — no title, no bullets, no markdown, no explanation of how you wrote it."""
+
+INTRO_DEFAULT = (
+    "Please find below the latest vessel open positions consolidated "
+    "from our network, grouped by trade zone."
+)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -131,8 +137,153 @@ def _get_cell(dd: dict, keys: list[str]) -> str:
     return ""
 
 
-def _build_html(intro_text: str, zone_groups: dict[str, list[dict]], column_map: list) -> str:
-    """Build the full HTML email from zone-grouped vessel data using the given columns."""
+def _is_meaningful_cell(s: str) -> bool:
+    v = (s or "").strip()
+    if not v:
+        return False
+    return v.lower() not in ("unknown", "none", "n/a", "-", "—")
+
+
+def _header_for_column_key(col_key: str) -> str:
+    if col_key == "__region__":
+        return "REGION"
+    if col_key == "signature_emails":
+        return "SIGNATURE EMAILS"
+    if col_key == "signature_phones":
+        return "SIGNATURE PHONES"
+    return col_key.replace("_", " ").upper()
+
+
+def _ordered_grid_column_keys(grid_columns: list[str]) -> list[str]:
+    """Match Validate tab: REGION, dynamic keys (excluding duplicate region), then signatures."""
+    if not grid_columns:
+        return []
+    sigs = [k for k in ("signature_emails", "signature_phones") if k in grid_columns]
+    dyn = [
+        k for k in grid_columns
+        if k not in ("signature_emails", "signature_phones", "region")
+    ]
+    return ["__region__"] + dyn + sigs
+
+
+def _cell_for_grid_column(vessel: dict, col_key: str) -> str:
+    if col_key == "__region__":
+        return str(vessel.get("region") or "").strip()
+    if col_key == "signature_emails":
+        return str(vessel.get("signature_emails") or "").strip()
+    if col_key == "signature_phones":
+        return str(vessel.get("signature_phones") or "").strip()
+    dd = vessel.get("dynamic_data") or {}
+    return str(dd.get(col_key) or "").strip()
+
+
+def _sanitize_intro(raw: str) -> str:
+    """Drop model meta / instruction echo; keep a single charterer-facing sentence block."""
+    t = (raw or "").strip()
+    if not t:
+        return INTRO_DEFAULT
+    low = t.lower()
+    leak = (
+        "let's craft", "lets craft", "we need to output", "we should output",
+        "single concise paragraph", "2-3 sentences", "2–3 sentences",
+        "here's a draft", "here is a draft", "i'll write", "i will write",
+        "craft:", "```", "output only", "json output",
+    )
+    if any(m in low for m in leak):
+        return INTRO_DEFAULT
+    # First non-empty line / paragraph only
+    for block in t.replace("\r\n", "\n").split("\n\n"):
+        line = block.strip().split("\n")[0].strip()
+        if len(line) >= 25 and not any(m in line.lower() for m in leak):
+            return line[:1200]
+    return INTRO_DEFAULT
+
+
+def _active_column_keys_for_zone(vessels: list[dict], col_keys: list[str]) -> list[str]:
+    """Email tables: only columns with data in this zone (plus region / vessel name)."""
+    active: list[str] = []
+    for ck in col_keys:
+        if ck in ("__region__", "vessel_name", "name"):
+            active.append(ck)
+        elif ck in ("signature_emails", "signature_phones"):
+            if any(_is_meaningful_cell(_cell_for_grid_column(v, ck)) for v in vessels):
+                active.append(ck)
+        elif any(_is_meaningful_cell(_cell_for_grid_column(v, ck)) for v in vessels):
+            active.append(ck)
+    return active if active else list(col_keys)
+
+
+def _build_html_grid(
+    intro_text: str,
+    zone_groups: dict[str, list[dict]],
+    columns: list[dict] | None = None,
+) -> str:
+    """Tables use column definitions from PostgreSQL (same as Validate / Contact List tabs)."""
+    cols = columns or get_column_definitions(supabase)
+    zone_html_parts: list[str] = []
+    empty_cell = "—"
+
+    for zone, vessels in zone_groups.items():
+        if not vessels:
+            continue
+
+        th = "".join(
+            f'<th style="background:#0369a1;color:#e0f2fe;padding:8px 10px;'
+            f'text-align:left;font-size:11px;font-family:Arial,Helvetica,sans-serif;'
+            f'border:1px solid #0284c7;font-weight:600;white-space:nowrap">'
+            f'{header_for_column(col["id"], cols)}</th>'
+            for col in cols
+        )
+
+        rows = ""
+        for i, v in enumerate(vessels):
+            bg = "#ffffff" if i % 2 == 0 else "#f8fafc"
+            tds = []
+            for col in cols:
+                raw = resolve_cell_value(v, col["id"], i + 1)
+                display = raw if _is_meaningful_cell(raw) else empty_cell
+                is_name = col["id"] == "vessel_name"
+                weight = "font-weight:700;" if is_name else ""
+                wrap = "normal" if col["id"] in ("remarks", "cargo_history_combo", "attachments") else "nowrap"
+                tds.append(
+                    f'<td style="padding:8px 10px;font-size:11px;font-family:Arial,Helvetica,sans-serif;'
+                    f'color:#0c4a6e;border:1px solid #cbd5e1;background:{bg};'
+                    f'white-space:{wrap};vertical-align:top;{weight}">{display}</td>'
+                )
+            rows += f"<tr>{''.join(tds)}</tr>"
+
+        zone_html_parts.append(
+            f'<div style="margin-bottom:24px">'
+            f'<p style="font-size:12px;font-weight:700;color:#0369a1;font-family:Arial,Helvetica,sans-serif;'
+            f'text-transform:uppercase;margin:0 0 8px 0;padding:4px 0;border-bottom:2px solid #0ea5e9">'
+            f'{zone}'
+            f'</p>'
+            f'<table cellpadding="0" cellspacing="0" border="0" '
+            f'style="border-collapse:collapse;width:100%;min-width:600px;font-family:Arial,Helvetica,sans-serif">'
+            f'<thead><tr>{th}</tr></thead>'
+            f'<tbody>{rows}</tbody>'
+            f'</table></div>'
+        )
+
+    zones_html = "\n".join(zone_html_parts)
+    return f"""<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"></head>
+<body style="font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#0c4a6e;margin:0;padding:16px;line-height:1.6;">
+  <p style="margin:0 0 10px 0;">Dear Utkarsh,</p>
+  <p style="margin:0 0 10px 0;">Good day.</p>
+  <p style="margin:0 0 16px 0;">{intro_text}</p>
+  <div style="margin:0 0 20px 0">
+    {zones_html}
+  </div>
+  <p style="margin:16px 0 10px 0;">Should you require any further details, please do not hesitate to reach out.</p>
+  <p style="margin:0;">Best Regards</p>
+</body>
+</html>"""
+
+
+def _build_html_legacy(intro_text: str, zone_groups: dict[str, list[dict]]) -> str:
+    """Build the full HTML email from zone-grouped vessel data."""
 
     zone_html_parts: list[str] = []
 
@@ -143,7 +294,7 @@ def _build_html(intro_text: str, zone_groups: dict[str, list[dict]], column_map:
         # Only include columns that have at least one non-empty value in this zone
         active_cols = [
             (hdr, keys)
-            for hdr, keys in column_map
+            for hdr, keys in COLUMN_MAP
             if any(_get_cell(v.get("dynamic_data") or {}, keys) for v in vessels)
         ]
 
@@ -205,24 +356,30 @@ def _build_html(intro_text: str, zone_groups: dict[str, list[dict]], column_map:
 </html>"""
 
 
+def _build_html(
+    intro_text: str,
+    zone_groups: dict[str, list[dict]],
+    grid_columns: list[str] | None = None,
+) -> str:
+    cols = get_column_definitions(supabase)
+    if grid_columns:
+        allowed = set(grid_columns)
+        cols = [c for c in cols if c["id"] in allowed]
+    return _build_html_grid(intro_text, zone_groups, cols)
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 async def run_drafter(
     job_id: str,
     email_id: str,
     vessels: list[dict[str, Any]],
-    columns: list[dict[str, Any]] | None = None,
+    grid_columns: Optional[list[str]] = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     """
     Generates one consolidated HTML email for all validated vessels.
-    `columns` (optional) = [{header, keys:[...]}] chosen by the user; else the standard set.
     Returns (draft_html, zones_for_map).
     """
-    # Resolve which columns to render
-    if columns:
-        column_map = [(c.get("header", ""), c.get("keys") or []) for c in columns if c.get("keys")]
-    else:
-        column_map = COLUMN_MAP
     await sse_manager.send(job_id, "drafting_started", {
         "message": f"Generating consolidated draft for {len(vessels)} vessels…",
     })
@@ -246,15 +403,32 @@ async def run_drafter(
         {z: len(v) for z, v in ordered.items()},
     )
 
-    # 2 — Intro paragraph. The reasoning model leaks its chain-of-thought into
-    # `content`, so use a clean professional static intro instead.
-    intro_text = (
-        "Please find below the latest vessel open positions consolidated "
-        "from our network, grouped by trade zone."
-    )
+    # 2 — Ask LLM for a short intro paragraph only
+    intro_text = INTRO_DEFAULT
+    try:
+        resp = await nvidia_client.chat.completions.create(
+            model=settings.NVIDIA_LLM_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You write only the final paragraph for an email body. "
+                        "Never describe instructions, steps, or your reasoning. "
+                        "No markdown or quotes."
+                    ),
+                },
+                {"role": "user", "content": INTRO_PROMPT},
+            ],
+            temperature=0.2,
+            max_tokens=120,
+        )
+        intro_text = _sanitize_intro(resp.choices[0].message.content or "")
+        logger.info("[Drafter] Intro: %d chars", len(intro_text))
+    except Exception as exc:
+        logger.warning("[Drafter] Intro LLM failed, using default: %s", exc)
 
-    # 3 — Build HTML email
-    draft_html = _build_html(intro_text, ordered, column_map)
+    # 3 — Build HTML email (columns align with Validate when grid_columns sent)
+    draft_html = _build_html(intro_text, ordered, grid_columns or [])
     logger.info("[Drafter] HTML email: %d chars", len(draft_html))
 
     # 4 — Build zone markers for the Leaflet map

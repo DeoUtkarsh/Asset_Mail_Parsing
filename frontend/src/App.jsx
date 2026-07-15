@@ -2,18 +2,21 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { getEmails, getAllVessels, updateVessel, fetchEmails, generateDraft, getAttachments, getColumns } from "./services/api";
 import { useSSE } from "./hooks/useSSE";
 import { needsReview, confidencePct, confBand, byAttachment, deriveEmail, parseFromName, STD_COLUMNS } from "./lib/positions";
-import Today from "./components/pages/Today";
-import PositionList from "./components/pages/PositionList";
+import ValidationView from "./components/ValidationView/ValidationView";
+import InboxView from "./components/InboxView/InboxView";
+import ContactListView from "./components/ContactListView/ContactListView";
 import Settings from "./components/pages/Settings";
 import EmailDetail from "./components/pages/EmailDetail";
+import AiSummaryButton from "./components/AiSummary/AiSummaryButton";
 import Icon from "./components/icons";
+import { summarizeInbox } from "./services/api";
 
 const FILTER_SENDER = "sanjib@iconshipbrokers.com";
 const RAIL = [
   { id: "today", ic: "home", label: "Today" },
   { id: "inbox", ic: "inbox", label: "Inbox" },
   { id: "review", ic: "alert", label: "Review" },
-  { id: "list", ic: "navigation", label: "Position List" },
+  { id: "list", ic: "navigation", label: "Contact List" },
 ];
 const ST = {
   auto: ["st-auto", "✓ auto"],
@@ -44,6 +47,8 @@ export default function App() {
   const [draftJob, setDraftJob] = useState(null);
 
   const [sendModal, setSendModal] = useState(false);
+  const [vesselRefreshKey, setVesselRefreshKey] = useState(0);
+  const [contactRefreshKey, setContactRefreshKey] = useState(0);
   const [toastMsg, setToastMsg] = useState(null);
   const toastTimer = useRef(null);
   const toast = useCallback((m) => { setToastMsg(m); clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToastMsg(null), 2400); }, []);
@@ -117,8 +122,18 @@ export default function App() {
   // ── Nav ──
   const go = useCallback((v) => {
     setView(v);
-    if (v === "list" && vessels.length && (draftStale || !draft.html) && !draftLoading) runDraft();
-  }, [vessels.length, draftStale, draft.html, draftLoading, runDraft]);
+  }, []);
+
+  const onVerifiedChange = useCallback(async () => {
+    await loadEmails();
+    if (activeEmailId) await loadVessels(activeEmailId);
+    setVesselRefreshKey((k) => k + 1);
+  }, [loadEmails, loadVessels, activeEmailId]);
+
+  const inboxSummary = useCallback(
+    () => summarizeInbox(emails.map((e) => e.id)),
+    [emails],
+  );
 
   const onCopy = () => {
     const tmp = document.createElement("div"); tmp.innerHTML = draft.html;
@@ -140,16 +155,19 @@ export default function App() {
   const posByAtt = new Map(byAttachment(vessels).map((g) => [g.attachment_id, g]));
   const emailRows = attachments.map((a) => {
     const g = posByAtt.get(a.id); const vs = g?.vessels || []; const fl = g?.flagged || 0;
-    const status = a.status === "error" ? "error" : (a.status !== "done") ? "processing" : fl > 0 ? "review" : "auto";
+    const status = a.status === "error" ? "error" : (a.status !== "done") ? "processing" : fl > 0 ? "review" : a.is_verified ? "auto" : "review";
     const em = deriveEmail(attRaw[a.id]);
     const files = a.files || [];
     const sender = parseFromName(a.mail_from) || em.sender;
     const subject = a.mail_subject || em.subject;
+    const pct = a.confidence_score != null ? a.confidence_score : (vs.length ? confidencePct(vs) : 100);
+    const band = a.confidence_tier === "high" ? "hi" : a.confidence_tier === "medium" ? "mid" : a.confidence_tier === "low" ? "lo" : confBand(pct);
     return {
       id: a.id, filename: a.filename, sender, subject, snippet: em.snippet,
       files, hasAttachment: files.length > 0 || em.hasAttachment,
-      mailDate: a.mail_date, count: vs.length, flagged: fl, status,
-      pct: vs.length ? confidencePct(vs) : 100,
+      mailDate: a.mail_date, count: a.vessel_count ?? vs.length, flagged: fl, status,
+      pct, band, isVerified: Boolean(a.is_verified),
+      confidenceLabel: a.confidence_label,
     };
   });
   const fmtMailDate = (s, fallback) => {
@@ -171,12 +189,12 @@ export default function App() {
     }
   }, [view, listRows, selectedAttId]);
 
-  const selectEmail = (id) => { setSelectedAttId(id); if (view === "today") setView("inbox"); };
+  const selectEmail = (id) => { setSelectedAttId(id); };
   const selectedAtt = attachments.find((a) => a.id === selectedAttId);
   const selRow = emailRows.find((r) => r.id === selectedAttId);
   const selectedPositions = vessels.filter((v) => v.attachment_id === selectedAttId);
 
-  const showLeft = view === "today" || view === "inbox" || view === "review";
+  const showLeft = view === "review";
 
   return (
     <div className="app-shell">
@@ -220,6 +238,14 @@ export default function App() {
             <div className="lh-top">
               <h2>{view === "review" ? "Review" : "Inbox"}</h2>
               <span className="lh-count">({listRows.length})</span>
+              {view === "inbox" && (
+                <AiSummaryButton
+                  fetchSummary={inboxSummary}
+                  title="Email Extraction Inbox — AI Summary"
+                  disabled={loading || emails.length === 0}
+                  className="lh-btn"
+                />
+              )}
               {view === "review" && need > 0 && (
                 <button className="lh-btn" onClick={() => onConfirmAll(flagged)}>✓ Confirm all {need}</button>
               )}
@@ -233,7 +259,7 @@ export default function App() {
             ) : listRows.length === 0 ? (
               <div className="li-empty">{view === "review" ? "Nothing to review 🎉" : "No emails yet. Hit Sync."}</div>
             ) : listRows.map((r) => {
-              const [sc, sl] = ST[r.status]; const band = confBand(r.pct);
+              const [sc, sl] = ST[r.status]; const band = r.band || confBand(r.pct);
               return (
                 <div key={r.id} className={`gmrow ${selectedAttId === r.id ? "active" : ""} ${r.status === "review" ? "flag" : ""}`} onClick={() => selectEmail(r.id)}>
                   <div className="gm-avatar" style={{ background: AV_COLORS[r.sender.charCodeAt(0) % AV_COLORS.length] }}>{r.sender[0]?.toUpperCase() || "•"}</div>
@@ -246,9 +272,16 @@ export default function App() {
                     <div className="gm-subj">{r.subject}</div>
                     {r.snippet && <div className="gm-snip">{r.snippet}</div>}
                     <div className="gm-tags">
-                      {r.status === "review"
-                        ? <span className="gm-review">⚠ {r.flagged} to review</span>
-                        : <span className={`conf ${band}`}><span className="cd" />{r.pct}%</span>}
+                      {r.status === "processing" ? (
+                        <span className="st-pill st-proc">⟳ parsing</span>
+                      ) : r.status === "error" ? (
+                        <span className="st-pill st-err">✕ error</span>
+                      ) : r.status === "review" && r.flagged > 0 ? (
+                        <span className="gm-review">⚠ {r.flagged} to review</span>
+                      ) : (
+                        <span className={`conf ${band}`} title={r.confidenceLabel || ""}><span className="cd" />{r.pct}%</span>
+                      )}
+                      {r.isVerified && <span className="st-pill st-auto" style={{ fontSize: 10, padding: "2px 7px" }}>✓ verified</span>}
                       <span className="vcount">{r.count} position{r.count !== 1 ? "s" : ""}</span>
                     </div>
                   </div>
@@ -260,22 +293,24 @@ export default function App() {
       )}
 
       {/* ── Right panel ── */}
-      <div className="rpanel">
-        {loading ? (
+      <div className={`rpanel ${view === "today" || view === "inbox" || view === "list" ? "rpanel-fill" : ""}`}>
+        {loading && view !== "inbox" && view !== "list" ? (
           <div className="center-load"><span className="spin-ring" /> Loading…</div>
         ) : view === "today" ? (
-          <Today stats={{ emails: attachments.length, positions, zones: zonesCount, need, readiness }} hasData={hasData} onGo={go} onSync={onSync} syncing={syncing} />
+          <ValidationView isActive={view === "today"} refreshKey={vesselRefreshKey} />
+        ) : view === "inbox" ? (
+          <InboxView
+            onVesselsUpdated={() => setVesselRefreshKey((k) => k + 1)}
+            onContactsUpdated={() => setContactRefreshKey((k) => k + 1)}
+          />
         ) : view === "list" ? (
-          <PositionList draft={draft} draftLoading={draftLoading} need={need} positions={positions}
-            allColumns={allColumns} columns={draftColumns}
-            onColumnsChange={(cols) => { setDraftColumns(cols); setDraftStale(true); }}
-            onGenerate={runDraft} onCopy={onCopy} onSend={() => setSendModal(true)} onGo={go} />
+          <ContactListView isActive={view === "list"} refreshKey={contactRefreshKey} />
         ) : view === "settings" ? (
           <Settings filterSender={FILTER_SENDER} onGo={go} toast={toast} />
         ) : selectedAtt ? (
-          <EmailDetail attachment={selectedAtt} sender={selRow?.sender} subject={selRow?.subject}
+          <EmailDetail attachment={selectedAtt} emailId={activeEmailId} sender={selRow?.sender} subject={selRow?.subject}
             date={fmtMailDate(selRow?.mailDate, emailDate)} files={selRow?.files || []}
-            positions={selectedPositions} onConfirm={onConfirm} />
+            positions={selectedPositions} onConfirm={onConfirm} onVerifiedChange={onVerifiedChange} />
         ) : (
           <div className="ed-empty"><div className="em">📭</div><div>Select an email on the left to see its parsed positions.</div></div>
         )}

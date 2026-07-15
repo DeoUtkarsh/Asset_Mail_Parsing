@@ -1,45 +1,147 @@
-import { useState, useEffect, useCallback } from "react";
-import { fetchEmails, getEmails } from "../../services/api";
+import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
+import {
+  fetchEmails,
+  getEmails,
+  retryExtraction,
+  retryAttachment,
+  setAttachmentVerified,
+} from "../../services/api";
 import { useSSE } from "../../hooks/useSSE";
 import PreviewModal from "./PreviewModal";
+import VerifyButton from "./VerifyButton";
+import AiSummaryButton from "../AiSummary/AiSummaryButton";
+import { summarizeInbox } from "../../services/api";
+import Icon from "../icons";
 
-export default function InboxView({ onSendToValidation }) {
+function mapDbStatus(status) {
+  if (status === "done") return "downloaded";
+  if (status === "error") return "failed";
+  if (status === "extracting" || status === "pending") return "in_progress";
+  return status;
+}
+
+function canVerifyAttachment(att, uiStatus) {
+  return uiStatus === "downloaded" && (att.vessel_count || 0) >= 1;
+}
+
+export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUpdated }) {
   const [emails, setEmails]           = useState([]);
   const [fetching, setFetching]       = useState(false);
+  const [retrying, setRetrying]       = useState(false);
   const [jobId, setJobId]             = useState(null);
   const [statusLog, setStatusLog]     = useState([]);
   const [previewAtt, setPreviewAtt]   = useState(null);
   const [attStatuses, setAttStatuses] = useState({});
+  const [verifyBusyId, setVerifyBusyId] = useState(null);
 
   useEffect(() => { loadEmails(); }, []);
+
+  const pickReadyEmail = (data) => {
+    const ready = data.find(
+      (e) => e.status === "ready_for_validation" || e.status === "drafted"
+    );
+    if (ready?.id) onEmailReady?.(ready.id);
+  };
 
   const loadEmails = async () => {
     try {
       const data = await getEmails();
       setEmails(data);
+      pickReadyEmail(data);
     } catch (e) {
       console.error("Failed to load emails:", e);
     }
   };
 
+  const isRetryableAtt = (att) => {
+    const live = attStatuses[att.id];
+    if (live === "in_progress") return false;
+    if (live === "failed") return true;
+    if (att.status === "error") return true;
+    return Boolean(att.retry_suggested);
+  };
+
+  const retryTarget = useMemo(() => {
+    for (const em of emails) {
+      const count = (em.attachments || []).filter(isRetryableAtt).length;
+      if (count > 0) return { emailId: em.id, count };
+    }
+    return null;
+  }, [emails, attStatuses]);
+
+  const finishJob = useCallback(() => {
+    setFetching(false);
+    setRetrying(false);
+    setJobId(null);
+    setAttStatuses({});
+    loadEmails();
+  }, []);
+
   const handleEvent = useCallback((evt) => {
     const { type, ...rest } = evt;
     setStatusLog((prev) => [{ type, ...rest, ts: Date.now() }, ...prev].slice(0, 50));
     switch (type) {
-      case "email_saved":       loadEmails(); break;
-      case "attachment_saved":  setAttStatuses((p) => ({ ...p, [rest.attachment_id]: "pending" })); break;
-      case "extraction_started":setAttStatuses((p) => ({ ...p, [rest.attachment_id]: "extracting" })); break;
+      case "retry_started":
+        if (rest.attachment_id) {
+          setAttStatuses((p) => ({ ...p, [rest.attachment_id]: "in_progress" }));
+        }
+        break;
+      case "email_saved":
+        loadEmails();
+        break;
+      case "attachment_saved":
+        setAttStatuses((p) => ({ ...p, [rest.attachment_id]: "in_progress" }));
+        break;
+      case "extraction_started":
+      case "signature_attachment_started":
+        setAttStatuses((p) => ({ ...p, [rest.attachment_id]: "in_progress" }));
+        break;
       case "extraction_done":
+        setAttStatuses((p) => ({ ...p, [rest.attachment_id]: "in_progress" }));
+        break;
+      case "signature_attachment_done":
+        setAttStatuses((p) => ({ ...p, [rest.attachment_id]: "downloaded" }));
+        onContactsUpdated?.();
+        break;
       case "extraction_error":
-        setAttStatuses((p) => ({ ...p, [rest.attachment_id]: type === "extraction_done" ? "done" : "error" }));
+        setAttStatuses((p) => ({ ...p, [rest.attachment_id]: "failed" }));
+        break;
+      case "batch_ingestion_complete":
+        loadEmails();
+        onContactsUpdated?.();
+        break;
+      case "parent_email_done":
+        loadEmails();
+        onVesselsUpdated?.();
+        onContactsUpdated?.();
         break;
       case "phase1_complete":
-        setFetching(false); setJobId(null); loadEmails(); break;
+        if (rest.email_id) onEmailReady?.(rest.email_id);
+        onVesselsUpdated?.();
+        onContactsUpdated?.();
+        finishJob();
+        break;
+      case "phase1_no_new":
+        finishJob();
+        break;
+      case "retry_no_work":
+        finishJob();
+        break;
       case "phase1_failed":
-        setFetching(false); setJobId(null); break;
-      default: break;
+        finishJob();
+        break;
+      case "signature_extraction_started":
+      case "signature_extraction_done":
+      case "signature_extraction_error":
+        if (type === "signature_extraction_done") {
+          loadEmails();
+          onContactsUpdated?.();
+        }
+        break;
+      default:
+        break;
     }
-  }, []);
+  }, [onEmailReady, onVesselsUpdated, onContactsUpdated, finishJob]);
 
   useSSE(jobId, handleEvent);
 
@@ -55,11 +157,91 @@ export default function InboxView({ onSendToValidation }) {
     }
   };
 
-  const resolveAttStatus = (att) => attStatuses[att.id] || att.status;
+  const handleRetry = async () => {
+    if (!retryTarget?.emailId) return;
+    setRetrying(true);
+    setStatusLog([]);
+    try {
+      const { job_id } = await retryExtraction(retryTarget.emailId);
+      setJobId(job_id);
+    } catch (e) {
+      setRetrying(false);
+      alert("Failed to start retry: " + e.message);
+    }
+  };
 
-  const rows = emails.flatMap((em) =>
-    (em.attachments || []).map((att) => ({ ...att, email: em }))
+  const handleRetryAttachment = async (attId) => {
+    setAttStatuses((p) => ({ ...p, [attId]: "in_progress" }));
+    setStatusLog([]);
+    try {
+      const { job_id } = await retryAttachment(attId);
+      setJobId(job_id);
+    } catch (e) {
+      setAttStatuses((p) => ({ ...p, [attId]: "failed" }));
+      alert("Failed to retry attachment: " + e.message);
+    }
+  };
+
+  const patchAttachmentVerified = useCallback((attId, isVerified) => {
+    setEmails((prev) =>
+      prev.map((em) => ({
+        ...em,
+        attachments: (em.attachments || []).map((att) =>
+          att.id === attId ? { ...att, is_verified: isVerified } : att
+        ),
+      }))
+    );
+    setPreviewAtt((p) => (p?.id === attId ? { ...p, isVerified } : p));
+  }, []);
+
+  const handleVerifyAttachment = async (attId, verified) => {
+    setVerifyBusyId(attId);
+    try {
+      const result = await setAttachmentVerified(attId, verified);
+      patchAttachmentVerified(attId, Boolean(result.is_verified));
+      onVesselsUpdated?.();
+      // Reconcile with server but keep stable attachment order (created_at)
+      await loadEmails();
+    } catch (e) {
+      await loadEmails();
+      alert("Verify failed: " + e.message);
+    } finally {
+      setVerifyBusyId(null);
+    }
+  };
+
+  const fetchBusy = fetching;
+  const anyJobActive = Boolean(jobId);
+
+  const fetchInboxSummary = useCallback(
+    () => summarizeInbox(emails.map((e) => e.id)),
+    [emails],
   );
+
+  const resolveAttStatus = (att) => {
+    if (attStatuses[att.id]) return attStatuses[att.id];
+    return mapDbStatus(att.status);
+  };
+
+  const groupedEmails = emails
+    .slice()
+    .sort((a, b) => new Date(b.date_received) - new Date(a.date_received));
+
+  const inboxStats = useMemo(() => {
+    let attachments = 0;
+    let downloaded = 0;
+    let verified = 0;
+    let vessels = 0;
+    for (const em of emails) {
+      for (const att of em.attachments || []) {
+        attachments += 1;
+        if (resolveAttStatus(att) === "downloaded") downloaded += 1;
+        if (att.is_verified) verified += 1;
+        vessels += att.vessel_count || 0;
+      }
+    }
+    return { emails: emails.length, attachments, downloaded, verified, vessels };
+  }, [emails, attStatuses]);
 
   const fmtDate = (iso) => {
     const d = new Date(iso);
@@ -70,182 +252,208 @@ export default function InboxView({ onSendToValidation }) {
     return d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
   };
 
-  const validateEmail = emails.find(
-    (e) => e.status === "ready_for_validation" || e.status === "drafted"
-  );
-
-  const emailValidateShown = new Set();
-
   return (
-    <div className="flex flex-col h-full" style={{ background: "#f0f9ff" }}>
+    <div className="vgrid-root">
 
-      {/* ── Top bar — deep ocean ──────────────────────────────── */}
-      <div
-        className="flex items-center justify-between px-6 py-4 flex-shrink-0 shadow-md"
-        style={{ background: "linear-gradient(135deg, #0c4a6e 0%, #0369a1 100%)" }}
-      >
-        <div>
-          <h1 className="text-base font-bold text-white tracking-wide">⚓ Inbox</h1>
-          <p className="text-xs mt-0.5" style={{ color: "#bae6fd" }}>
-            Fetching from{" "}
-            <span className="font-semibold text-white">sanjib@iconshipbrokers.com</span>
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          {validateEmail && (
+      <div className="vgrid-head">
+        <h2>Vessel Extracted Data</h2>
+        <div className="vgrid-actions">
+          {retryTarget && !anyJobActive ? (
             <button
-              onClick={() => onSendToValidation(validateEmail.id)}
-              className="flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-semibold transition-all shadow-sm"
-              style={{ background: "#fff", color: "#0c4a6e", border: "none" }}
-              onMouseEnter={e => e.currentTarget.style.background = "#e0f2fe"}
-              onMouseLeave={e => e.currentTarget.style.background = "#fff"}
+              type="button"
+              onClick={handleRetry}
+              disabled={retrying || anyJobActive}
+              className="btn btn-ghost inbox-retry-btn"
             >
-              Validate →
+              {retrying ? (
+                <><span className="spin-ring" /> Retrying…</>
+              ) : (
+                `Retry Failed (${retryTarget.count})`
+              )}
             </button>
-          )}
+          ) : null}
+          <AiSummaryButton
+            fetchSummary={fetchInboxSummary}
+            title="Email Extraction Inbox — AI Summary"
+            disabled={emails.length === 0 || anyJobActive}
+            className="tb-btn"
+          />
           <button
+            type="button"
             onClick={handleFetch}
-            disabled={fetching}
-            className="flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-semibold transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
-            style={{ background: "#0ea5e9", color: "#fff", border: "2px solid #38bdf8" }}
-            onMouseEnter={e => { if (!fetching) e.currentTarget.style.background = "#0284c7"; }}
-            onMouseLeave={e => { if (!fetching) e.currentTarget.style.background = "#0ea5e9"; }}
+            disabled={fetchBusy || anyJobActive}
+            className="btn btn-send"
+            style={{ fontSize: 13, padding: "9px 15px" }}
           >
-            {fetching ? (
-              <>
-                <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                Fetching…
-              </>
+            {fetchBusy ? (
+              <><span className="spin-ring" /> Fetch in progress…</>
             ) : (
-              "⬇ Fetch Mails"
+              "Fetch Emails"
             )}
           </button>
         </div>
       </div>
 
-      {/* ── Status log ──────────────────────────────────────────── */}
+      {emails.length > 0 && (
+        <div className="vgrid-stats">
+          <InboxStat label="Emails" value={inboxStats.emails} />
+          <InboxStat label="Attachments" value={inboxStats.attachments} />
+          <InboxStat label="Downloaded" value={inboxStats.downloaded} />
+          <InboxStat label="Verified" value={inboxStats.verified} />
+          <InboxStat label="Vessels" value={inboxStats.vessels} />
+        </div>
+      )}
+
       {statusLog.length > 0 && (
-        <div
-          className="mx-6 mt-3 rounded-lg p-3 max-h-28 overflow-y-auto font-mono text-xs shadow-sm flex-shrink-0"
-          style={{ background: "#e0f2fe", border: "1px solid #bae6fd", color: "#0c4a6e" }}
-        >
+        <div className="inbox-log">
           {statusLog.map((log, i) => (
-            <div key={i} className="leading-5">
-              <span style={{ color: "#7dd3fc" }}>[{log.type}]</span>{" "}
-              {log.filename && <span style={{ color: "#0369a1" }}>{log.filename}</span>}
+            <div key={i} className="inbox-log-entry">
+              <span className="inbox-log-type">[{log.type}]</span>{" "}
+              {log.filename && <span>{log.filename}</span>}
               {log.message && <span> {log.message}</span>}
+              {log.signature_preview != null && log.signature_preview !== "" && (
+                <span> {log.signature_preview}</span>
+              )}
+              {log.error && <span className="inbox-log-err"> {log.error}</span>}
               {log.vessel_count !== undefined && (
-                <span style={{ color: "#0891b2" }}> → {log.vessel_count} vessels</span>
+                <span> → {log.vessel_count} vessels</span>
               )}
             </div>
           ))}
         </div>
       )}
 
-      {/* ── Table ───────────────────────────────────────────────── */}
-      <div className="flex-1 min-h-0 overflow-auto px-6 py-4">
-        {rows.length === 0 && !fetching ? (
-          <div
-            className="rounded-xl p-16 text-center text-sm"
-            style={{ background: "#fff", border: "2px dashed #bae6fd", color: "#7dd3fc" }}
-          >
-            No emails fetched yet. Click "Fetch Mails" to start.
+      <div className="vgrid-body">
+        {groupedEmails.length === 0 && !fetchBusy ? (
+          <div className="vessel-grid-empty">
+            No emails fetched yet. Click &quot;Fetch Emails&quot; to start.
           </div>
         ) : (
-          <div className="rounded-xl overflow-hidden shadow-md" style={{ border: "1px solid #bae6fd" }}>
-            <table className="w-full border-collapse text-sm">
-              <thead className="sticky top-0 z-10">
-                <tr style={{ background: "#0369a1" }}>
-                  <th className="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wide w-28"
-                      style={{ color: "#e0f2fe", borderBottom: "2px solid #0284c7" }}>Date</th>
-                  <th className="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wide w-16"
-                      style={{ color: "#e0f2fe", borderBottom: "2px solid #0284c7" }}>Time</th>
-                  <th className="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wide"
-                      style={{ color: "#e0f2fe", borderBottom: "2px solid #0284c7" }}>Sender</th>
-                  <th className="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wide"
-                      style={{ color: "#e0f2fe", borderBottom: "2px solid #0284c7" }}>Attachment (.eml)</th>
-                  <th className="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wide w-32"
-                      style={{ color: "#e0f2fe", borderBottom: "2px solid #0284c7" }}>Status</th>
-                  <th className="text-left px-4 py-3 text-xs font-semibold uppercase tracking-wide w-44"
-                      style={{ color: "#e0f2fe", borderBottom: "2px solid #0284c7" }}>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row, i) => {
-                  const status = resolveAttStatus(row);
-                  const showValidate =
-                    (row.email.status === "ready_for_validation" || row.email.status === "drafted") &&
-                    !emailValidateShown.has(row.email.id);
-                  if (showValidate) emailValidateShown.add(row.email.id);
+          <div className="vessel-grid-wrap">
+            <div className="vessel-grid-scroll">
+              <table className="vessel-grid inbox-grid">
+                <thead>
+                  <tr>
+                    <th className="col-date">Date</th>
+                    <th className="col-time">Time</th>
+                    <th>Sender</th>
+                    <th title="Name from the email (Content-Disposition / MIME); re-fetch to refresh old rows">
+                      Attachment name
+                    </th>
+                    <th className="col-status">Status</th>
+                    <th className="col-actions">Actions</th>
+                    <th className="col-conf" title="Pipeline quality score — review Low before verifying">
+                      Confidence
+                    </th>
+                    <th className="col-verify">Verified</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {groupedEmails.map((em) => {
+                    const attachments = em.attachments || [];
+                    const doneCount = attachments.filter(
+                      (att) => resolveAttStatus(att) === "downloaded"
+                    ).length;
+                    const verifiedCount = attachments.filter((att) => att.is_verified).length;
 
-                  return (
-                    <tr
-                      key={row.id}
-                      style={{
-                        background: i % 2 === 0 ? "#ffffff" : "#f0f9ff",
-                        borderBottom: "1px solid #e0f2fe",
-                        transition: "background 0.15s",
-                        cursor: "default",
-                      }}
-                      onMouseEnter={e => e.currentTarget.style.background = "#e0f2fe"}
-                      onMouseLeave={e => e.currentTarget.style.background = i % 2 === 0 ? "#ffffff" : "#f0f9ff"}
-                    >
-                      {/* Date */}
-                      <td className="px-4 py-3 text-xs whitespace-nowrap" style={{ color: "#0c4a6e" }}>
-                        {fmtDate(row.email.date_received)}
-                      </td>
+                    return (
+                      <Fragment key={em.id}>
+                        <tr className="grp-row">
+                          <td colSpan={8}>
+                            <div className="grp-label">
+                              <span className="grp-icon"><Icon name="mail" size={14} /></span>
+                              <span>{fmtDate(em.date_received)} {fmtTime(em.date_received)}</span>
+                              <span title={em.sender}>{em.sender}</span>
+                              <span className="grp-subj" title={em.subject}>{em.subject}</span>
+                              <span className="inbox-grp-meta">
+                                {doneCount}/{attachments.length} downloaded
+                                {verifiedCount > 0 && (
+                                  <span className="hi"> · {verifiedCount} verified</span>
+                                )}
+                              </span>
+                            </div>
+                          </td>
+                        </tr>
+                        {attachments.map((att) => {
+                          const row = { ...att, email: em };
+                          const status = resolveAttStatus(row);
+                          const previewReady = status === "downloaded";
+                          const verified = Boolean(row.is_verified);
+                          const verifyReady = canVerifyAttachment(row, status);
+                          const verifyBusy = verifyBusyId === row.id;
 
-                      {/* Time */}
-                      <td className="px-4 py-3 text-xs whitespace-nowrap" style={{ color: "#7dd3fc" }}>
-                        {fmtTime(row.email.date_received)}
-                      </td>
-
-                      {/* Sender */}
-                      <td className="px-4 py-3 text-xs max-w-[200px]">
-                        <div className="truncate font-semibold" style={{ color: "#0c4a6e" }} title={row.email.sender}>
-                          {row.email.sender}
-                        </div>
-                        <div className="truncate text-[11px] mt-0.5" style={{ color: "#7dd3fc" }} title={row.email.subject}>
-                          {row.email.subject}
-                        </div>
-                      </td>
-
-                      {/* Attachment filename */}
-                      <td className="px-4 py-3">
-                        <span className="inline-flex items-center gap-1.5 text-xs font-mono" style={{ color: "#0369a1" }}>
-                          <span style={{ color: "#7dd3fc" }}>📎</span>
-                          {row.filename}
-                        </span>
-                      </td>
-
-                      {/* Status */}
-                      <td className="px-4 py-3">
-                        <StatusBadge status={status} />
-                      </td>
-
-                      {/* Actions */}
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
-                          {(status === "done" || status === "extracting") && (
-                            <button
-                              onClick={() =>
-                                setPreviewAtt({ id: row.id, filename: row.filename, emailId: row.email.id })
-                              }
-                              className="px-3 py-1 rounded-lg text-xs font-medium transition-colors shadow-sm"
-                              style={{ background: "#fff", border: "1px solid #bae6fd", color: "#0369a1" }}
-                              onMouseEnter={e => e.currentTarget.style.background = "#e0f2fe"}
-                              onMouseLeave={e => e.currentTarget.style.background = "#fff"}
-                            >
-                              Preview
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                          return (
+                            <tr key={row.id}>
+                              <td className="cell-date">{fmtDate(row.email.date_received)}</td>
+                              <td className="cell-time">{fmtTime(row.email.date_received)}</td>
+                              <td className="cell-sender">
+                                <div className="owner" title={row.email.sender}>{row.email.sender}</div>
+                                <div className="subj" title={row.email.subject}>{row.email.subject}</div>
+                              </td>
+                              <td className="cell-file">
+                                <span className="file-name" title={row.filename || undefined}>
+                                  <Icon name="clip" size={13} />
+                                  <span>{row.filename || "—"}</span>
+                                </span>
+                              </td>
+                              <td><StatusBadge status={status} /></td>
+                              <td>
+                                <div className="inbox-actions">
+                                  <button
+                                    type="button"
+                                    disabled={!previewReady}
+                                    onClick={() =>
+                                      previewReady &&
+                                      setPreviewAtt({
+                                        id: row.id,
+                                        filename: row.filename,
+                                        emailId: row.email.id,
+                                        isVerified: verified,
+                                        vesselCount: row.vessel_count || 0,
+                                      })
+                                    }
+                                    className="inbox-btn"
+                                  >
+                                    Preview
+                                  </button>
+                                  {status === "failed" && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRetryAttachment(row.id)}
+                                      disabled={anyJobActive}
+                                      className="inbox-btn inbox-btn-danger"
+                                    >
+                                      Retry
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                              <td>
+                                <ConfidenceBadge
+                                  score={row.confidence_score}
+                                  tier={row.confidence_tier}
+                                  label={row.confidence_label}
+                                  status={status}
+                                  reviewed={Boolean(row.manually_reviewed)}
+                                />
+                              </td>
+                              <td>
+                                <VerifyButton
+                                  verified={verified}
+                                  canVerify={verifyReady}
+                                  busy={verifyBusy}
+                                  onToggle={() => handleVerifyAttachment(row.id, !verified)}
+                                />
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </Fragment>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
       </div>
@@ -254,6 +462,17 @@ export default function InboxView({ onSendToValidation }) {
         <PreviewModal
           attachmentId={previewAtt.id}
           filename={previewAtt.filename}
+          emailId={previewAtt.emailId}
+          initialVerified={previewAtt.isVerified}
+          vesselCount={previewAtt.vesselCount}
+          onVerifiedChange={() => {
+            loadEmails();
+            onVesselsUpdated?.();
+          }}
+          onDataChange={() => {
+            loadEmails();
+            onVesselsUpdated?.();
+          }}
           onClose={() => setPreviewAtt(null)}
         />
       )}
@@ -261,22 +480,52 @@ export default function InboxView({ onSendToValidation }) {
   );
 }
 
+function InboxStat({ label, value }) {
+  return (
+    <div className="vgrid-stat">
+      <span>{label}: </span>
+      <b>{value}</b>
+    </div>
+  );
+}
+
+function ConfidenceBadge({ score, tier, label, status, reviewed = false }) {
+  if (status === "in_progress" || status === "pending" || tier === "unknown" || score == null) {
+    return <span className="cell-val is-empty" title="Score available after extraction">—</span>;
+  }
+
+  const band = tier === "high" ? "hi" : tier === "medium" ? "mid" : "lo";
+  const triageHint =
+    tier === "high"
+      ? "usually safe to verify quickly"
+      : tier === "medium"
+        ? "quick preview recommended"
+        : "inspect before verifying";
+  const reviewedHint = reviewed ? " · Edited in preview (not verified)" : "";
+
+  return (
+    <span
+      className={`conf ${band}`}
+      title={`Pipeline confidence ${score}/100 — ${triageHint}${reviewedHint}`}
+    >
+      <span className="cd" />
+      {label || `${score} ${tier}`}
+    </span>
+  );
+}
+
 function StatusBadge({ status }) {
   const map = {
-    pending:              { bg: "#f0f9ff", color: "#7dd3fc", border: "#bae6fd" },
-    extracting:           { bg: "#fffbeb", color: "#d97706", border: "#fcd34d", pulse: true },
-    done:                 { bg: "#ecfeff", color: "#0891b2", border: "#a5f3fc" },
-    error:                { bg: "#fef2f2", color: "#dc2626", border: "#fca5a5" },
-    ready_for_validation: { bg: "#e0f2fe", color: "#0369a1", border: "#7dd3fc" },
-    drafted:              { bg: "#f5f3ff", color: "#7c3aed", border: "#c4b5fd" },
+    in_progress: { label: "In Progress", cls: "st-proc", spin: true },
+    downloaded:  { label: "Downloaded", cls: "st-auto", spin: false },
+    failed:      { label: "Failed", cls: "st-err", spin: false },
+    pending:     { label: "Pending", cls: "st-out", spin: false },
   };
   const s = map[status] || map.pending;
   return (
-    <span
-      className={`inline-block px-2 py-0.5 rounded text-xs font-semibold whitespace-nowrap ${s.pulse ? "animate-pulse" : ""}`}
-      style={{ background: s.bg, color: s.color, border: `1px solid ${s.border}` }}
-    >
-      {status?.replace(/_/g, " ") || "pending"}
+    <span className={`st-pill ${s.cls}`}>
+      {s.spin && <span className="spin-ring" style={{ width: 12, height: 12, marginRight: 4 }} />}
+      {s.label}
     </span>
   );
 }

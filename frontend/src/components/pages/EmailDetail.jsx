@@ -1,8 +1,11 @@
-import { useState, useEffect } from "react";
-import { getAttachmentRaw, attachmentFileUrl } from "../../services/api";
+import { useState, useEffect, useCallback } from "react";
+import { getAttachmentRaw, attachmentFileUrl, setAttachmentVerified } from "../../services/api";
 import { vesselName, needsReview, regionUnknown } from "../../lib/positions";
+import { sanitizeEmailHtml, resolvePreviewMode } from "../../utils/emailPreview";
 import Icon from "../icons";
 import PdfView from "../PdfView";
+import PreviewModal from "../InboxView/PreviewModal";
+import VerifyButton from "../InboxView/VerifyButton";
 
 const pick = (d, keys) => { for (const k of keys) if (d[k]) return d[k]; return null; };
 const AV = ["#219495", "#3b82f6", "#8b5cf6", "#f59e0b", "#ef4444", "#10b981", "#ec4899", "#0ea5e9"];
@@ -15,23 +18,88 @@ const shortType = (ct = "") => {
   return (ct.split("/")[1] || "FILE").slice(0, 5).toUpperCase();
 };
 
-export default function EmailDetail({ attachment, sender = "Vessel Owner", subject, date, files = [], positions, onConfirm }) {
+function EmailBody({ previewHtml, previewPlain, previewImages, previewMode, rawText }) {
+  if (previewMode === "plain" && previewPlain) {
+    return <div className="rd-body">{previewPlain}</div>;
+  }
+  if ((previewMode === "html" || previewMode === "html_images") && previewHtml) {
+    const safe = sanitizeEmailHtml(previewHtml);
+    return (
+      <div className="rd-body email-preview-html" dangerouslySetInnerHTML={{ __html: safe }} />
+    );
+  }
+  if (previewImages?.length) {
+    return (
+      <div className="rd-body" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {previewImages.map((img, i) => (
+          <img key={i} src={img.data_url} alt="" style={{ maxWidth: "100%", borderRadius: 8 }} />
+        ))}
+      </div>
+    );
+  }
+  return <div className="rd-body">{rawText || "Loading the original email…"}</div>;
+}
+
+export default function EmailDetail({
+  attachment,
+  emailId,
+  sender = "Vessel Owner",
+  subject,
+  date,
+  files = [],
+  positions,
+  onConfirm,
+  onVerifiedChange,
+}) {
   const [raw, setRaw] = useState("");
+  const [previewHtml, setPreviewHtml] = useState("");
+  const [previewPlain, setPreviewPlain] = useState("");
+  const [previewImages, setPreviewImages] = useState([]);
+  const [previewMode, setPreviewMode] = useState("fallback");
+  const [isVerified, setIsVerified] = useState(false);
+  const [canVerify, setCanVerify] = useState(false);
+  const [verifyBusy, setVerifyBusy] = useState(false);
   const [edits, setEdits] = useState({});
   const [busy, setBusy] = useState(false);
   const [viewFile, setViewFile] = useState(null);
-  const [showDetail, setShowDetail] = useState(false);
+  const [showPreview, setShowPreview] = useState(false);
 
-  // Full superset of extracted columns for this email's positions
   const detailCols = [...new Set(positions.flatMap((v) => Object.keys(v.dynamic_data || {})))]
     .filter((k) => k !== "vessel_name" && k !== "name");
 
+  const loadRaw = useCallback(async () => {
+    try {
+      const r = await getAttachmentRaw(attachment.id);
+      setRaw(r.raw_text || "");
+      setPreviewHtml(r.preview_html || "");
+      setPreviewPlain(r.preview_plain || "");
+      setPreviewImages(Array.isArray(r.preview_images) ? r.preview_images : []);
+      setPreviewMode(resolvePreviewMode(r));
+      setIsVerified(Boolean(r.is_verified));
+      const count = r.vessel_count ?? positions.length;
+      setCanVerify(r.status === "done" && count >= 1);
+    } catch {
+      setRaw("");
+    }
+  }, [attachment.id, positions.length]);
+
   useEffect(() => {
-    let cancelled = false;
-    setRaw(""); setViewFile(null);
-    getAttachmentRaw(attachment.id).then((r) => { if (!cancelled) setRaw(r.raw_text || ""); }).catch(() => {});
-    return () => { cancelled = true; };
-  }, [attachment.id]);
+    setViewFile(null);
+    loadRaw();
+  }, [loadRaw]);
+
+  const handleVerify = async () => {
+    setVerifyBusy(true);
+    try {
+      const result = await setAttachmentVerified(attachment.id, !isVerified);
+      setIsVerified(Boolean(result.is_verified));
+      onVerifiedChange?.();
+    } catch (e) {
+      alert(e.message || "Verify failed");
+    } finally {
+      setVerifyBusy(false);
+    }
+  };
 
   const flagged = positions.filter(needsReview);
   const confirm = async (v) => { setBusy(true); await onConfirm(v, (edits[v.id] ?? "").trim()); setBusy(false); };
@@ -43,25 +111,34 @@ export default function EmailDetail({ attachment, sender = "Vessel Owner", subje
 
   return (
     <div className="reading">
-      {/* ── Compact email header ── */}
       <div className="rd-head">
         <div className="rd-av" style={{ background: av }}>{sender[0]?.toUpperCase() || "•"}</div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div className="rd-subject">{subject || "Vessel positions"}</div>
           <div className="rd-meta"><b>{sender}</b> · {date}</div>
         </div>
-        <span className={`st-pill ${flagged.length ? "st-rev" : "st-auto"}`}>
-          {flagged.length ? `⚠ ${flagged.length} to review` : "✓ all confirmed"}
+        <VerifyButton
+          verified={isVerified}
+          canVerify={canVerify}
+          busy={verifyBusy}
+          onToggle={handleVerify}
+        />
+        <span className={`st-pill ${flagged.length ? "st-rev" : isVerified ? "st-auto" : "st-rev"}`} style={{ marginLeft: 8 }}>
+          {isVerified ? "✓ verified" : flagged.length ? `⚠ ${flagged.length} to review` : "pending verify"}
         </span>
       </div>
 
-      {/* ── Compare: original email (with attachments) ⟷ extracted data ── */}
       <div className="rd-split">
-        {/* LEFT — the email exactly as it was received */}
         <div className="rd-col">
           <div className="rd-colhead"><Icon name="mail" size={13} /> Original email — as received</div>
           <div className="rd-scroll">
-            <div className="rd-body">{raw || "Loading the original email…"}</div>
+            <EmailBody
+              previewHtml={previewHtml}
+              previewPlain={previewPlain}
+              previewImages={previewImages}
+              previewMode={previewMode}
+              rawText={raw}
+            />
             {files.length > 0 && (
               <div className="rd-attbox">
                 <div className="rd-attbox-lbl"><Icon name="clip" size={13} /> {files.length} attachment{files.length !== 1 ? "s" : ""} — click to view</div>
@@ -81,12 +158,15 @@ export default function EmailDetail({ attachment, sender = "Vessel Owner", subje
           </div>
         </div>
 
-        {/* RIGHT — what was parsed, and from where */}
         <div className="rd-col">
           <div className="rd-colhead">
             <Icon name="navigation" size={13} /> Extracted data
             <span className="rd-src">from email body · {positions.length}</span>
-            {positions.length > 0 && <button className="rd-full" onClick={() => setShowDetail(true)}>⤢ Full table</button>}
+            {positions.length > 0 && (
+              <button className="rd-full" type="button" onClick={() => setShowPreview(true)}>
+                ⤢ Full table
+              </button>
+            )}
           </div>
           <div className="rd-scroll rd-positions">
             {positions.length === 0 ? (
@@ -110,7 +190,7 @@ export default function EmailDetail({ attachment, sender = "Vessel Owner", subje
                       <input placeholder="open region…" value={edits[v.id] ?? ""}
                         onChange={(e) => setEdits((p) => ({ ...p, [v.id]: e.target.value }))}
                         onKeyDown={(e) => e.key === "Enter" && confirm(v)} />
-                      <button className="cbtn" disabled={busy} onClick={() => confirm(v)}>✓ Confirm</button>
+                      <button className="cbtn" type="button" disabled={busy} onClick={() => confirm(v)}>✓ Confirm</button>
                     </div>
                   )}
                 </div>
@@ -120,46 +200,19 @@ export default function EmailDetail({ attachment, sender = "Vessel Owner", subje
         </div>
       </div>
 
-      {/* ── Full extracted-data table (left) ⟷ email (right) ── */}
-      {showDetail && (
-        <div className="modal-bg" onClick={(e) => e.target.classList.contains("modal-bg") && setShowDetail(false)}>
-          <div className="detailmodal">
-            <div className="dm-head">
-              <span className="fv-badge">DATA</span>
-              <span className="t">{subject || attachment.filename} — {positions.length} position{positions.length !== 1 ? "s" : ""} · {detailCols.length + 2} columns</span>
-              <button className="fv-x" onClick={() => setShowDetail(false)}>✕</button>
-            </div>
-            <div className="dm-body">
-              <div className="dm-table">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>#</th><th>Vessel</th><th>Region</th>
-                      {detailCols.map((c) => <th key={c}>{c.replace(/_/g, " ")}</th>)}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {positions.map((v, i) => (
-                      <tr key={v.id}>
-                        <td style={{ color: "var(--muted)" }}>{i + 1}</td>
-                        <td className="dm-vn">{vesselName(v)}</td>
-                        <td className={regionUnknown(v.region) ? "dm-flag" : "dm-vn"}>{v.region || "—"}</td>
-                        {detailCols.map((c) => <td key={c}>{v.dynamic_data?.[c] || "—"}</td>)}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <div className="dm-email">
-                <div className="dm-email-head"><Icon name="mail" size={13} /> Original email</div>
-                <div className="rd-body">{raw || "Loading…"}</div>
-              </div>
-            </div>
-          </div>
-        </div>
+      {showPreview && (
+        <PreviewModal
+          attachmentId={attachment.id}
+          filename={attachment.filename}
+          emailId={emailId}
+          initialVerified={isVerified}
+          vesselCount={positions.length}
+          onVerifiedChange={() => { loadRaw(); onVerifiedChange?.(); }}
+          onDataChange={onVerifiedChange}
+          onClose={() => setShowPreview(false)}
+        />
       )}
 
-      {/* ── Attachment viewer ── */}
       {viewFile && (
         <div className="modal-bg" onClick={(e) => e.target.classList.contains("modal-bg") && setViewFile(null)}>
           <div className="fileviewer">
@@ -168,7 +221,7 @@ export default function EmailDetail({ attachment, sender = "Vessel Owner", subje
               <span className="fv-name">{viewFile.name}</span>
               <span className="fv-size">{fmtSize(viewFile.size)}</span>
               <a className="fv-dl" href={url} download={viewFile.name} target="_blank" rel="noreferrer">Download ↓</a>
-              <button className="fv-x" onClick={() => setViewFile(null)}>✕</button>
+              <button className="fv-x" type="button" onClick={() => setViewFile(null)}>✕</button>
             </div>
             <div className="fv-body">
               {isImg ? <img src={url} alt={viewFile.name} />

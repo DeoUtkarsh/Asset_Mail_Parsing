@@ -46,6 +46,21 @@ ALTER TABLE attachments ADD COLUMN IF NOT EXISTS mail_from    TEXT;
 ALTER TABLE attachments ADD COLUMN IF NOT EXISTS mail_subject TEXT;
 ALTER TABLE attachments ADD COLUMN IF NOT EXISTS mail_date    TEXT;
 ALTER TABLE attachments ADD COLUMN IF NOT EXISTS files        JSONB DEFAULT '[]'::jsonb;
+ALTER TABLE attachments ADD COLUMN IF NOT EXISTS signature_emails TEXT;
+ALTER TABLE attachments ADD COLUMN IF NOT EXISTS signature_phones TEXT;
+ALTER TABLE attachments ADD COLUMN IF NOT EXISTS is_verified BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE attachments ADD COLUMN IF NOT EXISTS manually_reviewed BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE attachments ADD COLUMN IF NOT EXISTS preview_html TEXT;
+ALTER TABLE attachments ADD COLUMN IF NOT EXISTS preview_plain TEXT;
+ALTER TABLE attachments ADD COLUMN IF NOT EXISTS preview_images JSONB;
+
+CREATE TABLE IF NOT EXISTS column_definitions (
+    id              TEXT PRIMARY KEY,
+    header          TEXT NOT NULL,
+    display_order   INT NOT NULL,
+    read_only       BOOLEAN NOT NULL DEFAULT FALSE,
+    storage         TEXT NOT NULL DEFAULT 'dynamic_data'
+);
 
 CREATE TABLE IF NOT EXISTS vessels (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -65,6 +80,38 @@ CREATE INDEX IF NOT EXISTS idx_vessels_region
 CREATE INDEX IF NOT EXISTS idx_vessels_dynamic_data
     ON vessels USING GIN (dynamic_data);
 
+CREATE TABLE IF NOT EXISTS broker_contacts (
+    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    attachment_id     UUID NOT NULL REFERENCES attachments(id) ON DELETE CASCADE,
+    parent_email_id   UUID REFERENCES parent_emails(id) ON DELETE CASCADE,
+    contact_name      TEXT NOT NULL DEFAULT '',
+    designation       TEXT NOT NULL DEFAULT '',
+    department        TEXT NOT NULL DEFAULT '',
+    company           TEXT NOT NULL DEFAULT '',
+    company_type      TEXT NOT NULL DEFAULT '',
+    vessel_name       TEXT NOT NULL DEFAULT '',
+    email             TEXT NOT NULL DEFAULT '',
+    off_phone         TEXT NOT NULL DEFAULT '',
+    mob_phone         TEXT NOT NULL DEFAULT '',
+    wechat            TEXT NOT NULL DEFAULT '',
+    whatsapp          TEXT NOT NULL DEFAULT '',
+    website_address   TEXT NOT NULL DEFAULT '',
+    office_address    TEXT NOT NULL DEFAULT '',
+    other_info        TEXT NOT NULL DEFAULT '',
+    status            TEXT NOT NULL DEFAULT '',
+    used_fallback     BOOLEAN NOT NULL DEFAULT FALSE,
+    row_order         INT NOT NULL DEFAULT 0,
+    created_at        TIMESTAMPTZ DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_broker_contacts_attachment_id
+    ON broker_contacts(attachment_id);
+
+CREATE INDEX IF NOT EXISTS idx_broker_contacts_parent_email_id
+    ON broker_contacts(parent_email_id);
+
+DROP VIEW IF EXISTS vessels_full;
 CREATE OR REPLACE VIEW vessels_full AS
 SELECT
     v.id,
@@ -76,7 +123,10 @@ SELECT
     a.filename,
     a.parent_email_id,
     pe.subject,
-    pe.date_received
+    pe.date_received,
+    a.signature_emails,
+    a.signature_phones,
+    a.is_verified AS attachment_is_verified
 FROM vessels v
 JOIN attachments a  ON a.id  = v.attachment_id
 JOIN parent_emails pe ON pe.id = a.parent_email_id;

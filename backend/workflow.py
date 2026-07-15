@@ -33,6 +33,7 @@ class Phase2State(TypedDict):
     email_id: str
     vessels: list[dict[str, Any]]
     columns: list[dict[str, Any]]  # user-chosen columns [{header, keys}] or None
+    grid_columns: list[str]        # column ids from Validate tab
     draft_html: str
     zones: list[dict[str, Any]]   # Leaflet map markers: [{name, lat, lng, count}]
     error: str
@@ -91,7 +92,7 @@ async def drafter_node(state: Phase2State) -> Phase2State:
             state["job_id"],
             state["email_id"],
             state["vessels"],
-            state.get("columns"),
+            state.get("grid_columns") or None,
         )
         return {**state, "draft_html": draft_html, "zones": zones}
     except Exception as exc:

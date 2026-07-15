@@ -13,6 +13,7 @@ from typing import Any
 from openai import AsyncOpenAI
 from database import supabase
 from config import settings
+from column_defs import resolve_vessel_company
 from sse_manager import sse_manager
 
 logger = logging.getLogger(__name__)
@@ -44,7 +45,8 @@ CRITICAL RULES:
 8. Values must be strings. Use "UNKNOWN" only if a field is explicitly mentioned but its value is illegible.
 9. Do NOT include keys that are completely absent for a specific vessel.
 10. If the document contains absolutely no vessel/ship data (e.g. only contact information), return an empty array: []
-11. vessel_name codes like "GS/J19", "OT/MR" etc. are vessel identifiers — extract them as the vessel_name.
+11. ALWAYS include a "company" key on each vessel = the broker/owner company sending that position (from letterhead, signature, or context near the vessel line). Example: "Arklink Shipping Limited". If the whole email is from one company, use the same value on every vessel.
+12. vessel_name codes like "GS/J19", "OT/MR" etc. are vessel identifiers — extract them as the vessel_name.
 
 TEXT TO PARSE:
 {raw_text}
@@ -120,6 +122,8 @@ async def _extract_single_attachment(
     attachment_id: str,
     filename: str,
     raw_text: str,
+    mail_from: str,
+    parent_sender: str,
     semaphore: asyncio.Semaphore,
 ) -> list[dict]:
     """Run the LLM on one attachment and save the extracted vessels."""
@@ -177,8 +181,17 @@ async def _extract_single_attachment(
         # Persist each vessel as a separate row
         for vessel in vessels_data:
             region = vessel.pop("region", None)
+            llm_company = str(vessel.pop("company", "") or vessel.pop("Company", "") or "").strip()
             # Normalise keys: lowercase + underscores
             normalised = {k.lower().replace(" ", "_"): str(v) for k, v in vessel.items()}
+            normalised["company"] = resolve_vessel_company(
+                filename,
+                mail_from=mail_from,
+                parent_sender=parent_sender,
+                raw_text=raw_text,
+                vessel_name=normalised.get("vessel_name") or "",
+                llm_company=llm_company,
+            )
             supabase.table("vessels").insert({
                 "attachment_id": attachment_id,
                 "dynamic_data": normalised,
@@ -203,11 +216,22 @@ async def run_extraction(job_id: str, attachment_ids: list[str]) -> int:
     # Fetch attachment metadata
     rows = (
         supabase.table("attachments")
-        .select("id, filename, raw_text")
+        .select("id, filename, raw_text, mail_from, parent_email_id")
         .in_("id", attachment_ids)
         .execute()
     )
     attachments = rows.data or []
+
+    parent_ids = list({a.get("parent_email_id") for a in attachments if a.get("parent_email_id")})
+    parent_sender: dict[str, str] = {}
+    if parent_ids:
+        parents = (
+            supabase.table("parent_emails")
+            .select("id, sender")
+            .in_("id", parent_ids)
+            .execute()
+        ).data or []
+        parent_sender = {p["id"]: p.get("sender") or "" for p in parents}
 
     # Cap concurrency to avoid hammering the API
     semaphore = asyncio.Semaphore(10)
@@ -218,6 +242,8 @@ async def run_extraction(job_id: str, attachment_ids: list[str]) -> int:
             att["id"],
             att["filename"],
             att.get("raw_text") or "",
+            att.get("mail_from") or "",
+            parent_sender.get(att.get("parent_email_id") or "", ""),
             semaphore,
         )
         for att in attachments

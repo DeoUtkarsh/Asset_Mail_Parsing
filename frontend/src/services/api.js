@@ -19,6 +19,14 @@ async function request(method, path, body) {
 /** Kick off Phase 1. Returns { job_id }. */
 export const fetchEmails = () => request("POST", "/fetch-emails");
 
+/** Retry failed/pending extractions for one parent email. Returns { job_id }. */
+export const retryExtraction = (emailId) =>
+  request("POST", `/emails/${emailId}/retry-extraction`);
+
+/** Retry extraction for one attachment only. Returns { job_id }. */
+export const retryAttachment = (attId) =>
+  request("POST", `/attachments/${attId}/retry-extraction`);
+
 // ── Inbox data ──────────────────────────────────────────────────────────────
 
 /** Returns all parent emails with attachment summaries. */
@@ -40,6 +48,12 @@ export const getVesselsForAttachment = (attId) =>
   request("GET", `/attachments/${attId}/vessels`);
 
 // ── Validation grid ─────────────────────────────────────────────────────────
+
+/** Returns all vessels across ready parent emails (Vessel Position List tab). */
+export const getAllVesselsCombined = () => request("GET", "/vessels");
+
+/** Returns column definitions from PostgreSQL (id, header, display_order, read_only, storage). */
+export const getColumnDefinitions = () => request("GET", "/columns");
 
 /** Returns all vessels for one email (all attachments merged). */
 export const getAllVessels = (emailId) =>
@@ -68,8 +82,42 @@ export const createVessel = (emailId) =>
 
 /**
  * Trigger Phase 2.
- * vessels = array of { id, dynamic_data, region } from the validation grid.
+ * Pass column ids (strings) for the Validate grid, or column objects for the Position List tab.
  * Returns { job_id }.
  */
-export const generateDraft = (emailId, vessels, columns) =>
-  request("POST", "/generate-draft", { email_id: emailId, vessels, columns });
+export const generateDraft = (emailId, vessels, columnsOrGrid = []) => {
+  const body = { email_id: emailId, vessels };
+  if (columnsOrGrid.length && typeof columnsOrGrid[0] === "string") {
+    body.grid_columns = columnsOrGrid;
+  } else if (columnsOrGrid.length) {
+    body.columns = columnsOrGrid;
+  }
+  return request("POST", "/generate-draft", body);
+};
+
+/** Mark attachment verified/unverified (sends vessels to Position List when verified). */
+export const setAttachmentVerified = (attId, verified) =>
+  request("PUT", `/attachments/${attId}/verified`, { verified });
+
+/** Returns all broker contact rows with parent email + attachment context. */
+export const getContacts = () => request("GET", "/contacts");
+
+/** Update one structured broker contact row. */
+export const updateBrokerContact = (contactId, fields) =>
+  request("PUT", `/contacts/${contactId}`, fields);
+
+/** Update broker emails/phones for one attachment (vessel grid). */
+export const updateAttachmentContacts = (attId, { signature_emails, signature_phones }) =>
+  request("PUT", `/attachments/${attId}/contacts`, { signature_emails, signature_phones });
+
+/** Fresh AI summary for the inbox tab (optional email id filter). */
+export const summarizeInbox = (emailIds) =>
+  request("POST", "/summary/inbox", emailIds?.length ? { email_ids: emailIds } : {});
+
+/** Fresh AI summary for the Vessel Position List (optional vessel id filter). */
+export const summarizeVessels = (vesselIds) =>
+  request("POST", "/summary/vessels", vesselIds?.length ? { vessel_ids: vesselIds } : {});
+
+/** Fresh AI summary for the Contact List tab. */
+export const summarizeContacts = (contactIds) =>
+  request("POST", "/summary/contacts", contactIds?.length ? { contact_ids: contactIds } : {});

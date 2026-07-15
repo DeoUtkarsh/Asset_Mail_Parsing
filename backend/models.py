@@ -17,6 +17,44 @@ class GenerateDraftRequest(BaseModel):
     vessels: list[dict[str, Any]]
     # Optional user-chosen columns: [{header, keys:[...]}]. Falls back to the standard set.
     columns: Optional[list[dict[str, Any]]] = None
+    # Same order as Validate tab (from GET /columns); drives draft table headers/cells
+    grid_columns: Optional[list[str]] = None
+
+
+class SummaryScopeRequest(BaseModel):
+    """Optional ID filters — empty list means current tab has no rows; omit for all in DB."""
+    email_ids: Optional[list[str]] = None
+    vessel_ids: Optional[list[str]] = None
+    contact_ids: Optional[list[str]] = None
+
+
+class SetAttachmentVerifiedRequest(BaseModel):
+    verified: bool
+
+
+class UpdateAttachmentContactsRequest(BaseModel):
+    """Update broker signature emails/phones for one attachment."""
+    signature_emails: Optional[str] = None
+    signature_phones: Optional[str] = None
+
+
+class UpdateBrokerContactRequest(BaseModel):
+    """Update one structured broker contact row."""
+    contact_name: Optional[str] = None
+    designation: Optional[str] = None
+    department: Optional[str] = None
+    company: Optional[str] = None
+    company_type: Optional[str] = None
+    vessel_name: Optional[str] = None
+    email: Optional[str] = None
+    off_phone: Optional[str] = None
+    mob_phone: Optional[str] = None
+    wechat: Optional[str] = None
+    whatsapp: Optional[str] = None
+    website_address: Optional[str] = None
+    office_address: Optional[str] = None
+    other_info: Optional[str] = None
+    status: Optional[str] = None
 
 
 class UpdateVesselRequest(BaseModel):
