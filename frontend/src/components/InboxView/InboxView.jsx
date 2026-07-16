@@ -1,17 +1,17 @@
-import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import {
   fetchEmails,
   getEmails,
   retryExtraction,
   retryAttachment,
-  setAttachmentVerified,
 } from "../../services/api";
 import { useSSE } from "../../hooks/useSSE";
-import PreviewModal from "./PreviewModal";
-import VerifyButton from "./VerifyButton";
+import PreviewPanel from "./PreviewPanel";
 import AiSummaryButton from "../AiSummary/AiSummaryButton";
 import { summarizeInbox } from "../../services/api";
 import Icon from "../icons";
+
+const AV_COLORS = ["#219495", "#3b82f6", "#8b5cf6", "#f59e0b", "#ef4444", "#10b981", "#ec4899", "#0ea5e9"];
 
 function mapDbStatus(status) {
   if (status === "done") return "downloaded";
@@ -20,19 +20,15 @@ function mapDbStatus(status) {
   return status;
 }
 
-function canVerifyAttachment(att, uiStatus) {
-  return uiStatus === "downloaded" && (att.vessel_count || 0) >= 1;
-}
-
-export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUpdated }) {
+export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUpdated, reviewMode = false }) {
   const [emails, setEmails]           = useState([]);
   const [fetching, setFetching]       = useState(false);
   const [retrying, setRetrying]       = useState(false);
   const [jobId, setJobId]             = useState(null);
   const [statusLog, setStatusLog]     = useState([]);
-  const [previewAtt, setPreviewAtt]   = useState(null);
+  const [selectedId, setSelectedId]   = useState(null);
   const [attStatuses, setAttStatuses] = useState({});
-  const [verifyBusyId, setVerifyBusyId] = useState(null);
+  const [search, setSearch]           = useState("");
 
   useEffect(() => { loadEmails(); }, []);
 
@@ -191,24 +187,7 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
         ),
       }))
     );
-    setPreviewAtt((p) => (p?.id === attId ? { ...p, isVerified } : p));
   }, []);
-
-  const handleVerifyAttachment = async (attId, verified) => {
-    setVerifyBusyId(attId);
-    try {
-      const result = await setAttachmentVerified(attId, verified);
-      patchAttachmentVerified(attId, Boolean(result.is_verified));
-      onVesselsUpdated?.();
-      // Reconcile with server but keep stable attachment order (created_at)
-      await loadEmails();
-    } catch (e) {
-      await loadEmails();
-      alert("Verify failed: " + e.message);
-    } finally {
-      setVerifyBusyId(null);
-    }
-  };
 
   const fetchBusy = fetching;
   const anyJobActive = Boolean(jobId);
@@ -223,40 +202,79 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
     return mapDbStatus(att.status);
   };
 
-  const groupedEmails = emails
-    .slice()
-    .sort((a, b) => new Date(b.date_received) - new Date(a.date_received));
-
-  const inboxStats = useMemo(() => {
-    let attachments = 0;
-    let downloaded = 0;
-    let verified = 0;
-    let vessels = 0;
-    for (const em of emails) {
-      for (const att of em.attachments || []) {
-        attachments += 1;
-        if (resolveAttStatus(att) === "downloaded") downloaded += 1;
-        if (att.is_verified) verified += 1;
-        vessels += att.vessel_count || 0;
-      }
-    }
-    return { emails: emails.length, attachments, downloaded, verified, vessels };
-  }, [emails, attStatuses]);
-
   const fmtDate = (iso) => {
     const d = new Date(iso);
-    return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+    return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
   };
   const fmtTime = (iso) => {
     const d = new Date(iso);
     return d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
   };
 
+  // Flat list of attachment cards, newest first.
+  const mailRows = useMemo(() => {
+    const rows = [];
+    for (const em of emails) {
+      for (const att of em.attachments || []) {
+        rows.push({ ...att, email: em });
+      }
+    }
+    rows.sort(
+      (a, b) => new Date(b.email.date_received) - new Date(a.email.date_received)
+    );
+    return rows;
+  }, [emails]);
+
+  // Review tab: only medium/low confidence + failed attachments.
+  const scopedRows = useMemo(() => {
+    if (!reviewMode) return mailRows;
+    return mailRows.filter((r) => {
+      const tier = r.confidence_tier;
+      return tier === "medium" || tier === "low" || resolveAttStatus(r) === "failed";
+    });
+  }, [reviewMode, mailRows, attStatuses]);
+
+  const filteredRows = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return scopedRows;
+    return scopedRows.filter((r) => {
+      const hay = `${r.filename || ""} ${r.email.sender || ""} ${r.email.subject || ""}`.toLowerCase();
+      return hay.includes(q);
+    });
+  }, [scopedRows, search]);
+
+  const inboxStats = useMemo(() => {
+    let attachments = 0;
+    let downloaded = 0;
+    let verified = 0;
+    let vessels = 0;
+    const emailIds = new Set();
+    for (const row of scopedRows) {
+      emailIds.add(row.email.id);
+      attachments += 1;
+      if (resolveAttStatus(row) === "downloaded") downloaded += 1;
+      if (row.is_verified) verified += 1;
+      vessels += row.vessel_count || 0;
+    }
+    return {
+      emails: reviewMode ? emailIds.size : emails.length,
+      attachments,
+      downloaded,
+      verified,
+      vessels,
+    };
+  }, [scopedRows, reviewMode, emails, attStatuses]);
+
+  const selectedRow = useMemo(
+    () => mailRows.find((r) => r.id === selectedId) || null,
+    [mailRows, selectedId]
+  );
+
   return (
     <div className="vgrid-root">
 
       <div className="vgrid-head">
-        <h2>Vessel Extracted Data</h2>
+        <h2>{reviewMode ? "Need to Review" : "Vessel Extracted Data"}</h2>
         <div className="vgrid-actions">
           {retryTarget && !anyJobActive ? (
             <button
@@ -323,159 +341,126 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
         </div>
       )}
 
-      <div className="vgrid-body">
-        {groupedEmails.length === 0 && !fetchBusy ? (
-          <div className="vessel-grid-empty">
-            No emails fetched yet. Click &quot;Fetch Emails&quot; to start.
+      <div className="inbox-split">
+        {/* ── Left: mail list ── */}
+        <div className="inbox-list">
+          <div className="inbox-search">
+            <Icon name="search" size={15} />
+            <input
+              placeholder="Search mails…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
           </div>
-        ) : (
-          <div className="vessel-grid-wrap">
-            <div className="vessel-grid-scroll">
-              <table className="vessel-grid inbox-grid">
-                <thead>
-                  <tr>
-                    <th className="col-date">Date</th>
-                    <th className="col-time">Time</th>
-                    <th>Sender</th>
-                    <th title="Name from the email (Content-Disposition / MIME); re-fetch to refresh old rows">
-                      Attachment name
-                    </th>
-                    <th className="col-status">Status</th>
-                    <th className="col-actions">Actions</th>
-                    <th className="col-conf" title="Pipeline quality score — review Low before verifying">
-                      Confidence
-                    </th>
-                    <th className="col-verify">Verified</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {groupedEmails.map((em) => {
-                    const attachments = em.attachments || [];
-                    const doneCount = attachments.filter(
-                      (att) => resolveAttStatus(att) === "downloaded"
-                    ).length;
-                    const verifiedCount = attachments.filter((att) => att.is_verified).length;
+          <div className="inbox-list-scroll">
+            {mailRows.length === 0 ? (
+              <div className="inbox-list-empty">
+                {fetchBusy ? "Fetching…" : "No emails fetched yet. Click \u201CFetch Emails\u201D to start."}
+              </div>
+            ) : filteredRows.length === 0 ? (
+              <div className="inbox-list-empty">
+                {search.trim()
+                  ? "No mails match your search."
+                  : reviewMode
+                    ? "Nothing to review \uD83C\uDF89"
+                    : "No mails to show."}
+              </div>
+            ) : (
+              filteredRows.map((row) => {
+                const status = resolveAttStatus(row);
+                const verified = Boolean(row.is_verified);
+                const sender = row.email.sender || "—";
+                const avColor = AV_COLORS[(sender.charCodeAt(0) || 0) % AV_COLORS.length];
+                return (
+                  <div
+                    key={row.id}
+                    role="button"
+                    tabIndex={0}
+                    className={`imail-card ${selectedId === row.id ? "active" : ""} ${status === "failed" ? "is-failed" : ""}`}
+                    onClick={() => setSelectedId(row.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setSelectedId(row.id);
+                      }
+                    }}
+                  >
+                    <div className="imail-top">
+                      <span className="imail-av" style={{ background: avColor }}>
+                        {sender[0]?.toUpperCase() || "•"}
+                      </span>
+                      <span className="imail-from" title={sender}>{sender}</span>
+                      <span className="imail-date">
+                        {fmtDate(row.email.date_received)} {fmtTime(row.email.date_received)}
+                      </span>
+                    </div>
+                    <div className="imail-subj" title={row.email.subject}>
+                      {row.email.subject || "(no subject)"}
+                    </div>
+                    <div className="imail-file" title={row.filename || undefined}>
+                      <Icon name="clip" size={12} />
+                      <span>{row.filename || "—"}</span>
+                    </div>
+                    <div className="imail-badges">
+                      <StatusBadge status={status} />
+                      <div className="imail-actions">
+                        {status === "failed" && (
+                          <button
+                            type="button"
+                            className="inbox-btn inbox-btn-danger"
+                            disabled={anyJobActive}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleRetryAttachment(row.id);
+                            }}
+                          >
+                            Retry
+                          </button>
+                        )}
+                      </div>
+                      <ConfidenceBadge
+                        score={row.confidence_score}
+                        tier={row.confidence_tier}
+                        label={row.confidence_label}
+                        status={status}
+                        reviewed={Boolean(row.manually_reviewed)}
+                      />
+                      <VerifiedIndicator verified={verified} />
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
 
-                    return (
-                      <Fragment key={em.id}>
-                        <tr className="grp-row">
-                          <td colSpan={8}>
-                            <div className="grp-label">
-                              <span className="grp-icon"><Icon name="mail" size={14} /></span>
-                              <span>{fmtDate(em.date_received)} {fmtTime(em.date_received)}</span>
-                              <span title={em.sender}>{em.sender}</span>
-                              <span className="grp-subj" title={em.subject}>{em.subject}</span>
-                              <span className="inbox-grp-meta">
-                                {doneCount}/{attachments.length} downloaded
-                                {verifiedCount > 0 && (
-                                  <span className="hi"> · {verifiedCount} verified</span>
-                                )}
-                              </span>
-                            </div>
-                          </td>
-                        </tr>
-                        {attachments.map((att) => {
-                          const row = { ...att, email: em };
-                          const status = resolveAttStatus(row);
-                          const previewReady = status === "downloaded";
-                          const verified = Boolean(row.is_verified);
-                          const verifyReady = canVerifyAttachment(row, status);
-                          const verifyBusy = verifyBusyId === row.id;
-
-                          return (
-                            <tr key={row.id}>
-                              <td className="cell-date">{fmtDate(row.email.date_received)}</td>
-                              <td className="cell-time">{fmtTime(row.email.date_received)}</td>
-                              <td className="cell-sender">
-                                <div className="owner" title={row.email.sender}>{row.email.sender}</div>
-                                <div className="subj" title={row.email.subject}>{row.email.subject}</div>
-                              </td>
-                              <td className="cell-file">
-                                <span className="file-name" title={row.filename || undefined}>
-                                  <Icon name="clip" size={13} />
-                                  <span>{row.filename || "—"}</span>
-                                </span>
-                              </td>
-                              <td><StatusBadge status={status} /></td>
-                              <td>
-                                <div className="inbox-actions">
-                                  <button
-                                    type="button"
-                                    disabled={!previewReady}
-                                    onClick={() =>
-                                      previewReady &&
-                                      setPreviewAtt({
-                                        id: row.id,
-                                        filename: row.filename,
-                                        emailId: row.email.id,
-                                        isVerified: verified,
-                                        vesselCount: row.vessel_count || 0,
-                                      })
-                                    }
-                                    className="inbox-btn"
-                                  >
-                                    Preview
-                                  </button>
-                                  {status === "failed" && (
-                                    <button
-                                      type="button"
-                                      onClick={() => handleRetryAttachment(row.id)}
-                                      disabled={anyJobActive}
-                                      className="inbox-btn inbox-btn-danger"
-                                    >
-                                      Retry
-                                    </button>
-                                  )}
-                                </div>
-                              </td>
-                              <td>
-                                <ConfidenceBadge
-                                  score={row.confidence_score}
-                                  tier={row.confidence_tier}
-                                  label={row.confidence_label}
-                                  status={status}
-                                  reviewed={Boolean(row.manually_reviewed)}
-                                />
-                              </td>
-                              <td>
-                                <VerifyButton
-                                  verified={verified}
-                                  canVerify={verifyReady}
-                                  busy={verifyBusy}
-                                  onToggle={() => handleVerifyAttachment(row.id, !verified)}
-                                />
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </Fragment>
-                    );
-                  })}
-                </tbody>
-              </table>
+        {/* ── Right: detail pane ── */}
+        <div className="inbox-detail">
+          {selectedRow ? (
+            <PreviewPanel
+              key={selectedRow.id}
+              attachmentId={selectedRow.id}
+              filename={selectedRow.filename}
+              emailId={selectedRow.email.id}
+              initialVerified={Boolean(selectedRow.is_verified)}
+              vesselCount={selectedRow.vessel_count || 0}
+              onVerifiedChange={(isVerified) => {
+                patchAttachmentVerified(selectedRow.id, isVerified);
+                onVesselsUpdated?.();
+                loadEmails();
+              }}
+              onDataChange={() => {
+                onVesselsUpdated?.();
+              }}
+            />
+          ) : (
+            <div className="inbox-detail-empty">
+              <div className="ide-icon"><Icon name="mail" size={34} /></div>
+              <div>Select a mail on the left to preview its extracted vessels and original message.</div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
-
-      {previewAtt && (
-        <PreviewModal
-          attachmentId={previewAtt.id}
-          filename={previewAtt.filename}
-          emailId={previewAtt.emailId}
-          initialVerified={previewAtt.isVerified}
-          vesselCount={previewAtt.vesselCount}
-          onVerifiedChange={() => {
-            loadEmails();
-            onVesselsUpdated?.();
-          }}
-          onDataChange={() => {
-            loadEmails();
-            onVesselsUpdated?.();
-          }}
-          onClose={() => setPreviewAtt(null)}
-        />
-      )}
     </div>
   );
 }
@@ -486,6 +471,14 @@ function InboxStat({ label, value }) {
       <span>{label}: </span>
       <b>{value}</b>
     </div>
+  );
+}
+
+function VerifiedIndicator({ verified }) {
+  return (
+    <span className={`imail-verified ${verified ? "is-on" : ""}`}>
+      {verified ? "✓ Verified" : "Unverified"}
+    </span>
   );
 }
 

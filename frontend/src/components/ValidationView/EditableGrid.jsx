@@ -42,6 +42,7 @@ function EditableCell({ getValue, row, column, table, vesselName = false, column
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(initial);
   const readOnly = table.options.meta?.readOnly;
+  const highlightEmpty = table.options.meta?.highlightEmpty;
   const editField = editFieldForColumn(column.id, columnDefs);
 
   useEffect(() => {
@@ -56,17 +57,25 @@ function EditableCell({ getValue, row, column, table, vesselName = false, column
   };
 
   if (!editing || readOnly) {
+    const showAddHint = !value && Boolean(editField) && (!readOnly || highlightEmpty);
+    const label = (columnDefs?.find((c) => c.id === column.id)?.header || column.id)
+      .toString()
+      .toLowerCase();
     return (
       <div
         onDoubleClick={
           readOnly || !editField ? undefined : () => setEditing(true)
         }
-        className={`cell-val ${value ? "" : "is-empty"} ${
+        className={`cell-val ${value ? "" : "is-empty"} ${showAddHint ? "cell-add" : ""} ${
           readOnly || !editField ? "cursor-default" : "cursor-text"
         } ${vesselName ? "font-bold uppercase" : ""}`}
-        title={readOnly ? value || "" : value || "Double-click to edit · Enter to save"}
+        title={
+          readOnly
+            ? (showAddHint ? "Click Edit to fill this field" : value || "")
+            : value || "Double-click to edit · Enter to save"
+        }
       >
-        {value || "—"}
+        {value || (showAddHint ? `add ${label}…` : "—")}
       </div>
     );
   }
@@ -78,7 +87,7 @@ function EditableCell({ getValue, row, column, table, vesselName = false, column
       onChange={(e) => setValue(e.target.value)}
       onBlur={commit}
       onKeyDown={(e) => {
-        if (e.key === "Enter") commit();
+        if (e.key === "Enter") { commit(); table.options.meta?.onEnterSave?.(); }
         if (e.key === "Escape") { setValue(initial); setEditing(false); }
       }}
       className={`cell-edit ${vesselName ? "vname" : ""}`}
@@ -91,6 +100,7 @@ function EditableRegionCell({ getValue, row, column, table }) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(initial);
   const readOnly = table.options.meta?.readOnly;
+  const highlightEmpty = table.options.meta?.highlightEmpty;
 
   useEffect(() => {
     setValue(initial);
@@ -104,16 +114,21 @@ function EditableRegionCell({ getValue, row, column, table }) {
   };
 
   if (!editing || readOnly) {
+    const showAddHint = !value && (!readOnly || highlightEmpty);
     return (
       <div
         onDoubleClick={readOnly ? undefined : () => setEditing(true)}
-        className={`cell-val font-bold uppercase ${value ? "" : "is-empty"} ${
+        className={`cell-val font-bold uppercase ${value ? "" : "is-empty"} ${showAddHint ? "cell-add" : ""} ${
           readOnly ? "cursor-default" : "cursor-text"
         }`}
         style={value ? { color: "var(--brand-d)" } : undefined}
-        title={readOnly ? initial || "" : "Double-click to edit · Enter to save"}
+        title={
+          readOnly
+            ? (showAddHint ? "Click Edit to fill this field" : initial || "")
+            : "Double-click to edit · Enter to save"
+        }
       >
-        {value || "—"}
+        {value || (showAddHint ? "add region…" : "—")}
       </div>
     );
   }
@@ -125,7 +140,7 @@ function EditableRegionCell({ getValue, row, column, table }) {
       onChange={(e) => setValue(e.target.value.toUpperCase())}
       onBlur={commit}
       onKeyDown={(e) => {
-        if (e.key === "Enter") commit();
+        if (e.key === "Enter") { commit(); table.options.meta?.onEnterSave?.(); }
         if (e.key === "Escape") { setValue(initial); setEditing(false); }
       }}
       className="cell-edit region"
@@ -146,6 +161,7 @@ export default function EditableGrid({
   columns: _legacyColumns,
   gridColumns,
   onCellEdit,
+  onEnterSave,
   readOnly = false,
   showCheckboxes = false,
   hideGroupHeaders = false,
@@ -159,7 +175,10 @@ export default function EditableGrid({
   showColumnSelect = false,
   selectedColumnIds = new Set(),
   onToggleColumnSelect,
+  columnWidthScale = 1,
+  highlightEmpty = false,
 }) {
+  const scaleW = (w) => Math.max(48, Math.round(w * columnWidthScale));
   const [containerWidth, setContainerWidth] = useState(0);
   const scrollRef = useRef(null);
 
@@ -242,7 +261,7 @@ export default function EditableGrid({
           helper.display({
             id: "_num",
             header: col.header,
-            size: col.width || 40,
+            size: scaleW(col.width || 40),
             cell: (info) => <SrNoCell row={info.row} />,
           })
         );
@@ -253,7 +272,7 @@ export default function EditableGrid({
         helper.display({
           id: col.id,
           header: col.header,
-          size: col.width || 110,
+          size: scaleW(col.width || 110),
           cell: (info) => {
             const value = resolveStandardCellValue(
               info.row.original,
@@ -302,13 +321,14 @@ export default function EditableGrid({
     selectedIds,
     onToggleAll,
     onToggleSelect,
+    columnWidthScale,
   ]);
 
   const table = useReactTable({
     data,
     columns: columnDefs,
     getCoreRowModel: getCoreRowModel(),
-    meta: { onCellEdit, readOnly, columnDefs: standardCols },
+    meta: { onCellEdit, onEnterSave, readOnly, columnDefs: standardCols, highlightEmpty },
   });
 
   const pinnedColIds = useMemo(

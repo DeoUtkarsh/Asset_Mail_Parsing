@@ -1,7 +1,14 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { MapContainer, TileLayer, Marker, Tooltip, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import EditableGrid from "../ValidationView/EditableGrid";
+import { regionToZone, vesselsGroupedByZone } from "../../utils/zoneMapping";
+import { leafletBoundsFromZones } from "../../utils/mapBounds";
+import { getColumnDefinitions } from "../../services/api";
+import { DEFAULT_COLUMNS } from "../../utils/standardColumns";
+import { copyEmailHtml } from "../../utils/copyEmailHtml";
+import { downloadDraftPdf } from "../../utils/downloadDraftPdf";
 
 // Zone accent colours (same order as backend ZONE_ORDER)
 const ZONE_COLORS = {
@@ -41,15 +48,36 @@ function makePinIcon(count, color) {
   });
 }
 
-function RecenterControl() {
+function FitZoneBounds({ zones }) {
+  const map = useMap();
+  useEffect(() => {
+    const points = leafletBoundsFromZones(zones);
+    if (!points?.length) return;
+    if (points.length === 1) {
+      map.setView(points[0], 4);
+      return;
+    }
+    map.fitBounds(L.latLngBounds(points), { padding: [32, 32], maxZoom: 5 });
+  }, [map, zones]);
+  return null;
+}
+
+function RecenterControl({ zones }) {
   const map = useMap();
   return (
-    <div
-      style={{ position: "absolute", bottom: 10, right: 10, zIndex: 1000 }}
-    >
+    <div style={{ position: "absolute", bottom: 10, right: 10, zIndex: 1000 }}>
       <button
-        onClick={() => map.setView([15, 100], 3)}
-        title="Reset view"
+        type="button"
+        onClick={() => {
+          const points = leafletBoundsFromZones(zones);
+          if (!points?.length) return;
+          if (points.length === 1) {
+            map.setView(points[0], 4);
+            return;
+          }
+          map.fitBounds(L.latLngBounds(points), { padding: [32, 32], maxZoom: 5 });
+        }}
+        title="Fit all zone markers"
         style={{
           background: "#fff",
           border: "2px solid rgba(0,0,0,0.2)",
@@ -70,7 +98,16 @@ function RecenterControl() {
   );
 }
 
-function ZoneMap({ zones }) {
+function MapCaptureBridge({ onMapReady }) {
+  const map = useMap();
+  useEffect(() => {
+    onMapReady?.(map);
+    return () => onMapReady?.(null);
+  }, [map, onMapReady]);
+  return null;
+}
+
+function ZoneMap({ zones, onMapReady }) {
   if (!zones || zones.length === 0) return null;
 
   return (
@@ -86,8 +123,11 @@ function ZoneMap({ zones }) {
       <TileLayer
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         attribution="© OpenStreetMap contributors"
+        crossOrigin="anonymous"
       />
-      <RecenterControl />
+      <FitZoneBounds zones={zones} />
+      <MapCaptureBridge onMapReady={onMapReady} />
+      <RecenterControl zones={zones} />
       {zones.map((z) => (
         <Marker
           key={z.name}
@@ -105,129 +145,176 @@ function ZoneMap({ zones }) {
   );
 }
 
-export default function DraftView({ html = "", zones = [] }) {
+export default function DraftView({ html = "", zones = [], vessels = [], columns = [] }) {
   const [copied, setCopied] = useState(false);
-  const iframeRef = useRef(null);
+  const [downloading, setDownloading] = useState(false);
+  const [columnDefs, setColumnDefs] = useState(DEFAULT_COLUMNS);
+  const mapWrapperRef = useRef(null);
+  const leafletMapRef = useRef(null);
+  const onMapReady = useCallback((map) => { leafletMapRef.current = map; }, []);
 
-  // Reset copied state when new draft arrives
-  useEffect(() => { setCopied(false); }, [html]);
+  useEffect(() => {
+    getColumnDefinitions()
+      .then((r) => setColumnDefs(r.columns?.length ? r.columns : DEFAULT_COLUMNS))
+      .catch(() => setColumnDefs(DEFAULT_COLUMNS));
+  }, []);
 
-  const handleCopy = () => {
-    // Copy plain-text version by extracting text from the HTML
-    const tmp = document.createElement("div");
-    tmp.innerHTML = html;
-    const text = tmp.innerText || tmp.textContent || html;
-    navigator.clipboard.writeText(text).catch(() => {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      document.body.removeChild(ta);
-    });
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  useEffect(() => { setCopied(false); }, [html, vessels]);
+
+  const gridVessels = useMemo(() => vesselsGroupedByZone(vessels), [vessels]);
+
+  const gridColumns = useMemo(() => {
+    if (!columns?.length) return columnDefs;
+    const allowed = new Set(columns);
+    return columnDefs.filter((c) => allowed.has(c.id));
+  }, [columnDefs, columns]);
+
+  const zoneCount = useMemo(
+    () => new Set(vessels.map((v) => regionToZone(v.region))).size,
+    [vessels],
+  );
+
+  const hasGrid = vessels.length > 0;
+  const hasContent = hasGrid || Boolean(html);
+  // When the draft carries many columns the inline table gets too wide to read —
+  // offer a paginated PDF (map + full table) instead.
+  const showPdfDownload = gridColumns.length > 9;
+
+  const handleCopy = async () => {
+    try {
+      await copyEmailHtml(html, { vessels: gridVessels, columns: gridColumns });
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (e) {
+      console.error("Copy failed:", e);
+      alert("Could not copy to clipboard. Try again or use Ctrl+V in your email compose window.");
+    }
   };
 
-  const wordCount = html
-    ? (html.replace(/<[^>]*>/g, " ").match(/\S+/g) || []).length
-    : 0;
-
-  const hasContent = Boolean(html);
+  const handleDownloadPdf = async () => {
+    setDownloading(true);
+    try {
+      const stamp = new Date().toISOString().slice(0, 10);
+      await downloadDraftPdf({
+        vessels: gridVessels,
+        columns: gridColumns,
+        zones,
+        mapWrapperEl: mapWrapperRef.current,
+        leafletMap: leafletMapRef.current,
+        filename: `vessel-draft-${stamp}.pdf`,
+      });
+    } catch (e) {
+      console.error("PDF download failed:", e);
+      alert("Could not generate PDF. Try again or use Copy to Clipboard.");
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   return (
-    <div className="flex flex-col h-full overflow-hidden" style={{ background: "#f0f9ff" }}>
+    <div className="draft-root">
+      <div className="draft-head">
+        <div className="draft-head-left">
+          <div>
+            <h2>
+              <span className="draft-spark" aria-hidden>⚓</span>
+              Generated Draft
+            </h2>
+            <p className="draft-sub">
+              {hasContent
+                ? `Consolidated position list · ${vessels.length} vessel${vessels.length !== 1 ? "s" : ""} · ${zoneCount} zone${zoneCount !== 1 ? "s" : ""}`
+                : "Review the final email below, then copy into your email client."}
+            </p>
+          </div>
 
-      {/* ── Header — ocean gradient ── */}
-      <div
-        className="flex items-center justify-between px-6 py-4 flex-shrink-0 shadow-md"
-        style={{ background: "linear-gradient(135deg, #0c4a6e 0%, #0369a1 100%)" }}
-      >
-        <div>
-          <h2 className="text-base font-bold text-white tracking-wide">⚓ Generated Draft</h2>
-          <p className="text-xs mt-0.5" style={{ color: "#bae6fd" }}>
-            {hasContent
-              ? `Consolidated position list · ${wordCount} words · ${zones.length} zone${zones.length !== 1 ? "s" : ""}`
-              : "Review the final email below, then copy into your email client."}
-          </p>
+          {hasGrid && (
+            <div className="draft-stats">
+              <div className="draft-stat"><span>Vessels</span> <b>{vessels.length}</b></div>
+              <div className="draft-stat"><span>Zones</span> <b>{zoneCount}</b></div>
+              <div className="draft-stat"><span>Columns</span> <b>{gridColumns.length}</b></div>
+            </div>
+          )}
         </div>
-        <button
-          onClick={handleCopy}
-          disabled={!hasContent}
-          className="flex items-center gap-2 px-5 py-2 rounded-lg text-sm font-semibold transition-all shadow-sm disabled:opacity-40 disabled:cursor-not-allowed"
-          style={copied
-            ? { background: "#6ee7b7", color: "#064e3b", border: "none" }
-            : { background: "#fff", color: "#0c4a6e", border: "none" }
-          }
-          onMouseEnter={e => { if (!copied && hasContent) e.currentTarget.style.background = "#e0f2fe"; }}
-          onMouseLeave={e => { if (!copied) e.currentTarget.style.background = "#fff"; }}
-        >
-          {copied ? "✔ Copied!" : "⎘ Copy to Clipboard"}
-        </button>
+
+        <div className="draft-actions">
+          {showPdfDownload && (
+            <button
+              type="button"
+              onClick={handleDownloadPdf}
+              disabled={!hasGrid || downloading}
+              className="draft-btn"
+            >
+              {downloading ? "Generating…" : "⬇ Download PDF"}
+            </button>
+          )}
+          <button
+            onClick={handleCopy}
+            disabled={!hasGrid && !html}
+            className={`draft-btn primary ${copied ? "copied" : ""}`}
+          >
+            {copied ? "✔ Copied!" : "⎘ Copy to Clipboard"}
+          </button>
+        </div>
       </div>
 
       {!hasContent ? (
-        /* ── Empty state ── */
-        <div
-          className="flex-1 flex flex-col items-center justify-center gap-4 rounded-xl border-dashed m-6"
-          style={{ background: "#fff", border: "2px dashed #bae6fd" }}
-        >
-          <div className="text-5xl" style={{ color: "#bae6fd" }}>✉</div>
-          <p className="text-sm text-center max-w-sm" style={{ color: "#7dd3fc" }}>
-            No draft yet. Go to{" "}
-            <span className="font-semibold" style={{ color: "#0369a1" }}>② Validate</span>, review
-            your vessels, and click{" "}
-            <span className="font-semibold" style={{ color: "#0369a1" }}>Generate Draft</span>.
+        <div className="draft-empty">
+          <div className="draft-empty-ic" aria-hidden>✉</div>
+          <p style={{ maxWidth: "22rem" }}>
+            No draft yet. Go to <b>Vessel Position List</b>, select your vessels, and click{" "}
+            <b>Generate Draft</b>.
           </p>
         </div>
-      ) : (
-        /* ── Content: map left, email right ── */
-        <div className="flex-1 min-h-0 flex flex-row gap-4 p-4 overflow-hidden">
-
-          {/* ── Left: map + legend ── */}
-          <div className="flex flex-col gap-3 flex-shrink-0 min-h-0" style={{ width: "30%" }}>
+      ) : hasGrid ? (
+        <>
+          <div className="draft-body">
             {zones.length > 0 && (
-              <>
-                <div
-                  className="flex-1 min-h-0 rounded-xl overflow-hidden shadow-md"
-                  style={{ border: "1px solid #bae6fd" }}
-                >
-                  <ZoneMap zones={zones} />
+              <div className="draft-left">
+                <div ref={mapWrapperRef} className="draft-map draft-map-capture">
+                  <ZoneMap zones={zones} onMapReady={onMapReady} />
                 </div>
-                {/* Zone legend — pinned at bottom */}
-                <div
-                  className="flex flex-col gap-1.5 px-3 py-2 rounded-xl flex-shrink-0"
-                  style={{ background: "#fff", border: "1px solid #bae6fd" }}
-                >
+                <div className="draft-legend">
                   {zones.map((z) => (
-                    <div key={z.name} className="flex items-center gap-2">
+                    <div key={z.name} className="draft-legend-row">
                       <span
-                        className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0"
+                        className="draft-legend-dot"
                         style={{ background: ZONE_COLORS[z.name] || "#94a3b8" }}
                       />
-                      <span className="text-xs" style={{ color: "#0369a1" }}>{z.name}</span>
-                      <span className="text-xs font-bold ml-auto" style={{ color: "#0c4a6e" }}>({z.count})</span>
+                      <span>{z.name}</span>
+                      <b>({z.count})</b>
                     </div>
                   ))}
                 </div>
-              </>
+              </div>
             )}
-          </div>
 
-          {/* ── Right: email preview ── */}
-          <div className="flex-1 min-h-0 flex flex-col gap-1 overflow-hidden">
-            <iframe
-              ref={iframeRef}
-              srcDoc={html}
-              title="Draft email preview"
-              sandbox="allow-same-origin"
-              className="flex-1 min-h-0 w-full rounded-xl shadow-md bg-white"
-              style={{ border: "1px solid #bae6fd" }}
-            />
-            <p className="text-xs text-right flex-shrink-0" style={{ color: "#7dd3fc" }}>
-              Read-only preview — use "Copy to Clipboard" to send via your email client.
-            </p>
+            <div className="draft-right">
+              <EditableGrid
+                data={gridVessels}
+                gridColumns={gridColumns}
+                onCellEdit={() => {}}
+                readOnly
+                showCheckboxes={false}
+                groupHeaderIcon={null}
+              />
+              <p className="draft-note">
+                Copy uses the same columns as this grid.
+                {showPdfDownload ? " Download PDF (10+ columns) exports map + full table in one flow." : ""}
+              </p>
+            </div>
           </div>
+        </>
+      ) : (
+        <div className="draft-body" style={{ flexDirection: "column" }}>
+          <iframe
+            srcDoc={html}
+            title="Draft email preview"
+            sandbox="allow-same-origin"
+            className="draft-iframe"
+          />
+          <p className="draft-note">
+            Read-only preview — use "Copy to Clipboard" to send via your email client.
+          </p>
         </div>
       )}
     </div>

@@ -78,6 +78,10 @@ export const deleteVessel = (vesselId) =>
 export const createVessel = (emailId) =>
   request("POST", `/emails/${emailId}/vessels`);
 
+/** Add a position row manually to the Vessel Position List (shows immediately). */
+export const createManualVessel = (dynamicData, region) =>
+  request("POST", "/vessels/manual", { dynamic_data: dynamicData, region });
+
 // ── Phase 2 ─────────────────────────────────────────────────────────────────
 
 /**
@@ -110,6 +114,9 @@ export const updateBrokerContact = (contactId, fields) =>
 export const updateAttachmentContacts = (attId, { signature_emails, signature_phones }) =>
   request("PUT", `/attachments/${attId}/contacts`, { signature_emails, signature_phones });
 
+/** Home dashboard: pipeline counts + AI narrative (numbers from SQL). */
+export const getHomeSummary = () => request("GET", "/home/summary");
+
 /** Fresh AI summary for the inbox tab (optional email id filter). */
 export const summarizeInbox = (emailIds) =>
   request("POST", "/summary/inbox", emailIds?.length ? { email_ids: emailIds } : {});
@@ -121,3 +128,17 @@ export const summarizeVessels = (vesselIds) =>
 /** Fresh AI summary for the Contact List tab. */
 export const summarizeContacts = (contactIds) =>
   request("POST", "/summary/contacts", contactIds?.length ? { contact_ids: contactIds } : {});
+
+// ── Vessel Library ───────────────────────────────────────────────────────────
+
+/** Returns { vessels: [...], new_vessels: [...] } for the Vessel Libraries List tab. */
+export const getVesselLibrary = () => request("GET", "/vessel-library");
+
+/** Add a vessel to the library (manual entry or promotion from review). */
+export const addVesselLibrary = (fields) => request("POST", "/vessel-library", fields);
+
+/** Update one vessel in the library. */
+export const updateVesselLibrary = (id, fields) => request("PUT", `/vessel-library/${id}`, fields);
+
+/** Delete one vessel from the library. */
+export const deleteVesselLibrary = (id) => request("DELETE", `/vessel-library/${id}`);

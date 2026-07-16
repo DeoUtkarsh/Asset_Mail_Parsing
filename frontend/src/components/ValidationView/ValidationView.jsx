@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { getAllVesselsCombined, getColumnDefinitions, updateVessel, deleteVessel, generateDraft } from "../../services/api";
+import { createPortal } from "react-dom";
+import { getAllVesselsCombined, getColumnDefinitions, updateVessel, deleteVessel, generateDraft, createManualVessel } from "../../services/api";
 import { useSSE } from "../../hooks/useSSE";
 import EditableGrid from "./EditableGrid";
 import DraftModal from "./DraftModal";
 import AllColumnsToggle from "./AllColumnsToggle";
 import AiSummaryButton from "../AiSummary/AiSummaryButton";
+import Icon from "../icons";
 import { summarizeVessels } from "../../services/api";
 import {
   filterPositionListGridColumns,
@@ -35,6 +37,8 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
   const [draftData, setDraftData]   = useState(null);
   const [draftModalOpen, setDraftModalOpen] = useState(false);
   const [showAllColumns, setShowAllColumns] = useState(() => readPositionListShowAllColumnsPref());
+  const [addModalOpen, setAddModalOpen] = useState(false);
+  const [addSaving, setAddSaving] = useState(false);
   const [selectedColumnIds, setSelectedColumnIds] = useState(() => defaultDraftSelectedColumnIds());
   const [lastDraftSignature, setLastDraftSignature] = useState(null);
   const savedTimer                  = useRef(null);
@@ -110,6 +114,26 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
     savePromise.then(flashSaved).catch((e) => setError("Failed to save: " + e.message));
   }, []);
 
+  const handleAddPosition = useCallback(async (form) => {
+    setAddSaving(true);
+    setError("");
+    const region = (form.__region__ || "").trim();
+    const dynamicData = {};
+    Object.entries(form).forEach(([k, v]) => {
+      if (k !== "__region__") dynamicData[k] = (v || "").trim();
+    });
+    try {
+      await createManualVessel(dynamicData, region);
+      setAddModalOpen(false);
+      flashSaved();
+      await load();
+    } catch (e) {
+      setError("Failed to add position: " + e.message);
+    } finally {
+      setAddSaving(false);
+    }
+  }, [load]);
+
   const handleDeleteSelected = useCallback(async () => {
     if (selectedIds.size === 0) return;
     const ids = [...selectedIds];
@@ -158,6 +182,11 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
   const gridColumns = useMemo(
     () => filterPositionListGridColumns(columnDefs, showAllColumns),
     [columnDefs, showAllColumns],
+  );
+
+  const manualColumns = useMemo(
+    () => (columnDefs || []).filter((c) => c.storage && c.storage !== "derived"),
+    [columnDefs],
   );
 
   const draftColumnIds = useMemo(
@@ -275,6 +304,15 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
         <div className="vgrid-actions">
           <span className={`vgrid-saved ${savedMsg ? "show" : ""}`}>✓ Saved</span>
 
+          <button
+            type="button"
+            className="tb-btn tb-btn-primary tb-btn-sm"
+            onClick={() => setAddModalOpen(true)}
+            disabled={loading || columnDefs.length === 0}
+          >
+            <Icon name="plus" size={13} /> Add position
+          </button>
+
           {!loading && vessels.length > 0 && columnDefs.length > 0 && (
             <AllColumnsToggle
               enabled={showAllColumns}
@@ -386,7 +424,65 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
         vessels={draftData?.vessels}
         columns={draftData?.columns}
       />
+
+      {addModalOpen && (
+        <AddPositionModal
+          columns={manualColumns}
+          saving={addSaving}
+          onClose={() => setAddModalOpen(false)}
+          onSave={handleAddPosition}
+        />
+      )}
     </div>
+  );
+}
+
+function AddPositionModal({ columns, saving, onClose, onSave }) {
+  const fieldKey = (c) => (c.storage === "region" ? "__region__" : c.id);
+  const [form, setForm] = useState(() =>
+    columns.reduce((acc, c) => ({ ...acc, [fieldKey(c)]: "" }), {})
+  );
+
+  const set = (key, val) => setForm((f) => ({ ...f, [key]: val }));
+
+  const submit = (e) => {
+    e.preventDefault();
+    if (saving) return;
+    onSave(form);
+  };
+
+  return createPortal(
+    <div className="vlib-modal-bg" onClick={(e) => e.target.classList.contains("vlib-modal-bg") && onClose()}>
+      <form className="vlib-modal" onSubmit={submit}>
+        <div className="vlib-modal-head">
+          <h3>Add position</h3>
+          <button type="button" className="vlib-modal-x" onClick={onClose}>✕</button>
+        </div>
+        <p className="vlib-modal-note">New entry with the same columns as the position list. Fill what you have and save.</p>
+        <div className="vlib-modal-grid">
+          {columns.map((c) => {
+            const key = fieldKey(c);
+            return (
+              <label key={c.id} className="vlib-field">
+                <span>{c.header}</span>
+                <input
+                  value={form[key] || ""}
+                  onChange={(e) => set(key, e.target.value)}
+                  autoFocus={c.id === "vessel_name"}
+                />
+              </label>
+            );
+          })}
+        </div>
+        <div className="vlib-modal-btns">
+          <button type="button" className="tb-btn" onClick={onClose}>Cancel</button>
+          <button type="submit" className="tb-btn tb-btn-primary" disabled={saving}>
+            {saving ? "Saving…" : "Save position"}
+          </button>
+        </div>
+      </form>
+    </div>,
+    document.body
   );
 }
 

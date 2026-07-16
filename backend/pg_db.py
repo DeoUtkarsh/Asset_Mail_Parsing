@@ -111,6 +111,24 @@ CREATE INDEX IF NOT EXISTS idx_broker_contacts_attachment_id
 CREATE INDEX IF NOT EXISTS idx_broker_contacts_parent_email_id
     ON broker_contacts(parent_email_id);
 
+-- Master list of vessels (static particulars, deduplicated) — the Vessel Library.
+CREATE TABLE IF NOT EXISTS vessel_library (
+    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    vessel_name    TEXT NOT NULL DEFAULT '',
+    imo_no         TEXT NOT NULL DEFAULT '',
+    imo_type       TEXT NOT NULL DEFAULT '',
+    dwt            TEXT NOT NULL DEFAULT '',
+    year_built     TEXT NOT NULL DEFAULT '',
+    tank_coating   TEXT NOT NULL DEFAULT '',
+    vessel_type    TEXT NOT NULL DEFAULT '',
+    match_key      TEXT NOT NULL DEFAULT '',
+    created_at     TIMESTAMPTZ DEFAULT NOW(),
+    updated_at     TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_vessel_library_match_key
+    ON vessel_library(match_key);
+
 DROP VIEW IF EXISTS vessels_full;
 CREATE OR REPLACE VIEW vessels_full AS
 SELECT

@@ -16,6 +16,7 @@ from openai import AsyncOpenAI
 from config import settings
 from database import supabase
 from agents.drafter import REGION_TO_ZONE, ZONE_ORDER
+from agents.confidence_score import compute_attachment_confidence
 
 logger = logging.getLogger(__name__)
 
@@ -348,6 +349,109 @@ async def summarize_vessels(vessel_ids: list[str] | None = None) -> dict[str, An
     return _pack("vessels", narrative, facts)
 
 
+async def summarize_home() -> dict[str, Any]:
+    """Home dashboard: pipeline aggregates from DB + short AI narrative."""
+    from collections import defaultdict
+
+    emails = (
+        supabase.table("parent_emails").select("id, status").execute()
+    ).data or []
+    email_ids = [e["id"] for e in emails]
+    ready_ids = {
+        e["id"] for e in emails
+        if (e.get("status") or "") in ("ready_for_validation", "drafted")
+    }
+
+    attachments: list[dict[str, Any]] = []
+    if email_ids:
+        attachments = (
+            supabase.table("attachments")
+            .select("id, parent_email_id, status, is_verified, manually_reviewed, raw_text")
+            .in_("parent_email_id", email_ids)
+            .execute()
+        ).data or []
+    att_ids = [a["id"] for a in attachments]
+
+    vessels: list[dict[str, Any]] = []
+    if att_ids:
+        vessels = (
+            supabase.table("vessels")
+            .select("id, attachment_id, dynamic_data, region")
+            .in_("attachment_id", att_ids)
+            .execute()
+        ).data or []
+
+    v_by_att: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for v in vessels:
+        v_by_att[v.get("attachment_id") or ""].append(v)
+
+    downloaded = sum(1 for a in attachments if (a.get("status") or "").lower() == "done")
+
+    review_count = 0
+    for a in attachments:
+        vlist = v_by_att.get(a["id"], [])
+        conf = compute_attachment_confidence(
+            status=a.get("status") or "",
+            vessel_count=len(vlist),
+            vessels=vlist,
+            raw_text=a.get("raw_text"),
+            retry_suggested=False,
+            manually_reviewed=bool(a.get("manually_reviewed")),
+        )
+        tier = conf.get("confidence_tier")
+        st = (a.get("status") or "").lower()
+        if tier in ("medium", "low") or st == "error":
+            review_count += 1
+
+    verified_att_ids = {
+        a["id"] for a in attachments
+        if a.get("is_verified") and a.get("parent_email_id") in ready_ids
+    }
+    ready_vessels = [v for v in vessels if v.get("attachment_id") in verified_att_ids]
+    positions_ready = len(ready_vessels)
+    positions_parsed = len(vessels)
+
+    zones = set()
+    for v in ready_vessels:
+        z = region_to_zone(v.get("region"))
+        if z and z != "UNSPECIFIED":
+            zones.add(z)
+    zone_count = len(zones)
+
+    readiness_pct = (
+        round(100 * positions_ready / positions_parsed) if positions_parsed else 0
+    )
+
+    facts = {
+        "scope": "home",
+        "emails_received": len(emails),
+        "attachments_total": len(attachments),
+        "attachments_downloaded": downloaded,
+        "positions_parsed": positions_parsed,
+        "positions_ready": positions_ready,
+        "review_count": review_count,
+        "zones": zone_count,
+        "readiness_pct": readiness_pct,
+        "headline_stats": [
+            {"label": "Emails", "value": len(emails)},
+            {"label": "Positions", "value": positions_parsed},
+            {"label": "Ready", "value": positions_ready},
+            {"label": "To review", "value": review_count},
+        ],
+    }
+    brief = {
+        "context": "home",
+        "emails_received": len(emails),
+        "positions_parsed": positions_parsed,
+        "positions_ready": positions_ready,
+        "review_count": review_count,
+        "zones": zone_count,
+        "readiness_pct": readiness_pct,
+    }
+    narrative = await _generate_narrative(brief, "home")
+    return _pack("home", narrative, facts)
+
+
 async def summarize_contacts(contact_ids: list[str] | None = None) -> dict[str, Any]:
     q = supabase.table("broker_contacts").select(
         "id, company, contact_name, email, off_phone, mob_phone, vessel_name, used_fallback"
@@ -465,11 +569,17 @@ async def _generate_narrative(brief: dict[str, Any], context: str) -> str:
             "Never repeat instructions, JSON field names, or your reasoning. "
             "2-4 conversational sentences. Start with 'Hey,'. No markdown."
         ),
+        "home": (
+            "You write ONLY the final briefing paragraph for a shipbroker's daily dashboard. "
+            "Never repeat instructions, JSON field names, or your reasoning. "
+            "2-3 conversational sentences. Start with 'Hey,'. No markdown."
+        ),
     }
     user_hints = {
         "inbox": "Summarize emails received, vessels extracted, verification backlog, geography and vessel types.",
         "vessels": "Summarize vessel count, types, opening timing, regions. Say act fast if urgent.",
         "contacts": "Summarize contact count, email/phone coverage, fallback rows, top companies.",
+        "home": "Summarize how many owner emails came in, vessels parsed, vessels verified and ready, zones compiled, and how many still need review. Use the word 'vessels' (never 'positions').",
     }
     system = system_prompts.get(context, system_prompts["vessels"])
     fallback = _fallback_narrative(brief, context)
@@ -520,6 +630,17 @@ def _fallback_narrative(brief: dict[str, Any], context: str) -> str:
         return (
             f"Hey, {brief.get('contact_count', 0)} contacts on file — "
             f"{brief.get('with_email', 0)} with email and {brief.get('with_phone', 0)} with phone."
+        )
+    if context == "home":
+        review = brief.get("review_count", 0)
+        tail = (
+            f" {review} still need a quick review."
+            if review else " Everything's verified and ready to go."
+        )
+        return (
+            f"Hey, we pulled in {brief.get('emails_received', 0)} owner emails and parsed "
+            f"{brief.get('positions_parsed', 0)} vessels into {brief.get('zones', 0)} zones. "
+            f"{brief.get('positions_ready', 0)} are verified and ready to send.{tail}"
         )
     count = brief.get("vessel_count", 0)
     types = brief.get("by_vessel_type") or {}

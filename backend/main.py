@@ -40,10 +40,12 @@ from models import (
     UpdateVesselRequest,
     UpdateBrokerContactRequest,
     UpdateAttachmentContactsRequest,
+    VesselLibraryRequest,
+    ManualVesselRequest,
 )
 from sse_manager import sse_manager
 from workflow import phase1_graph, phase2_graph
-from agents.summary import summarize_vessels, summarize_inbox, summarize_contacts
+from agents.summary import summarize_vessels, summarize_inbox, summarize_contacts, summarize_home
 from agents.contact_extract import (
     CONTACT_FIELD_KEYS,
     run_parent_contact_extraction,
@@ -51,13 +53,24 @@ from agents.contact_extract import (
 from agents.signature_extract import run_parent_signature_extraction
 from agents.confidence_score import compute_attachment_confidence
 from verification import set_attachment_verified
+from vessel_library import (
+    autofill_library,
+    list_library,
+    detect_new_vessels,
+    add_library_vessel,
+    update_library_vessel,
+    delete_library_vessel,
+)
 from column_defs import (
     ensure_column_definitions,
     sync_column_definitions,
     migrate_all_vessel_rows,
     backfill_vessel_company_names,
     get_column_definitions,
+    empty_standard_dynamic_data,
 )
+
+MANUAL_ENTRIES_MESSAGE_ID = "manual-entries"
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
 logging.config.dictConfig({
@@ -129,6 +142,10 @@ async def startup_event():
         companies = backfill_vessel_company_names(db)
         if companies:
             logger.info("  Vessel company backfill: %d rows updated", companies)
+        if not (db.table("vessel_library").select("id").limit(1).execute().data):
+            seeded = autofill_library(db)
+            if seeded:
+                logger.info("  Vessel library seeded: %d vessels", seeded)
     except Exception as exc:
         logger.error("  PostgreSQL connection FAILED: %s", exc)
         logger.error("  Check that pgAdmin is running and PG_* settings in .env are correct.")
@@ -229,6 +246,8 @@ async def list_emails():
         emails = supabase.table("parent_emails").select("*").order("date_received", desc=True).execute()
         result = []
         for em in emails.data or []:
+            if em.get("message_id") == MANUAL_ENTRIES_MESSAGE_ID:
+                continue  # synthetic holder for manually-added positions
             atts = (
                 supabase.table("attachments")
                 .select(
@@ -491,6 +510,17 @@ async def get_superset_columns(email_id: str):
     except Exception as exc:
         logger.error("[API] get_superset_columns failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/home/summary")
+async def home_summary():
+    """Home dashboard: pipeline counts (SQL) + short AI narrative."""
+    logger.info("[API] GET /api/home/summary")
+    try:
+        return await summarize_home()
+    except Exception as exc:
+        logger.error("[API] home_summary failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.post("/api/summary/inbox")
@@ -769,6 +799,138 @@ async def create_vessel(email_id: str):
     except Exception as exc:
         logger.error("[API] create_vessel failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/vessel-library")
+async def get_vessel_library():
+    """Vessel Library master list + vessels newly detected in position data."""
+    logger.info("[API] GET /api/vessel-library")
+    try:
+        return {
+            "vessels": list_library(supabase),
+            "new_vessels": detect_new_vessels(supabase),
+        }
+    except Exception as exc:
+        logger.error("[API] get_vessel_library failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/vessel-library")
+async def create_vessel_library(body: VesselLibraryRequest):
+    """Add a vessel (manual entry or promotion from the review list)."""
+    logger.info("[API] POST /api/vessel-library — %s", body.vessel_name)
+    try:
+        return add_library_vessel(supabase, body.model_dump())
+    except Exception as exc:
+        logger.error("[API] create_vessel_library failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.put("/api/vessel-library/{vessel_id}")
+async def edit_vessel_library(vessel_id: str, body: VesselLibraryRequest):
+    logger.info("[API] PUT /api/vessel-library/%s", vessel_id)
+    try:
+        return update_library_vessel(supabase, vessel_id, body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("[API] edit_vessel_library failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.delete("/api/vessel-library/{vessel_id}")
+async def remove_vessel_library(vessel_id: str):
+    logger.info("[API] DELETE /api/vessel-library/%s", vessel_id)
+    try:
+        delete_library_vessel(supabase, vessel_id)
+        return {"deleted": vessel_id}
+    except Exception as exc:
+        logger.error("[API] remove_vessel_library failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/vessel-library/autofill")
+async def autofill_vessel_library():
+    """Re-run the auto-fill (idempotent — only inserts vessels not already present)."""
+    logger.info("[API] POST /api/vessel-library/autofill")
+    try:
+        inserted = autofill_library(supabase)
+        return {"inserted": inserted}
+    except Exception as exc:
+        logger.error("[API] autofill_vessel_library failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+def _get_or_create_manual_attachment() -> str:
+    """A single verified 'Manual entries' attachment that holds manually-added positions."""
+    parent = (
+        supabase.table("parent_emails")
+        .select("id")
+        .eq("message_id", MANUAL_ENTRIES_MESSAGE_ID)
+        .limit(1)
+        .execute()
+    )
+    if parent.data:
+        parent_id = parent.data[0]["id"]
+    else:
+        parent_id = (
+            supabase.table("parent_emails")
+            .insert({
+                "subject": "Manual entries",
+                "sender": "Manual entry",
+                "status": "ready_for_validation",
+                "message_id": MANUAL_ENTRIES_MESSAGE_ID,
+            })
+            .execute()
+        ).data[0]["id"]
+
+    att = (
+        supabase.table("attachments")
+        .select("id")
+        .eq("parent_email_id", parent_id)
+        .limit(1)
+        .execute()
+    )
+    if att.data:
+        return att.data[0]["id"]
+    return (
+        supabase.table("attachments")
+        .insert({
+            "parent_email_id": parent_id,
+            "filename": "Manual entries",
+            "status": "done",
+            "is_verified": True,
+        })
+        .execute()
+    ).data[0]["id"]
+
+
+@app.post("/api/vessels/manual")
+async def create_manual_vessel(body: ManualVesselRequest):
+    """Add a position row manually — appears in the Vessel Position List immediately."""
+    logger.info("[API] POST /api/vessels/manual")
+    try:
+        att_id = _get_or_create_manual_attachment()
+        dd = empty_standard_dynamic_data()
+        for key, val in (body.dynamic_data or {}).items():
+            if key in dd:
+                dd[key] = str(val or "").strip()
+        result = (
+            supabase.table("vessels")
+            .insert({
+                "attachment_id": att_id,
+                "dynamic_data": dd,
+                "region": (body.region or "").strip(),
+                "is_validated": True,
+            })
+            .execute()
+        )
+        new_vessel = result.data[0]
+        new_vessel["filename"] = "Manual entries"
+        return new_vessel
+    except Exception as exc:
+        logger.error("[API] create_manual_vessel failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.post("/api/generate-draft")

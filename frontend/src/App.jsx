@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getEmails, getAllVessels, updateVessel, fetchEmails, generateDraft, getAttachments, getColumns } from "./services/api";
+import { getEmails, getAllVessels, updateVessel, fetchEmails, generateDraft, getAttachments, getColumns, getHomeSummary } from "./services/api";
 import { useSSE } from "./hooks/useSSE";
 import { needsReview, confidencePct, confBand, byAttachment, deriveEmail, parseFromName, STD_COLUMNS } from "./lib/positions";
 import ValidationView from "./components/ValidationView/ValidationView";
 import InboxView from "./components/InboxView/InboxView";
+import HomeView from "./components/HomeView/HomeView";
 import ContactListView from "./components/ContactListView/ContactListView";
+import VesselLibraryView from "./components/VesselLibraryView/VesselLibraryView";
 import Settings from "./components/pages/Settings";
 import EmailDetail from "./components/pages/EmailDetail";
 import AiSummaryButton from "./components/AiSummary/AiSummaryButton";
@@ -13,10 +15,12 @@ import { summarizeInbox } from "./services/api";
 
 const FILTER_SENDER = "sanjib@iconshipbrokers.com";
 const RAIL = [
-  { id: "today", ic: "home", label: "Today" },
-  { id: "inbox", ic: "inbox", label: "Inbox" },
-  { id: "review", ic: "alert", label: "Review" },
-  { id: "list", ic: "navigation", label: "Contact List" },
+  { id: "home", ic: "home", label: "Home" },
+  { id: "inbox", ic: "grid", label: "Vessel Extracted Data" },
+  { id: "review", ic: "alert", label: "Need to Review" },
+  { id: "today", ic: "anchor", label: "Vessel Position List" },
+  { id: "list", ic: "users", label: "Contact List" },
+  { id: "library", ic: "library", label: "Vessel Libraries List" },
 ];
 const ST = {
   auto: ["st-auto", "✓ auto"],
@@ -27,7 +31,7 @@ const ST = {
 const AV_COLORS = ["#219495", "#3b82f6", "#8b5cf6", "#f59e0b", "#ef4444", "#10b981", "#ec4899", "#0ea5e9"];
 
 export default function App() {
-  const [view, setView] = useState("today");
+  const [view, setView] = useState("home");
   const [emails, setEmails] = useState([]);
   const [activeEmailId, setActiveEmailId] = useState(null);
   const [vessels, setVessels] = useState([]);
@@ -49,6 +53,12 @@ export default function App() {
   const [sendModal, setSendModal] = useState(false);
   const [vesselRefreshKey, setVesselRefreshKey] = useState(0);
   const [contactRefreshKey, setContactRefreshKey] = useState(0);
+  const [libraryRefreshKey, setLibraryRefreshKey] = useState(0);
+  const [homeRefreshKey, setHomeRefreshKey] = useState(0);
+  const [homeSummary, setHomeSummary] = useState(null);
+  const [homeLoading, setHomeLoading] = useState(false);
+  const [homeError, setHomeError] = useState("");
+  const homeLoadedKey = useRef(-1);
   const [toastMsg, setToastMsg] = useState(null);
   const toastTimer = useRef(null);
   const toast = useCallback((m) => { setToastMsg(m); clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToastMsg(null), 2400); }, []);
@@ -86,7 +96,7 @@ export default function App() {
     catch (e) { setSyncing(false); toast("Fetch failed: " + e.message); }
   };
   useSSE(fetchJob, useCallback((evt) => {
-    if (evt.type === "phase1_complete") { setSyncing(false); setFetchJob(null); loadEmails(); toast("Synced — owner emails updated"); }
+    if (evt.type === "phase1_complete") { setSyncing(false); setFetchJob(null); loadEmails(); setHomeRefreshKey((k) => k + 1); setLibraryRefreshKey((k) => k + 1); toast("Synced — owner emails updated"); }
     else if (evt.type === "phase1_failed") { setSyncing(false); setFetchJob(null); toast("Fetch failed: " + (evt.error || "unknown")); }
   }, [loadEmails, toast]));
 
@@ -128,12 +138,37 @@ export default function App() {
     await loadEmails();
     if (activeEmailId) await loadVessels(activeEmailId);
     setVesselRefreshKey((k) => k + 1);
+    setHomeRefreshKey((k) => k + 1);
+    setLibraryRefreshKey((k) => k + 1);
   }, [loadEmails, loadVessels, activeEmailId]);
 
   const inboxSummary = useCallback(
     () => summarizeInbox(emails.map((e) => e.id)),
     [emails],
   );
+
+  // Home summary is cached in App so switching tabs doesn't re-fetch.
+  // It reloads only when homeRefreshKey changes (real data change) or via manual refresh.
+  const loadHome = useCallback(async () => {
+    setHomeLoading(true);
+    setHomeError("");
+    const keyAtStart = homeRefreshKey;
+    try {
+      const res = await getHomeSummary();
+      setHomeSummary(res);
+      homeLoadedKey.current = keyAtStart;
+    } catch (e) {
+      setHomeError(e.message || "Failed to load summary.");
+    } finally {
+      setHomeLoading(false);
+    }
+  }, [homeRefreshKey]);
+
+  useEffect(() => {
+    if (view === "home" && homeLoadedKey.current !== homeRefreshKey && !homeLoading) {
+      loadHome();
+    }
+  }, [view, homeRefreshKey, homeLoading, loadHome]);
 
   const onCopy = () => {
     const tmp = document.createElement("div"); tmp.innerHTML = draft.html;
@@ -194,7 +229,7 @@ export default function App() {
   const selRow = emailRows.find((r) => r.id === selectedAttId);
   const selectedPositions = vessels.filter((v) => v.attachment_id === selectedAttId);
 
-  const showLeft = view === "review";
+  const showLeft = false;
 
   return (
     <div className="app-shell">
@@ -204,16 +239,7 @@ export default function App() {
           <span className="mark"><Icon name="anchor" size={22} /></span>
           <div className="wm"><span className="l1">POSITION</span><span className="l2">SENSE</span></div>
         </div>
-        <div className="tb-right">
-          <button className="tb-grid" title="Apps" onClick={() => toast("App launcher — coming soon")}>
-            <svg width="18" height="18" viewBox="0 0 18 18" fill="currentColor">
-              <circle cx="3" cy="3" r="1.7" /><circle cx="9" cy="3" r="1.7" /><circle cx="15" cy="3" r="1.7" />
-              <circle cx="3" cy="9" r="1.7" /><circle cx="9" cy="9" r="1.7" /><circle cx="15" cy="9" r="1.7" />
-              <circle cx="3" cy="15" r="1.7" /><circle cx="9" cy="15" r="1.7" /><circle cx="15" cy="15" r="1.7" />
-            </svg>
-          </button>
-          <div className="tb-avatar" title="Account">PS</div>
-        </div>
+        <div className="tb-right" />
       </header>
 
       <div className="appbody">
@@ -221,14 +247,13 @@ export default function App() {
       {/* ── Rail ── */}
       <div className="rail">
         {RAIL.map((n) => (
-          <button key={n.id} className={`ricon ${view === n.id ? "active" : ""}`} title={n.label} onClick={() => go(n.id)}>
+          <button key={n.id} className={`ricon ${view === n.id ? "active" : ""}`} onClick={() => go(n.id)}>
             <Icon name={n.ic} size={21} />
-            {n.id === "review" && need > 0 && <span className="rbadge">{need}</span>}
+            <span className="ricon-tip">{n.label}</span>
           </button>
         ))}
         <div className="rspacer" />
-        <button className={`ricon ${view === "settings" ? "active" : ""}`} title="Settings" onClick={() => go("settings")}><Icon name="settings" size={20} /></button>
-        <div className={`rsync ${syncing ? "spin" : ""}`} title={syncing ? "Syncing…" : "Auto-sync"} />
+        <button className={`ricon ${view === "settings" ? "active" : ""}`} onClick={() => go("settings")}><Icon name="settings" size={20} /><span className="ricon-tip">Settings</span></button>
       </div>
 
       {/* ── Left list panel ── */}
@@ -293,18 +318,38 @@ export default function App() {
       )}
 
       {/* ── Right panel ── */}
-      <div className={`rpanel ${view === "today" || view === "inbox" || view === "list" ? "rpanel-fill" : ""}`}>
-        {loading && view !== "inbox" && view !== "list" ? (
+      <div className={`rpanel ${view === "home" || view === "today" || view === "inbox" || view === "list" || view === "review" || view === "library" ? "rpanel-fill" : ""}`}>
+        {loading && view !== "home" && view !== "inbox" && view !== "list" && view !== "review" && view !== "library" ? (
           <div className="center-load"><span className="spin-ring" /> Loading…</div>
+        ) : view === "home" ? (
+          <HomeView
+            data={homeSummary}
+            loading={homeLoading}
+            error={homeError}
+            onNavigate={go}
+            onRefresh={loadHome}
+          />
         ) : view === "today" ? (
           <ValidationView isActive={view === "today"} refreshKey={vesselRefreshKey} />
         ) : view === "inbox" ? (
           <InboxView
-            onVesselsUpdated={() => setVesselRefreshKey((k) => k + 1)}
+            onVesselsUpdated={() => { setVesselRefreshKey((k) => k + 1); setHomeRefreshKey((k) => k + 1); }}
+            onContactsUpdated={() => setContactRefreshKey((k) => k + 1)}
+          />
+        ) : view === "review" ? (
+          <InboxView
+            reviewMode
+            onVesselsUpdated={() => { setVesselRefreshKey((k) => k + 1); setHomeRefreshKey((k) => k + 1); }}
             onContactsUpdated={() => setContactRefreshKey((k) => k + 1)}
           />
         ) : view === "list" ? (
           <ContactListView isActive={view === "list"} refreshKey={contactRefreshKey} />
+        ) : view === "library" ? (
+          <VesselLibraryView
+            isActive={view === "library"}
+            refreshKey={libraryRefreshKey}
+            onLibraryUpdated={() => setLibraryRefreshKey((k) => k + 1)}
+          />
         ) : view === "settings" ? (
           <Settings filterSender={FILTER_SENDER} onGo={go} toast={toast} />
         ) : selectedAtt ? (

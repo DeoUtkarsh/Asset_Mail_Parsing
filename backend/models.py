@@ -65,6 +65,23 @@ class UpdateVesselRequest(BaseModel):
     is_validated: Optional[bool] = None
 
 
+class ManualVesselRequest(BaseModel):
+    """Add a position row manually to the Vessel Position List."""
+    dynamic_data: dict[str, Any] = {}
+    region: Optional[str] = ""
+
+
+class VesselLibraryRequest(BaseModel):
+    """Add or update a vessel in the Vessel Library."""
+    vessel_name: Optional[str] = ""
+    imo_no: Optional[str] = ""
+    imo_type: Optional[str] = ""
+    dwt: Optional[str] = ""
+    year_built: Optional[str] = ""
+    tank_coating: Optional[str] = ""
+    vessel_type: Optional[str] = ""
+
+
 # ── API response shapes ───────────────────────────────────────────
 
 class AttachmentOut(BaseModel):
