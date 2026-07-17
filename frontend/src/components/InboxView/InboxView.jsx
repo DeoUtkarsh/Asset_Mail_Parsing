@@ -13,6 +13,8 @@ import Icon from "../icons";
 
 const AV_COLORS = ["#219495", "#3b82f6", "#8b5cf6", "#f59e0b", "#ef4444", "#10b981", "#ec4899", "#0ea5e9"];
 
+const DEFAULT_FILTERS = { from: "", dateFrom: "", dateTo: "", tiers: [], verification: "all" };
+
 function mapDbStatus(status) {
   if (status === "done") return "downloaded";
   if (status === "error") return "failed";
@@ -26,9 +28,21 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
   const [retrying, setRetrying]       = useState(false);
   const [jobId, setJobId]             = useState(null);
   const [statusLog, setStatusLog]     = useState([]);
-  const [selectedId, setSelectedId]   = useState(null);
   const [attStatuses, setAttStatuses] = useState({});
-  const [search, setSearch]           = useState("");
+  // Inbox and Need-to-Review share this component instance, so keep a separate
+  // open-mail + search per tab — each tab remembers its own selection.
+  const [selById, setSelById]         = useState({ inbox: null, review: null });
+  const [searchByMode, setSearchByMode] = useState({ inbox: "", review: "" });
+  const modeKey = reviewMode ? "review" : "inbox";
+  const selectedId = selById[modeKey];
+  const setSelectedId = useCallback((id) => setSelById((p) => ({ ...p, [modeKey]: id })), [modeKey]);
+  const search = searchByMode[modeKey];
+  const setSearch = useCallback((v) => setSearchByMode((p) => ({ ...p, [modeKey]: v })), [modeKey]);
+  // Filters are also kept per tab (inbox vs review).
+  const [filtersByMode, setFiltersByMode] = useState({ inbox: DEFAULT_FILTERS, review: DEFAULT_FILTERS });
+  const filters = filtersByMode[modeKey];
+  const setFilters = useCallback((next) => setFiltersByMode((p) => ({ ...p, [modeKey]: next })), [modeKey]);
+  const [filterOpen, setFilterOpen] = useState(false);
 
   useEffect(() => { loadEmails(); }, []);
 
@@ -236,12 +250,37 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
 
   const filteredRows = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return scopedRows;
+    const from = filters.from.trim().toLowerCase();
+    const fromTs = filters.dateFrom ? new Date(`${filters.dateFrom}T00:00:00`).getTime() : null;
+    const toTs = filters.dateTo ? new Date(`${filters.dateTo}T23:59:59`).getTime() : null;
+    const tierSet = filters.tiers.length ? new Set(filters.tiers) : null;
     return scopedRows.filter((r) => {
-      const hay = `${r.filename || ""} ${r.email.sender || ""} ${r.email.subject || ""}`.toLowerCase();
-      return hay.includes(q);
+      if (q) {
+        const hay = `${r.filename || ""} ${r.email.sender || ""} ${r.email.subject || ""}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      if (from && !(r.email.sender || "").toLowerCase().includes(from)) return false;
+      if (fromTs != null || toTs != null) {
+        const t = r.email.date_received ? new Date(r.email.date_received).getTime() : NaN;
+        if (isNaN(t)) return false;
+        if (fromTs != null && t < fromTs) return false;
+        if (toTs != null && t > toTs) return false;
+      }
+      if (tierSet && !tierSet.has(r.confidence_tier)) return false;
+      if (filters.verification === "verified" && !r.is_verified) return false;
+      if (filters.verification === "unverified" && r.is_verified) return false;
+      return true;
     });
-  }, [scopedRows, search]);
+  }, [scopedRows, search, filters]);
+
+  const activeFilterCount = useMemo(() => {
+    let n = 0;
+    if (filters.from.trim()) n += 1;
+    if (filters.dateFrom || filters.dateTo) n += 1;
+    if (filters.tiers.length) n += 1;
+    if (filters.verification !== "all") n += 1;
+    return n;
+  }, [filters]);
 
   const inboxStats = useMemo(() => {
     let attachments = 0;
@@ -274,7 +313,12 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
     <div className="vgrid-root">
 
       <div className="vgrid-head">
-        <h2>{reviewMode ? "Need to Review" : "Vessel Extracted Data"}</h2>
+        <div className="vgrid-title">
+          <h2>{reviewMode ? "Need to Review" : "Vessel Extracted Data"}</h2>
+          {reviewMode && (
+            <span className="vgrid-sub">Please review the medium & low confidence mails.</span>
+          )}
+        </div>
         <div className="vgrid-actions">
           {retryTarget && !anyJobActive ? (
             <button
@@ -344,13 +388,33 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
       <div className="inbox-split">
         {/* ── Left: mail list ── */}
         <div className="inbox-list">
-          <div className="inbox-search">
-            <Icon name="search" size={15} />
-            <input
-              placeholder="Search mails…"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
+          <div className="inbox-search-row">
+            <div className="inbox-search">
+              <Icon name="search" size={15} />
+              <input
+                placeholder="Search mails…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+            <button
+              type="button"
+              className={`inbox-filter-btn ${activeFilterCount ? "has-active" : ""}`}
+              onClick={() => setFilterOpen((o) => !o)}
+              title="Filters"
+            >
+              <Icon name="filter" size={15} /> Filters
+              {activeFilterCount > 0 && <span className="inbox-filter-count">{activeFilterCount}</span>}
+            </button>
+            {filterOpen && (
+              <InboxFilterPanel
+                initial={filters}
+                hideHigh={reviewMode}
+                onApply={(f) => { setFilters(f); setFilterOpen(false); }}
+                onClear={() => { setFilters(DEFAULT_FILTERS); setFilterOpen(false); }}
+                onClose={() => setFilterOpen(false)}
+              />
+            )}
           </div>
           <div className="inbox-list-scroll">
             {mailRows.length === 0 ? (
@@ -359,8 +423,8 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
               </div>
             ) : filteredRows.length === 0 ? (
               <div className="inbox-list-empty">
-                {search.trim()
-                  ? "No mails match your search."
+                {search.trim() || activeFilterCount
+                  ? "No mails match your search or filters."
                   : reviewMode
                     ? "Nothing to review \uD83C\uDF89"
                     : "No mails to show."}
@@ -460,6 +524,95 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
             </div>
           )}
         </div>
+      </div>
+    </div>
+  );
+}
+
+function InboxFilterPanel({ initial, hideHigh = false, onApply, onClear }) {
+  const [from, setFrom] = useState(initial.from);
+  const [dateFrom, setDateFrom] = useState(initial.dateFrom);
+  const [dateTo, setDateTo] = useState(initial.dateTo);
+  const [tiers, setTiers] = useState(initial.tiers);
+  const [verification, setVerification] = useState(initial.verification);
+
+  const toggleTier = (t) =>
+    setTiers((prev) => (prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]));
+
+  const tierOptions = [["high", "High"], ["medium", "Medium"], ["low", "Low"]]
+    .filter(([v]) => !(hideHigh && v === "high"));
+
+  return (
+    <div className="inbox-filter-pop" onClick={(e) => e.stopPropagation()}>
+      <label className="iflt-group">
+        <span className="iflt-label">FROM</span>
+        <input
+          className="iflt-input"
+          placeholder="Sender name or email…"
+          value={from}
+          onChange={(e) => setFrom(e.target.value)}
+        />
+      </label>
+
+      <div className="iflt-group">
+        <span className="iflt-label">DATE RANGE</span>
+        <div className="iflt-dates">
+          <input
+            type="date"
+            className="iflt-input"
+            value={dateFrom}
+            max={dateTo || undefined}
+            onChange={(e) => setDateFrom(e.target.value)}
+          />
+          <span className="iflt-dash">–</span>
+          <input
+            type="date"
+            className="iflt-input"
+            value={dateTo}
+            min={dateFrom || undefined}
+            onChange={(e) => setDateTo(e.target.value)}
+          />
+        </div>
+      </div>
+
+      <div className="iflt-group">
+        <span className="iflt-label">CONFIDENCE</span>
+        <div className="iflt-tiers">
+          {tierOptions.map(([v, l]) => (
+            <button
+              type="button"
+              key={v}
+              className={`iflt-chip ${v} ${tiers.includes(v) ? "on" : ""}`}
+              onClick={() => toggleTier(v)}
+            >
+              {l}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <label className="iflt-group">
+        <span className="iflt-label">VERIFICATION</span>
+        <select
+          className="iflt-input iflt-select"
+          value={verification}
+          onChange={(e) => setVerification(e.target.value)}
+        >
+          <option value="all">All</option>
+          <option value="verified">Verified</option>
+          <option value="unverified">Unverified</option>
+        </select>
+      </label>
+
+      <div className="iflt-btns">
+        <button type="button" className="tb-btn" onClick={onClear}>Clear</button>
+        <button
+          type="button"
+          className="tb-btn tb-btn-primary"
+          onClick={() => onApply({ from, dateFrom, dateTo, tiers, verification })}
+        >
+          Apply
+        </button>
       </div>
     </div>
   );

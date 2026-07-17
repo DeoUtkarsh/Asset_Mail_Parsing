@@ -22,6 +22,7 @@ STANDARD_DYNAMIC_KEYS: list[str] = [
     "year_built",
     "vessel_type",
     "cargo_type",
+    "direction",
     "dwt_sdwt",
     "cbm",
     "draft",
@@ -60,25 +61,26 @@ DEFAULT_COLUMN_DEFINITIONS: list[dict[str, Any]] = [
     {"id": "year_built", "header": "YEAR BUILT", "display_order": 5, "read_only": False, "storage": "dynamic_data"},
     {"id": "vessel_type", "header": "VESSEL TYPE", "display_order": 6, "read_only": False, "storage": "dynamic_data"},
     {"id": "cargo_type", "header": "CARGO TYPE", "display_order": 7, "read_only": False, "storage": "dynamic_data"},
-    {"id": "dwt_sdwt", "header": "DWT/SDWT", "display_order": 8, "read_only": False, "storage": "dynamic_data"},
-    {"id": "cbm", "header": "CBM/CUBIC METER", "display_order": 9, "read_only": False, "storage": "dynamic_data"},
-    {"id": "draft", "header": "DRAFT", "display_order": 10, "read_only": False, "storage": "dynamic_data"},
-    {"id": "flag", "header": "FLAG", "display_order": 11, "read_only": False, "storage": "dynamic_data"},
-    {"id": "eta_foc", "header": "ETA FOC", "display_order": 12, "read_only": False, "storage": "dynamic_data"},
-    {"id": "region", "header": "REGION", "display_order": 13, "read_only": False, "storage": "region"},
-    {"id": "open_location", "header": "OPEN LOCATION", "display_order": 14, "read_only": False, "storage": "dynamic_data"},
-    {"id": "opening_date", "header": "OPENING DATE", "display_order": 15, "read_only": False, "storage": "dynamic_data"},
-    {"id": "cargo_history_combo", "header": "CARGO HISTORY/L3C/LAST 3 CARGOES", "display_order": 16, "read_only": False, "storage": "dynamic_data"},
-    {"id": "tank_coating", "header": "TANK COATING", "display_order": 17, "read_only": False, "storage": "dynamic_data"},
-    {"id": "sire_date", "header": "SIRE DATE", "display_order": 18, "read_only": False, "storage": "dynamic_data"},
-    {"id": "sire_location", "header": "SIRE LOCATION", "display_order": 19, "read_only": False, "storage": "dynamic_data"},
-    {"id": "cdi_date", "header": "CDI DATE", "display_order": 20, "read_only": False, "storage": "dynamic_data"},
-    {"id": "cdi_location", "header": "CDI LOCATION", "display_order": 21, "read_only": False, "storage": "dynamic_data"},
-    {"id": "remarks", "header": "REMARKS", "display_order": 22, "read_only": False, "storage": "dynamic_data"},
-    {"id": "other_info", "header": "OTHER INFO", "display_order": 23, "read_only": True, "storage": "dynamic_data"},
-    {"id": "q88", "header": "Q88 AVAILABLE", "display_order": 24, "read_only": False, "storage": "dynamic_data"},
-    {"id": "attachments", "header": "ATTACHMENTS", "display_order": 25, "read_only": True, "storage": "derived"},
-    {"id": "status", "header": "STATUS", "display_order": 26, "read_only": False, "storage": "dynamic_data"},
+    {"id": "direction", "header": "DIRECTION", "display_order": 8, "read_only": False, "storage": "dynamic_data"},
+    {"id": "dwt_sdwt", "header": "DWT/SDWT", "display_order": 9, "read_only": False, "storage": "dynamic_data"},
+    {"id": "cbm", "header": "CBM/CUBIC METER", "display_order": 10, "read_only": False, "storage": "dynamic_data"},
+    {"id": "draft", "header": "DRAFT", "display_order": 11, "read_only": False, "storage": "dynamic_data"},
+    {"id": "flag", "header": "FLAG", "display_order": 12, "read_only": False, "storage": "dynamic_data"},
+    {"id": "eta_foc", "header": "ETA FOC", "display_order": 13, "read_only": False, "storage": "dynamic_data"},
+    {"id": "region", "header": "REGION", "display_order": 14, "read_only": False, "storage": "region"},
+    {"id": "open_location", "header": "OPEN LOCATION", "display_order": 15, "read_only": False, "storage": "dynamic_data"},
+    {"id": "opening_date", "header": "OPENING DATE", "display_order": 16, "read_only": False, "storage": "dynamic_data"},
+    {"id": "cargo_history_combo", "header": "CARGO HISTORY/L3C/LAST 3 CARGOES", "display_order": 17, "read_only": False, "storage": "dynamic_data"},
+    {"id": "tank_coating", "header": "TANK COATING", "display_order": 18, "read_only": False, "storage": "dynamic_data"},
+    {"id": "sire_date", "header": "SIRE DATE", "display_order": 19, "read_only": False, "storage": "dynamic_data"},
+    {"id": "sire_location", "header": "SIRE LOCATION", "display_order": 20, "read_only": False, "storage": "dynamic_data"},
+    {"id": "cdi_date", "header": "CDI DATE", "display_order": 21, "read_only": False, "storage": "dynamic_data"},
+    {"id": "cdi_location", "header": "CDI LOCATION", "display_order": 22, "read_only": False, "storage": "dynamic_data"},
+    {"id": "remarks", "header": "REMARKS", "display_order": 23, "read_only": False, "storage": "dynamic_data"},
+    {"id": "other_info", "header": "OTHER INFO", "display_order": 24, "read_only": True, "storage": "dynamic_data"},
+    {"id": "q88", "header": "Q88 AVAILABLE", "display_order": 25, "read_only": False, "storage": "dynamic_data"},
+    {"id": "attachments", "header": "ATTACHMENTS", "display_order": 26, "read_only": True, "storage": "derived"},
+    {"id": "status", "header": "STATUS", "display_order": 27, "read_only": False, "storage": "dynamic_data"},
 ]
 
 IMO_NUMBER_RE = re.compile(r"^\d{7}$")
@@ -307,6 +309,76 @@ def _resolve_cargo_history(dd: dict) -> str:
     return " / ".join(parts)
 
 
+# ── Trading direction ────────────────────────────────────────────────────────
+_DIRECTION_CANON = {
+    "ANY", "NORTHBOUND", "SOUTHBOUND", "EASTBOUND", "WESTBOUND",
+    "WCI", "AG", "WCI/AG", "FAR EAST", "SEA", "WORLDWIDE",
+}
+
+# Full normaliser for an explicit direction phrase (short, dedicated field).
+_DIRECTION_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"wci\s*[/&]\s*ag|ag\s*[/&]\s*wci", re.I), "WCI/AG"),
+    (re.compile(r"north\s*bound|northbound|\bn\.?b\.?\b", re.I), "NORTHBOUND"),
+    (re.compile(r"south\s*bound|southbound|\bs\.?b\.?\b", re.I), "SOUTHBOUND"),
+    (re.compile(r"east\s*bound|eastbound|\be\.?b\.?\b", re.I), "EASTBOUND"),
+    (re.compile(r"west\s*bound|westbound|\bw\.?b\.?\b", re.I), "WESTBOUND"),
+    (re.compile(r"far\s*east|f\.?\s*east|feast", re.I), "FAR EAST"),
+    (re.compile(r"world\s*wide|worldwide|\bw\.?w\.?\b|trading\s+worldwide", re.I), "WORLDWIDE"),
+    (re.compile(r"wci|west\s+coast\s+india", re.I), "WCI"),
+    (re.compile(r"\bag\b|arabian\s+gulf", re.I), "AG"),
+    (re.compile(r"south\s*east\s*asia|\bsea\b", re.I), "SEA"),
+    (re.compile(r"any\s*dir\w*|any\s+direction|\bany\b", re.I), "ANY"),
+]
+
+# Stricter patterns for scanning INSIDE larger free-text fields (avoid bare
+# words like "any"/"ag"/"sea" that appear in unrelated prose).
+_DIRECTION_TEXT_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"wci\s*[/&]\s*ag|ag\s*[/&]\s*wci", re.I), "WCI/AG"),
+    (re.compile(r"north\s*bound|northbound", re.I), "NORTHBOUND"),
+    (re.compile(r"south\s*bound|southbound", re.I), "SOUTHBOUND"),
+    (re.compile(r"east\s*bound|eastbound", re.I), "EASTBOUND"),
+    (re.compile(r"west\s*bound|westbound", re.I), "WESTBOUND"),
+    (re.compile(r"any\s*dir\w*|any\s+direction", re.I), "ANY"),
+    (re.compile(r"far\s*east|feast", re.I), "FAR EAST"),
+    (re.compile(r"world\s*wide|worldwide|trading\s+worldwide", re.I), "WORLDWIDE"),
+    (re.compile(r"\bwci\b|west\s+coast\s+india", re.I), "WCI"),
+]
+
+
+def _normalize_direction(text: str) -> str:
+    """Map a short direction phrase to a canonical token; '' if unrecognized."""
+    if not text:
+        return ""
+    up = re.sub(r"\s+", " ", str(text).strip().upper())
+    if up in _DIRECTION_CANON:
+        return up
+    for pat, canon in _DIRECTION_PATTERNS:
+        if pat.search(str(text)):
+            return canon
+    return ""
+
+
+def _derive_direction_from_text(text: str) -> str:
+    for pat, canon in _DIRECTION_TEXT_PATTERNS:
+        if pat.search(text):
+            return canon
+    return ""
+
+
+def _resolve_direction(dd: dict) -> str:
+    """Direction from an explicit key, else derived from free-text fields."""
+    explicit = _first_hit(dd, ["direction", "dir"])
+    if explicit:
+        return _normalize_direction(explicit) or explicit.strip().upper()
+    for k in ("cargo_type", "remarks", "other_info", "cargo_history_combo", "status"):
+        v = dd.get(k)
+        if _has_value(v):
+            derived = _derive_direction_from_text(str(v))
+            if derived:
+                return derived
+    return ""
+
+
 def empty_standard_dynamic_data() -> dict[str, str]:
     return {k: "" for k in STANDARD_DYNAMIC_KEYS}
 
@@ -336,6 +408,7 @@ def map_raw_to_standard(dd: dict | None, region: str | None = None) -> tuple[dic
         "year_built": _first_hit(src, ["year_built", "built", "yard_built", "when"]),
         "vessel_type": _resolve_vessel_type(src),
         "cargo_type": _first_hit(src, ["cargo_type", "grade", "last_cargo", "cargo_preference"]),
+        "direction": _resolve_direction(src),
         "dwt_sdwt": _resolve_dwt_sdwt(src),
         "cbm": _first_hit(src, ["cbm", "cubic", "cub", "cargo_tank_capacity"]),
         "draft": _first_hit(src, ["draft", "sdraft", "sdwt_draft"]),

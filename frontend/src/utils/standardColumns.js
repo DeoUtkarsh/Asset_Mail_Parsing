@@ -12,29 +12,31 @@ export const DEFAULT_COLUMNS = [
   { id: "year_built", header: "YEAR BUILT", display_order: 5, read_only: false, storage: "dynamic_data" },
   { id: "vessel_type", header: "VESSEL TYPE", display_order: 6, read_only: false, storage: "dynamic_data" },
   { id: "cargo_type", header: "CARGO TYPE", display_order: 7, read_only: false, storage: "dynamic_data" },
-  { id: "dwt_sdwt", header: "DWT/SDWT", display_order: 8, read_only: false, storage: "dynamic_data" },
-  { id: "cbm", header: "CBM/CUBIC METER", display_order: 9, read_only: false, storage: "dynamic_data" },
-  { id: "draft", header: "DRAFT", display_order: 10, read_only: false, storage: "dynamic_data" },
-  { id: "flag", header: "FLAG", display_order: 11, read_only: false, storage: "dynamic_data" },
-  { id: "eta_foc", header: "ETA FOC", display_order: 12, read_only: false, storage: "dynamic_data" },
-  { id: "region", header: "REGION", display_order: 13, read_only: false, storage: "region" },
-  { id: "open_location", header: "OPEN LOCATION", display_order: 14, read_only: false, storage: "dynamic_data" },
-  { id: "opening_date", header: "OPENING DATE", display_order: 15, read_only: false, storage: "dynamic_data" },
-  { id: "cargo_history_combo", header: "CARGO HISTORY/L3C/LAST 3 CARGOES", display_order: 16, read_only: false, storage: "dynamic_data" },
-  { id: "tank_coating", header: "TANK COATING", display_order: 17, read_only: false, storage: "dynamic_data" },
-  { id: "sire_date", header: "SIRE DATE", display_order: 18, read_only: false, storage: "dynamic_data" },
-  { id: "sire_location", header: "SIRE LOCATION", display_order: 19, read_only: false, storage: "dynamic_data" },
-  { id: "cdi_date", header: "CDI DATE", display_order: 20, read_only: false, storage: "dynamic_data" },
-  { id: "cdi_location", header: "CDI LOCATION", display_order: 21, read_only: false, storage: "dynamic_data" },
-  { id: "remarks", header: "REMARKS", display_order: 22, read_only: false, storage: "dynamic_data" },
-  { id: "other_info", header: "OTHER INFO", display_order: 23, read_only: true, storage: "dynamic_data" },
-  { id: "q88", header: "Q88 AVAILABLE", display_order: 24, read_only: false, storage: "dynamic_data" },
-  { id: "attachments", header: "ATTACHMENTS", display_order: 25, read_only: true, storage: "derived" },
-  { id: "status", header: "STATUS", display_order: 26, read_only: false, storage: "dynamic_data" },
+  { id: "direction", header: "DIRECTION", display_order: 8, read_only: false, storage: "dynamic_data" },
+  { id: "dwt_sdwt", header: "DWT/SDWT", display_order: 9, read_only: false, storage: "dynamic_data" },
+  { id: "cbm", header: "CBM/CUBIC METER", display_order: 10, read_only: false, storage: "dynamic_data" },
+  { id: "draft", header: "DRAFT", display_order: 11, read_only: false, storage: "dynamic_data" },
+  { id: "flag", header: "FLAG", display_order: 12, read_only: false, storage: "dynamic_data" },
+  { id: "eta_foc", header: "ETA FOC", display_order: 13, read_only: false, storage: "dynamic_data" },
+  { id: "region", header: "REGION", display_order: 14, read_only: false, storage: "region" },
+  { id: "open_location", header: "OPEN LOCATION", display_order: 15, read_only: false, storage: "dynamic_data" },
+  { id: "opening_date", header: "OPENING DATE", display_order: 16, read_only: false, storage: "dynamic_data" },
+  { id: "cargo_history_combo", header: "CARGO HISTORY/L3C/LAST 3 CARGOES", display_order: 17, read_only: false, storage: "dynamic_data" },
+  { id: "tank_coating", header: "TANK COATING", display_order: 18, read_only: false, storage: "dynamic_data" },
+  { id: "sire_date", header: "SIRE DATE", display_order: 19, read_only: false, storage: "dynamic_data" },
+  { id: "sire_location", header: "SIRE LOCATION", display_order: 20, read_only: false, storage: "dynamic_data" },
+  { id: "cdi_date", header: "CDI DATE", display_order: 21, read_only: false, storage: "dynamic_data" },
+  { id: "cdi_location", header: "CDI LOCATION", display_order: 22, read_only: false, storage: "dynamic_data" },
+  { id: "remarks", header: "REMARKS", display_order: 23, read_only: false, storage: "dynamic_data" },
+  { id: "other_info", header: "OTHER INFO", display_order: 24, read_only: true, storage: "dynamic_data" },
+  { id: "q88", header: "Q88 AVAILABLE", display_order: 25, read_only: false, storage: "dynamic_data" },
+  { id: "attachments", header: "ATTACHMENTS", display_order: 26, read_only: true, storage: "derived" },
+  { id: "status", header: "STATUS", display_order: 27, read_only: false, storage: "dynamic_data" },
 ];
 
 export const COLUMN_WIDTHS = {
   _num: 58,
+  received: 150,
   imo: 90,
   company: 200,
   vessel_name: 180,
@@ -42,6 +44,7 @@ export const COLUMN_WIDTHS = {
   year_built: 90,
   vessel_type: 110,
   cargo_type: 120,
+  direction: 110,
   dwt_sdwt: 100,
   cbm: 110,
   draft: 80,
@@ -172,6 +175,7 @@ export const POSITION_LIST_SUMMARY_COLUMN_ORDER = [
   "tank_coating",
   "open_location",
   "opening_date",
+  "direction",
   "cargo_history_combo",
 ];
 
@@ -211,7 +215,7 @@ export function filterPositionListGridColumns(columnDefs, showAllColumns) {
 export const DRAFT_LOCKED_COLUMN_IDS = new Set(["vessel_name", "region", "imo"]);
 
 /** Grid-only columns — not sent to draft API. */
-export const DRAFT_NON_SELECTABLE_COLUMN_IDS = new Set(["_num", "attachments"]);
+export const DRAFT_NON_SELECTABLE_COLUMN_IDS = new Set(["_num", "received", "attachments"]);
 
 export function defaultDraftSelectedColumnIds(columnDefs = DEFAULT_COLUMNS) {
   const allowed = new Set(columnDefs.map((c) => c.id));
@@ -261,9 +265,20 @@ export function isRegionColumn(id) {
   return id === "region";
 }
 
+/** Format an email received timestamp as "17 Jul 2026, 09:42" (24h). */
+export function formatReceived(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const date = d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+  const time = d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false });
+  return `${date}, ${time}`;
+}
+
 /** Read cell value directly from DB-shaped vessel row. */
 export function resolveStandardCellValue(vessel, columnId, rowNum = 1) {
   if (columnId === "_num") return String(rowNum);
+  if (columnId === "received") return formatReceived(vessel?.date_received);
   if (columnId === "region") return vessel?.region ?? "";
   if (columnId === "attachments") {
     return (vessel?.filename || "").replace(/\.eml$/i, "") || "";

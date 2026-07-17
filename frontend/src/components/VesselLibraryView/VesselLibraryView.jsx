@@ -26,6 +26,7 @@ export default function VesselLibraryView({ isActive = false, refreshKey = 0, on
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
+  const [sort, setSort] = useState({ key: null, dir: "asc" });
   const [saving, setSaving] = useState(false);
   const [savedMsg, setSavedMsg] = useState(false);
   const savedTimer = useRef(null);
@@ -64,6 +65,41 @@ export default function VesselLibraryView({ isActive = false, refreshKey = 0, on
       COLS.some((c) => String(r[c.key] || "").toLowerCase().includes(q))
     );
   }, [rows, query]);
+
+  const sorted = useMemo(() => {
+    if (!sort.key) return filtered;
+    const { key, dir } = sort;
+    const factor = dir === "asc" ? 1 : -1;
+    const numericKeys = new Set(["dwt", "year_built", "imo_no"]);
+    const parseNum = (v) => {
+      const n = parseFloat(String(v).replace(/[^0-9.]/g, ""));
+      return isNaN(n) ? null : n;
+    };
+    const isEmpty = (v) => v == null || String(v).trim() === "" || String(v).trim() === "—";
+    const arr = [...filtered];
+    arr.sort((a, b) => {
+      const av = a[key];
+      const bv = b[key];
+      const ae = isEmpty(av);
+      const be = isEmpty(bv);
+      if (ae && be) return 0;
+      if (ae) return 1; // blanks always last
+      if (be) return -1;
+      if (numericKeys.has(key)) {
+        const an = parseNum(av);
+        const bn = parseNum(bv);
+        if (an != null && bn != null) return (an - bn) * factor;
+        if (an != null) return -1;
+        if (bn != null) return 1;
+      }
+      return String(av).localeCompare(String(bv), undefined, { numeric: true, sensitivity: "base" }) * factor;
+    });
+    return arr;
+  }, [filtered, sort]);
+
+  const toggleSort = useCallback((key) => {
+    setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" }));
+  }, []);
 
   const handleSave = async (fields) => {
     setSaving(true);
@@ -140,14 +176,29 @@ export default function VesselLibraryView({ isActive = false, refreshKey = 0, on
                 <thead>
                   <tr>
                     <th style={{ width: 46 }}>SR.</th>
-                    {COLS.map((c) => (
-                      <th key={c.key}>{c.label}</th>
-                    ))}
+                    {COLS.map((c) => {
+                      const active = sort.key === c.key;
+                      return (
+                        <th
+                          key={c.key}
+                          className="vlib-th-sort"
+                          onClick={() => toggleSort(c.key)}
+                          title={`Sort by ${c.label}`}
+                        >
+                          <span className="vlib-th-inner">
+                            {c.label}
+                            <span className={`vlib-sort-ic ${active ? "on" : ""}`}>
+                              {active ? (sort.dir === "asc" ? "▲" : "▼") : "↕"}
+                            </span>
+                          </span>
+                        </th>
+                      );
+                    })}
                     <th style={{ width: 84 }}>Actions</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.length === 0 ? (
+                  {sorted.length === 0 ? (
                     <tr>
                       <td colSpan={COLS.length + 2} className="vlib-empty-cell">
                         {rows.length === 0
@@ -156,7 +207,7 @@ export default function VesselLibraryView({ isActive = false, refreshKey = 0, on
                       </td>
                     </tr>
                   ) : (
-                    filtered.map((row, i) => (
+                    sorted.map((row, i) => (
                       <tr key={row.id}>
                         <td className="vlib-sr">{i + 1}</td>
                         {COLS.map((c) => (

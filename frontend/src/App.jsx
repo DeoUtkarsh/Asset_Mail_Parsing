@@ -7,7 +7,7 @@ import InboxView from "./components/InboxView/InboxView";
 import HomeView from "./components/HomeView/HomeView";
 import ContactListView from "./components/ContactListView/ContactListView";
 import VesselLibraryView from "./components/VesselLibraryView/VesselLibraryView";
-import Settings from "./components/pages/Settings";
+import LoginView from "./components/Login/LoginView";
 import EmailDetail from "./components/pages/EmailDetail";
 import AiSummaryButton from "./components/AiSummary/AiSummaryButton";
 import Icon from "./components/icons";
@@ -30,7 +30,28 @@ const ST = {
 };
 const AV_COLORS = ["#219495", "#3b82f6", "#8b5cf6", "#f59e0b", "#ef4444", "#10b981", "#ec4899", "#0ea5e9"];
 
+const AUTH_KEY = "bs_auth";
+
 export default function App() {
+  const [authed, setAuthed] = useState(() => {
+    try { return localStorage.getItem(AUTH_KEY) === "1"; } catch { return false; }
+  });
+
+  const handleLogin = useCallback(() => {
+    try { localStorage.setItem(AUTH_KEY, "1"); } catch { /* ignore */ }
+    setAuthed(true);
+  }, []);
+
+  const handleLogout = useCallback(() => {
+    try { localStorage.removeItem(AUTH_KEY); } catch { /* ignore */ }
+    setAuthed(false);
+  }, []);
+
+  if (!authed) return <LoginView onLogin={handleLogin} />;
+  return <MainApp onLogout={handleLogout} />;
+}
+
+function MainApp({ onLogout }) {
   const [view, setView] = useState("home");
   const [emails, setEmails] = useState([]);
   const [activeEmailId, setActiveEmailId] = useState(null);
@@ -237,9 +258,13 @@ export default function App() {
       <header className="topbar">
         <div className="logo">
           <span className="mark"><Icon name="anchor" size={22} /></span>
-          <div className="wm"><span className="l1">POSITION</span><span className="l2">SENSE</span></div>
+          <div className="wm"><span className="l1">BROKER</span><span className="l2">SENSE</span></div>
         </div>
-        <div className="tb-right" />
+        <div className="tb-right">
+          <button type="button" className="tb-logout" onClick={onLogout}>
+            <Icon name="logout" size={16} /> Logout
+          </button>
+        </div>
       </header>
 
       <div className="appbody">
@@ -253,7 +278,6 @@ export default function App() {
           </button>
         ))}
         <div className="rspacer" />
-        <button className={`ricon ${view === "settings" ? "active" : ""}`} onClick={() => go("settings")}><Icon name="settings" size={20} /><span className="ricon-tip">Settings</span></button>
       </div>
 
       {/* ── Left list panel ── */}
@@ -350,8 +374,6 @@ export default function App() {
             refreshKey={libraryRefreshKey}
             onLibraryUpdated={() => setLibraryRefreshKey((k) => k + 1)}
           />
-        ) : view === "settings" ? (
-          <Settings filterSender={FILTER_SENDER} onGo={go} toast={toast} />
         ) : selectedAtt ? (
           <EmailDetail attachment={selectedAtt} emailId={activeEmailId} sender={selRow?.sender} subject={selRow?.subject}
             date={fmtMailDate(selRow?.mailDate, emailDate)} files={selRow?.files || []}

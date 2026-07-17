@@ -47,6 +47,13 @@ CRITICAL RULES:
 10. If the document contains absolutely no vessel/ship data (e.g. only contact information), return an empty array: []
 11. ALWAYS include a "company" key on each vessel = the broker/owner company sending that position (from letterhead, signature, or context near the vessel line). Example: "Arklink Shipping Limited". If the whole email is from one company, use the same value on every vessel.
 12. vessel_name codes like "GS/J19", "OT/MR" etc. are vessel identifiers — extract them as the vessel_name.
+13. Include a "direction" key = the vessel's preferred trading / voyage direction, ONLY if it is mentioned.
+   - Normalize the value to UPPERCASE using ONE of: ANY, NORTHBOUND, SOUTHBOUND, EASTBOUND, WESTBOUND, WCI, AG, WCI/AG, FAR EAST, SEA, WORLDWIDE.
+   - Map common synonyms: "NB" → NORTHBOUND, "SB" → SOUTHBOUND, "EB" → EASTBOUND, "WB" → WESTBOUND,
+     "any dir" / "any direction" / "looking for any direction cargo" → ANY, "feast" / "f.east" → FAR EAST,
+     "w.w" / "ww" / "trading worldwide" → WORLDWIDE, "wci" → WCI, "ag" / "arabian gulf" → AG.
+   - If both WCI and AG are mentioned together, use "WCI/AG".
+   - If no direction is mentioned for the vessel, OMIT the "direction" key entirely (do NOT guess).
 
 TEXT TO PARSE:
 {raw_text}

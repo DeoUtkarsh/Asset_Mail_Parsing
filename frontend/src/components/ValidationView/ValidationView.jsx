@@ -19,6 +19,8 @@ import {
   isDraftColumnSelectable,
 } from "../../utils/standardColumns";
 
+const RECEIVED_COL = { id: "received", header: "RECEIVED", read_only: true, storage: "derived" };
+
 function buildDraftSelectionSignature(vesselIds, columnIds) {
   const vessels = [...vesselIds].sort((a, b) => String(a).localeCompare(String(b))).join(",");
   const columns = [...columnIds].sort().join(",");
@@ -39,6 +41,9 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
   const [showAllColumns, setShowAllColumns] = useState(() => readPositionListShowAllColumnsPref());
   const [addModalOpen, setAddModalOpen] = useState(false);
   const [addSaving, setAddSaving] = useState(false);
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [regionFilter, setRegionFilter] = useState("");
   const [selectedColumnIds, setSelectedColumnIds] = useState(() => defaultDraftSelectedColumnIds());
   const [lastDraftSignature, setLastDraftSignature] = useState(null);
   const savedTimer                  = useRef(null);
@@ -161,6 +166,41 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [selectedIds, handleDeleteSelected]);
 
+  const regionOptions = useMemo(() => {
+    const set = new Set();
+    vessels.forEach((v) => { const r = (v.region || "").trim(); if (r) set.add(r); });
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [vessels]);
+
+  const visibleVessels = useMemo(() => {
+    const fromTs = dateFrom ? new Date(`${dateFrom}T00:00:00`).getTime() : null;
+    const toTs = dateTo ? new Date(`${dateTo}T23:59:59`).getTime() : null;
+    return vessels.filter((v) => {
+      if (regionFilter && (v.region || "").trim() !== regionFilter) return false;
+      if (fromTs != null || toTs != null) {
+        const t = v.date_received ? new Date(v.date_received).getTime() : NaN;
+        if (isNaN(t)) return false;
+        if (fromTs != null && t < fromTs) return false;
+        if (toTs != null && t > toTs) return false;
+      }
+      return true;
+    });
+  }, [vessels, dateFrom, dateTo, regionFilter]);
+
+  const filtersActive = Boolean(dateFrom || dateTo || regionFilter);
+  const clearFilters = useCallback(() => { setDateFrom(""); setDateTo(""); setRegionFilter(""); }, []);
+
+  // Keep the selection limited to rows currently visible under the filters.
+  useEffect(() => {
+    const visibleIds = new Set(visibleVessels.map((v) => v.id));
+    setSelectedIds((prev) => {
+      let changed = false;
+      const next = new Set();
+      prev.forEach((id) => { if (visibleIds.has(id)) next.add(id); else changed = true; });
+      return changed ? next : prev;
+    });
+  }, [visibleVessels]);
+
   const handleToggleSelect = useCallback((id) => {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -171,18 +211,21 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
 
   const handleToggleAll = useCallback(() => {
     setSelectedIds((prev) => {
-      const allSelected = vessels.length > 0 && vessels.every((v) => prev.has(v.id));
+      const allSelected = visibleVessels.length > 0 && visibleVessels.every((v) => prev.has(v.id));
       if (allSelected) return new Set();
-      return new Set(vessels.map((v) => v.id));
+      return new Set(visibleVessels.map((v) => v.id));
     });
-  }, [vessels]);
+  }, [visibleVessels]);
 
-  const sourceCount = new Set(vessels.map((v) => v.attachment_id).filter(Boolean)).size;
+  const sourceCount = new Set(visibleVessels.map((v) => v.attachment_id).filter(Boolean)).size;
 
-  const gridColumns = useMemo(
-    () => filterPositionListGridColumns(columnDefs, showAllColumns),
-    [columnDefs, showAllColumns],
-  );
+  const gridColumns = useMemo(() => {
+    const base = filterPositionListGridColumns(columnDefs, showAllColumns);
+    const out = [...base];
+    const numIdx = out.findIndex((c) => c.id === "_num");
+    out.splice(numIdx >= 0 ? numIdx + 1 : 0, 0, RECEIVED_COL);
+    return out;
+  }, [columnDefs, showAllColumns]);
 
   const manualColumns = useMemo(
     () => (columnDefs || []).filter((c) => c.storage && c.storage !== "derived"),
@@ -257,15 +300,15 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
     const ids =
       selectedIds.size > 0
         ? [...selectedIds]
-        : vessels.map((v) => v.id);
+        : visibleVessels.map((v) => v.id);
     return summarizeVessels(ids);
-  }, [selectedIds, vessels]);
+  }, [selectedIds, visibleVessels]);
 
   const handleGenerateDraft = async () => {
     if (selectedIds.size === 0) return;
     const emailId =
       draftEmailId ||
-      vessels.find((v) => v.parent_email_id)?.parent_email_id;
+      visibleVessels.find((v) => v.parent_email_id)?.parent_email_id;
     if (!emailId) {
       setError("No validation-ready email found for draft generation.");
       return;
@@ -274,7 +317,7 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
     setError("");
     setDraftData(null);
     setDraftModalOpen(false);
-    const sourceVessels = vessels.filter((v) => selectedIds.has(v.id));
+    const sourceVessels = visibleVessels.filter((v) => selectedIds.has(v.id));
     const signature = buildDraftSelectionSignature(selectedIds, draftColumnIds);
     draftSourceRef.current = { vessels: sourceVessels, columns: draftColumnIds, signature };
     const payload = sourceVessels.map((v) => ({
@@ -317,7 +360,7 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
             <AllColumnsToggle
               enabled={showAllColumns}
               onChange={toggleShowAllColumns}
-              visibleCount={gridColumns.length}
+              visibleCount={gridColumns.length - 1}
               totalCount={columnDefs.length}
             />
           )}
@@ -379,15 +422,63 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
 
       {vessels.length > 0 && (
         <div className="vgrid-stats">
-          <Stat label="Vessels" value={vessels.length} />
+          <Stat label="Vessels" value={visibleVessels.length} />
           <Stat label="Sources" value={sourceCount} />
-          <Stat label="Regions" value={new Set(vessels.map((v) => v.region).filter(Boolean)).size} />
+          <Stat label="Regions" value={new Set(visibleVessels.map((v) => v.region).filter(Boolean)).size} />
           <ColumnsStat
             selectedCount={draftColumnIds.length}
             allVisibleDraftSelected={allVisibleDraftSelected}
             someVisibleDraftSelected={someVisibleDraftSelected}
             onToggleVisibleColumnsForDraft={handleToggleVisibleColumnsForDraft}
           />
+        </div>
+      )}
+
+      {vessels.length > 0 && (
+        <div className="vgrid-filters">
+          <div className="vf-group">
+            <label className="vf-label">EMAIL DATE RANGE</label>
+            <div className="vf-dates">
+              <input
+                type="date"
+                className="vf-input"
+                value={dateFrom}
+                max={dateTo || undefined}
+                onChange={(e) => setDateFrom(e.target.value)}
+              />
+              <span className="vf-dash">–</span>
+              <input
+                type="date"
+                className="vf-input"
+                value={dateTo}
+                min={dateFrom || undefined}
+                onChange={(e) => setDateTo(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="vf-group">
+            <label className="vf-label">REGION</label>
+            <select
+              className="vf-input vf-select"
+              value={regionFilter}
+              onChange={(e) => setRegionFilter(e.target.value)}
+            >
+              <option value="">All regions</option>
+              {regionOptions.map((r) => (
+                <option key={r} value={r}>{r}</option>
+              ))}
+            </select>
+          </div>
+
+          <button
+            type="button"
+            className="tb-btn vf-clear"
+            onClick={clearFilters}
+            disabled={!filtersActive}
+          >
+            Clear filters
+          </button>
         </div>
       )}
 
@@ -398,7 +489,7 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
           <div className="center-load"><span className="spin-ring" /> Loading vessels…</div>
         ) : (
           <EditableGrid
-            data={vessels}
+            data={visibleVessels}
             gridColumns={gridColumns}
             onCellEdit={handleCellEdit}
             readOnly
@@ -411,7 +502,11 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
             showColumnSelect
             selectedColumnIds={selectedColumnIds}
             onToggleColumnSelect={handleToggleColumnSelect}
-            emptyMessage="No vessels yet. Sync owner emails from Inbox to populate the list."
+            emptyMessage={
+              filtersActive
+                ? "No vessels match the current filters."
+                : "No vessels yet. Sync owner emails from Inbox to populate the list."
+            }
           />
         )}
       </div>

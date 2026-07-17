@@ -19,9 +19,9 @@ const helper = createColumnHelper();
 
 const GRID_BORDER = "1px solid var(--line)";
 
-/** Checkbox (if shown), SR. NO, IMO, VESSEL NAME, REGION stay fixed when scrolling. */
+/** Checkbox (if shown), SR. NO, RECEIVED, IMO, COMPANY, VESSEL NAME, REGION stay fixed when scrolling. */
 function buildPinnedOrder(showCheckboxes) {
-  const cols = ["_num", "imo", "company", "vessel_name", "region"];
+  const cols = ["_num", "received", "imo", "company", "vessel_name", "region"];
   return showCheckboxes ? ["_select", ...cols] : cols;
 }
 
@@ -63,7 +63,7 @@ function EditableCell({ getValue, row, column, table, vesselName = false, column
       .toLowerCase();
     return (
       <div
-        onDoubleClick={
+        onClick={
           readOnly || !editField ? undefined : () => setEditing(true)
         }
         className={`cell-val ${value ? "" : "is-empty"} ${showAddHint ? "cell-add" : ""} ${
@@ -72,7 +72,7 @@ function EditableCell({ getValue, row, column, table, vesselName = false, column
         title={
           readOnly
             ? (showAddHint ? "Click Edit to fill this field" : value || "")
-            : value || "Double-click to edit · Enter to save"
+            : value || "Click to edit · Enter to save"
         }
       >
         {value || (showAddHint ? `add ${label}…` : "—")}
@@ -117,7 +117,7 @@ function EditableRegionCell({ getValue, row, column, table }) {
     const showAddHint = !value && (!readOnly || highlightEmpty);
     return (
       <div
-        onDoubleClick={readOnly ? undefined : () => setEditing(true)}
+        onClick={readOnly ? undefined : () => setEditing(true)}
         className={`cell-val font-bold uppercase ${value ? "" : "is-empty"} ${showAddHint ? "cell-add" : ""} ${
           readOnly ? "cursor-default" : "cursor-text"
         }`}
@@ -125,7 +125,7 @@ function EditableRegionCell({ getValue, row, column, table }) {
         title={
           readOnly
             ? (showAddHint ? "Click Edit to fill this field" : initial || "")
-            : "Double-click to edit · Enter to save"
+            : "Click to edit · Enter to save"
         }
       >
         {value || (showAddHint ? "add region…" : "—")}
