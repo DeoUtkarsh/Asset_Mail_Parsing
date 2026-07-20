@@ -8,11 +8,13 @@ import { Fragment, useMemo, useState, useRef, useEffect, useLayoutEffect } from 
 import {
   DEFAULT_COLUMNS,
   enrichColumnDefs,
+  minColumnWidthForHeader,
   resolveStandardCellValue,
   editFieldForColumn,
   isVesselNameColumn,
   isRegionColumn,
   isDraftColumnSelectable,
+  SINGLE_LINE_COLUMN_IDS,
 } from "../../utils/standardColumns";
 
 const helper = createColumnHelper();
@@ -156,6 +158,39 @@ function SrNoCell({ row }) {
   );
 }
 
+const COLUMN_SEARCH_DEBOUNCE_MS = 250;
+
+function ColumnHeaderSearch({ label, value, onChange, onClear }) {
+  const trimmed = String(value || "").trim();
+  return (
+    <div className={`col-hdr-search-wrap${trimmed ? " has-value" : ""}`}>
+      <input
+        type="search"
+        className="col-hdr-search"
+        placeholder="Search…"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onClick={(e) => e.stopPropagation()}
+        aria-label={`Search ${label}`}
+      />
+      {trimmed ? (
+        <button
+          type="button"
+          className="col-hdr-search-clear"
+          onClick={(e) => {
+            e.stopPropagation();
+            onClear();
+          }}
+          aria-label={`Clear ${label} search`}
+          title="Clear this column"
+        >
+          ×
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 export default function EditableGrid({
   data,
   columns: _legacyColumns,
@@ -177,10 +212,21 @@ export default function EditableGrid({
   onToggleColumnSelect,
   columnWidthScale = 1,
   highlightEmpty = false,
+  showColumnSearch = true,
 }) {
-  const scaleW = (w) => Math.max(48, Math.round(w * columnWidthScale));
+  const scaleW = (w, header) =>
+    Math.max(minColumnWidthForHeader(header), Math.max(48, Math.round(w * columnWidthScale)));
   const [containerWidth, setContainerWidth] = useState(0);
+  const [columnSearchInput, setColumnSearchInput] = useState({});
+  const [columnSearch, setColumnSearch] = useState({});
   const scrollRef = useRef(null);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setColumnSearch(columnSearchInput);
+    }, COLUMN_SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [columnSearchInput]);
 
   const measureContainer = () => {
     const el = scrollRef.current;
@@ -188,15 +234,6 @@ export default function EditableGrid({
     const w = el.clientWidth;
     if (w > 0) setContainerWidth(w);
   };
-
-  const groupCounts = useMemo(() => {
-    const counts = new Map();
-    data.forEach((v) => {
-      const id = v.attachment_id;
-      counts.set(id, (counts.get(id) || 0) + 1);
-    });
-    return counts;
-  }, [data]);
 
   useEffect(() => {
     if (!stretchToFill) {
@@ -222,6 +259,65 @@ export default function EditableGrid({
     () => enrichColumnDefs(gridColumns?.length ? gridColumns : DEFAULT_COLUMNS),
     [gridColumns]
   );
+
+  const hasActiveColumnSearch = useMemo(
+    () => showColumnSearch && Object.values(columnSearch).some((v) => String(v || "").trim()),
+    [showColumnSearch, columnSearch],
+  );
+
+  const hasColumnSearchInput = useMemo(
+    () => showColumnSearch && Object.values(columnSearchInput).some((v) => String(v || "").trim()),
+    [showColumnSearch, columnSearchInput],
+  );
+
+  const filteredData = useMemo(() => {
+    if (!showColumnSearch || !hasActiveColumnSearch) return data;
+    const active = Object.entries(columnSearch).filter(([, v]) => String(v || "").trim());
+    return data.filter((row, rowIdx) =>
+      active.every(([colId, rawQ]) => {
+        const needle = String(rawQ).trim().toLowerCase();
+        const cellVal = colId === "_num"
+          ? String(rowIdx + 1)
+          : resolveStandardCellValue(row, colId, rowIdx + 1);
+        return String(cellVal ?? "").toLowerCase().includes(needle);
+      }),
+    );
+  }, [data, columnSearch, showColumnSearch, hasActiveColumnSearch]);
+
+  const clearColumnSearch = () => {
+    setColumnSearchInput({});
+    setColumnSearch({});
+  };
+
+  const setColumnSearchValue = (colId, value) => {
+    setColumnSearchInput((prev) => {
+      const next = { ...prev, [colId]: value };
+      if (!String(value || "").trim()) delete next[colId];
+      return next;
+    });
+  };
+
+  const clearColumnSearchValue = (colId) => {
+    setColumnSearchInput((prev) => {
+      const next = { ...prev };
+      delete next[colId];
+      return next;
+    });
+    setColumnSearch((prev) => {
+      const next = { ...prev };
+      delete next[colId];
+      return next;
+    });
+  };
+
+  const groupCounts = useMemo(() => {
+    const counts = new Map();
+    filteredData.forEach((v) => {
+      const id = v.attachment_id;
+      counts.set(id, (counts.get(id) || 0) + 1);
+    });
+    return counts;
+  }, [filteredData]);
 
   const columnDefs = useMemo(() => {
     const cols = [];
@@ -261,7 +357,7 @@ export default function EditableGrid({
           helper.display({
             id: "_num",
             header: col.header,
-            size: scaleW(col.width || 40),
+            size: scaleW(col.width || 40, col.header),
             cell: (info) => <SrNoCell row={info.row} />,
           })
         );
@@ -272,7 +368,7 @@ export default function EditableGrid({
         helper.display({
           id: col.id,
           header: col.header,
-          size: scaleW(col.width || 110),
+          size: scaleW(col.width || 110, col.header),
           cell: (info) => {
             const value = resolveStandardCellValue(
               info.row.original,
@@ -325,7 +421,7 @@ export default function EditableGrid({
   ]);
 
   const table = useReactTable({
-    data,
+    data: filteredData,
     columns: columnDefs,
     getCoreRowModel: getCoreRowModel(),
     meta: { onCellEdit, onEnterSave, readOnly, columnDefs: standardCols, highlightEmpty },
@@ -426,21 +522,44 @@ export default function EditableGrid({
       ? header.column.columnDef.header
       : standardCols.find((c) => c.id === colId)?.header ?? colId;
 
-    if (!showColumnSelect || !isDraftColumnSelectable(colId)) {
-      return label;
-    }
-
-    const checked = selectedColumnIds.has(colId);
+    const searchable = showColumnSearch && colId !== "_select";
+    const draftSelectable = showColumnSelect && isDraftColumnSelectable(colId);
 
     return (
-      <div className="col-hdr">
-        <input
-          type="checkbox"
-          checked={checked}
-          onChange={() => onToggleColumnSelect?.(colId)}
-          title="Include in draft email"
-        />
-        <span title={label}>{label}</span>
+      <div className={`col-hdr ${searchable ? "col-hdr-stack" : ""}`}>
+        {draftSelectable ? (
+          <>
+            <div className="col-hdr-top">
+              <input
+                type="checkbox"
+                checked={selectedColumnIds.has(colId)}
+                onChange={() => onToggleColumnSelect?.(colId)}
+                title="Include in draft email"
+              />
+              <span className="col-hdr-label" title={label}>{label}</span>
+            </div>
+            {searchable && (
+              <ColumnHeaderSearch
+                label={label}
+                value={columnSearchInput[colId] ?? ""}
+                onChange={(v) => setColumnSearchValue(colId, v)}
+                onClear={() => clearColumnSearchValue(colId)}
+              />
+            )}
+          </>
+        ) : (
+          <>
+            <span className="col-hdr-label" title={label}>{label}</span>
+            {searchable && (
+              <ColumnHeaderSearch
+                label={label}
+                value={columnSearchInput[colId] ?? ""}
+                onChange={(v) => setColumnSearchValue(colId, v)}
+                onClear={() => clearColumnSearchValue(colId)}
+              />
+            )}
+          </>
+        )}
       </div>
     );
   };
@@ -456,6 +575,7 @@ export default function EditableGrid({
     const parts = [];
     if (columnId === "_select") parts.push("col-select");
     if (columnId === "_num") parts.push("col-num");
+    if (SINGLE_LINE_COLUMN_IDS.has(columnId)) parts.push("col-compact");
     if (
       showColumnSelect
       && isDraftColumnSelectable(columnId)
@@ -471,6 +591,7 @@ export default function EditableGrid({
     if (columnId === "_num") return "cell-num";
     if (columnId === "vessel_name") return "cell-vname";
     if (columnId === "region") return "cell-region";
+    if (SINGLE_LINE_COLUMN_IDS.has(columnId)) return "cell-compact";
     return "";
   };
 
@@ -517,6 +638,17 @@ export default function EditableGrid({
 
   return (
     <div className="vessel-grid-wrap">
+      {(hasActiveColumnSearch || hasColumnSearchInput) && (
+        <div className="col-search-bar">
+          <span>
+            Showing {filteredData.length} of {data.length} row{data.length !== 1 ? "s" : ""}
+            {filteredData.length === 0 ? " — no matches" : ""}
+          </span>
+          <button type="button" className="col-search-clear" onClick={clearColumnSearch}>
+            Clear all filters
+          </button>
+        </div>
+      )}
       <div
         ref={scrollRef}
         className={`vessel-grid-scroll ${stretchToFill ? "stretch" : ""}`}
@@ -548,7 +680,14 @@ export default function EditableGrid({
             </tr>
           </thead>
           <tbody>
-            {rows.map((row, i) => {
+            {rows.length === 0 ? (
+              <tr className="grid-empty-row">
+                <td colSpan={colCount} className="grid-no-match">
+                  No rows match the column search filters.
+                </td>
+              </tr>
+            ) : (
+            rows.map((row, i) => {
               const currentAttId = row.original.attachment_id;
               const prevAttId = i > 0 ? rows[i - 1].original.attachment_id : null;
               const isNewGroup = currentAttId !== prevAttId;
@@ -605,7 +744,8 @@ export default function EditableGrid({
                   </tr>
                 </Fragment>
               );
-            })}
+            })
+            )}
           </tbody>
         </table>
       </div>

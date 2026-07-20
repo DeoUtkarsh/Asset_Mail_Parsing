@@ -53,6 +53,7 @@ ALTER TABLE attachments ADD COLUMN IF NOT EXISTS manually_reviewed BOOLEAN NOT N
 ALTER TABLE attachments ADD COLUMN IF NOT EXISTS preview_html TEXT;
 ALTER TABLE attachments ADD COLUMN IF NOT EXISTS preview_plain TEXT;
 ALTER TABLE attachments ADD COLUMN IF NOT EXISTS preview_images JSONB;
+ALTER TABLE attachments ADD COLUMN IF NOT EXISTS columns_in_email JSONB DEFAULT '[]'::jsonb;
 
 CREATE TABLE IF NOT EXISTS column_definitions (
     id              TEXT PRIMARY KEY,
@@ -68,8 +69,11 @@ CREATE TABLE IF NOT EXISTS vessels (
     dynamic_data    JSONB NOT NULL DEFAULT '{}',
     region          TEXT,
     is_validated    BOOLEAN DEFAULT FALSE,
+    row_order       INT NOT NULL DEFAULT 0,
     created_at      TIMESTAMPTZ DEFAULT NOW()
 );
+
+ALTER TABLE vessels ADD COLUMN IF NOT EXISTS row_order INT NOT NULL DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS idx_vessels_attachment_id
     ON vessels(attachment_id);
@@ -137,6 +141,7 @@ SELECT
     v.dynamic_data,
     v.region,
     v.is_validated,
+    v.row_order,
     v.created_at,
     a.filename,
     a.parent_email_id,
@@ -144,7 +149,8 @@ SELECT
     pe.date_received,
     a.signature_emails,
     a.signature_phones,
-    a.is_verified AS attachment_is_verified
+    a.is_verified AS attachment_is_verified,
+    a.files AS attachment_files
 FROM vessels v
 JOIN attachments a  ON a.id  = v.attachment_id
 JOIN parent_emails pe ON pe.id = a.parent_email_id;

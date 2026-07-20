@@ -13,7 +13,7 @@ import Icon from "../icons";
 
 const AV_COLORS = ["#219495", "#3b82f6", "#8b5cf6", "#f59e0b", "#ef4444", "#10b981", "#ec4899", "#0ea5e9"];
 
-const DEFAULT_FILTERS = { from: "", dateFrom: "", dateTo: "", tiers: [], verification: "all" };
+const DEFAULT_FILTERS = { from: "", dateFrom: "", dateTo: "", tiers: [] };
 
 function mapDbStatus(status) {
   if (status === "done") return "downloaded";
@@ -22,7 +22,7 @@ function mapDbStatus(status) {
   return status;
 }
 
-export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUpdated, reviewMode = false }) {
+export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUpdated, onEmailsLoaded, reviewMode = false }) {
   const [emails, setEmails]           = useState([]);
   const [fetching, setFetching]       = useState(false);
   const [retrying, setRetrying]       = useState(false);
@@ -58,6 +58,7 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
       const data = await getEmails();
       setEmails(data);
       pickReadyEmail(data);
+      onEmailsLoaded?.(data);
     } catch (e) {
       console.error("Failed to load emails:", e);
     }
@@ -84,6 +85,7 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
     setRetrying(false);
     setJobId(null);
     setAttStatuses({});
+    setStatusLog([]);
     loadEmails();
   }, []);
 
@@ -108,6 +110,10 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
         break;
       case "extraction_done":
         setAttStatuses((p) => ({ ...p, [rest.attachment_id]: "in_progress" }));
+        break;
+      case "attachment_auto_verified":
+        setAttStatuses((p) => ({ ...p, [rest.attachment_id]: "downloaded" }));
+        onVesselsUpdated?.();
         break;
       case "signature_attachment_done":
         setAttStatuses((p) => ({ ...p, [rest.attachment_id]: "downloaded" }));
@@ -239,10 +245,12 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
     return rows;
   }, [emails]);
 
-  // Review tab: only medium/low confidence + failed attachments.
+  // Review tab: same rule as Home dashboard (needs_review flag from API).
   const scopedRows = useMemo(() => {
     if (!reviewMode) return mailRows;
     return mailRows.filter((r) => {
+      if (r.is_verified) return false;
+      if (typeof r.needs_review === "boolean") return r.needs_review;
       const tier = r.confidence_tier;
       return tier === "medium" || tier === "low" || resolveAttStatus(r) === "failed";
     });
@@ -267,8 +275,6 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
         if (toTs != null && t > toTs) return false;
       }
       if (tierSet && !tierSet.has(r.confidence_tier)) return false;
-      if (filters.verification === "verified" && !r.is_verified) return false;
-      if (filters.verification === "unverified" && r.is_verified) return false;
       return true;
     });
   }, [scopedRows, search, filters]);
@@ -278,28 +284,24 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
     if (filters.from.trim()) n += 1;
     if (filters.dateFrom || filters.dateTo) n += 1;
     if (filters.tiers.length) n += 1;
-    if (filters.verification !== "all") n += 1;
     return n;
   }, [filters]);
 
   const inboxStats = useMemo(() => {
     let attachments = 0;
     let downloaded = 0;
-    let verified = 0;
     let vessels = 0;
     const emailIds = new Set();
     for (const row of scopedRows) {
       emailIds.add(row.email.id);
       attachments += 1;
       if (resolveAttStatus(row) === "downloaded") downloaded += 1;
-      if (row.is_verified) verified += 1;
       vessels += row.vessel_count || 0;
     }
     return {
       emails: reviewMode ? emailIds.size : emails.length,
       attachments,
       downloaded,
-      verified,
       vessels,
     };
   }, [scopedRows, reviewMode, emails, attStatuses]);
@@ -361,12 +363,11 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
           <InboxStat label="Emails" value={inboxStats.emails} />
           <InboxStat label="Attachments" value={inboxStats.attachments} />
           <InboxStat label="Downloaded" value={inboxStats.downloaded} />
-          <InboxStat label="Verified" value={inboxStats.verified} />
           <InboxStat label="Vessels" value={inboxStats.vessels} />
         </div>
       )}
 
-      {statusLog.length > 0 && (
+      {(fetchBusy || retrying || anyJobActive) && statusLog.length > 0 && (
         <div className="inbox-log">
           {statusLog.map((log, i) => (
             <div key={i} className="inbox-log-entry">
@@ -432,7 +433,6 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
             ) : (
               filteredRows.map((row) => {
                 const status = resolveAttStatus(row);
-                const verified = Boolean(row.is_verified);
                 const sender = row.email.sender || "—";
                 const avColor = AV_COLORS[(sender.charCodeAt(0) || 0) % AV_COLORS.length];
                 return (
@@ -482,6 +482,7 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
                           </button>
                         )}
                       </div>
+                      <VesselCountBadge count={row.vessel_count} status={status} />
                       <ConfidenceBadge
                         score={row.confidence_score}
                         tier={row.confidence_tier}
@@ -489,7 +490,6 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
                         status={status}
                         reviewed={Boolean(row.manually_reviewed)}
                       />
-                      <VerifiedIndicator verified={verified} />
                     </div>
                   </div>
                 );
@@ -508,12 +508,15 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
               emailId={selectedRow.email.id}
               initialVerified={Boolean(selectedRow.is_verified)}
               vesselCount={selectedRow.vessel_count || 0}
+              showVerify={reviewMode}
+              showEdit={reviewMode}
               onVerifiedChange={(isVerified) => {
                 patchAttachmentVerified(selectedRow.id, isVerified);
                 onVesselsUpdated?.();
                 loadEmails();
               }}
               onDataChange={() => {
+                loadEmails();
                 onVesselsUpdated?.();
               }}
             />
@@ -534,7 +537,6 @@ function InboxFilterPanel({ initial, hideHigh = false, onApply, onClear }) {
   const [dateFrom, setDateFrom] = useState(initial.dateFrom);
   const [dateTo, setDateTo] = useState(initial.dateTo);
   const [tiers, setTiers] = useState(initial.tiers);
-  const [verification, setVerification] = useState(initial.verification);
 
   const toggleTier = (t) =>
     setTiers((prev) => (prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t]));
@@ -591,25 +593,12 @@ function InboxFilterPanel({ initial, hideHigh = false, onApply, onClear }) {
         </div>
       </div>
 
-      <label className="iflt-group">
-        <span className="iflt-label">VERIFICATION</span>
-        <select
-          className="iflt-input iflt-select"
-          value={verification}
-          onChange={(e) => setVerification(e.target.value)}
-        >
-          <option value="all">All</option>
-          <option value="verified">Verified</option>
-          <option value="unverified">Unverified</option>
-        </select>
-      </label>
-
       <div className="iflt-btns">
         <button type="button" className="tb-btn" onClick={onClear}>Clear</button>
         <button
           type="button"
           className="tb-btn tb-btn-primary"
-          onClick={() => onApply({ from, dateFrom, dateTo, tiers, verification })}
+          onClick={() => onApply({ from, dateFrom, dateTo, tiers })}
         >
           Apply
         </button>
@@ -627,10 +616,12 @@ function InboxStat({ label, value }) {
   );
 }
 
-function VerifiedIndicator({ verified }) {
+function VesselCountBadge({ count, status }) {
+  if (status === "in_progress" || status === "pending") return null;
+  const n = count ?? 0;
   return (
-    <span className={`imail-verified ${verified ? "is-on" : ""}`}>
-      {verified ? "✓ Verified" : "Unverified"}
+    <span className="imail-vcount" title="Vessels extracted from this mail">
+      {n} vessel{n !== 1 ? "s" : ""}
     </span>
   );
 }
@@ -643,9 +634,9 @@ function ConfidenceBadge({ score, tier, label, status, reviewed = false }) {
   const band = tier === "high" ? "hi" : tier === "medium" ? "mid" : "lo";
   const triageHint =
     tier === "high"
-      ? "usually safe to verify quickly"
+      ? "auto-added to Position List"
       : tier === "medium"
-        ? "quick preview recommended"
+        ? "review recommended"
         : "inspect before verifying";
   const reviewedHint = reviewed ? " · Edited in preview (not verified)" : "";
 

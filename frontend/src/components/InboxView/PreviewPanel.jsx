@@ -14,6 +14,7 @@ import {
   filterPositionListGridColumns,
   readPreviewShowAllColumnsPref,
   writePreviewShowAllColumnsPref,
+  sortVesselsBySourceOrder,
 } from "../../utils/standardColumns";
 
 function looksLikeHtml(s) {
@@ -111,6 +112,8 @@ export default function PreviewPanel({
   onVerifiedChange,
   onDataChange,
   onClose,
+  showVerify = false,
+  showEdit = false,
 }) {
   const [rawText, setRawText] = useState("");
   const [previewHtml, setPreviewHtml] = useState("");
@@ -194,10 +197,11 @@ export default function PreviewPanel({
         setIsVerified(Boolean(rawData.is_verified ?? initialVerified));
         const count = rawData.vessel_count ?? vesselData.length;
         setCanVerify(rawData.status === "done" && count >= 1);
-        const enriched = vesselData.map((v) => ({
+        const enriched = sortVesselsBySourceOrder(vesselData).map((v) => ({
           ...v,
           attachment_id: attachmentId,
           filename: rawData.filename || filename,
+          attachment_files: Array.isArray(rawData.files) ? rawData.files : [],
           signature_emails: rawData.signature_emails || "",
           signature_phones: rawData.signature_phones || "",
         }));
@@ -240,7 +244,7 @@ export default function PreviewPanel({
   }, [attachmentId, onVerifiedChange]);
 
   const handleCellEdit = useCallback((rowId, field, value) => {
-    if (isVerified || !editMode) return;
+    if ((isVerified && showVerify) || !editMode) return;
     if (field === "signature_emails" || field === "signature_phones") return;
     // Update the authoritative ref synchronously so a save fired on the same
     // Enter keystroke sees the latest values (state updates are async).
@@ -255,7 +259,7 @@ export default function PreviewPanel({
     nextDirty.add(rowId);
     dirtyRef.current = nextDirty;
     setDirtyIds(nextDirty);
-  }, [isVerified, editMode]);
+  }, [isVerified, editMode, showVerify]);
 
   const enterEditMode = useCallback(() => {
     editSnapshot.current = vesselsRef.current;
@@ -324,7 +328,7 @@ export default function PreviewPanel({
       {/* ── Header ── */}
       <div className="ipreview-head">
         <div className="ipreview-editbar">
-          {!isVerified && (
+          {showEdit && !isVerified && (
             editMode ? (
               <>
                 <button
@@ -367,12 +371,14 @@ export default function PreviewPanel({
               totalCount={columnDefs.length}
             />
           )}
-          <VerifyButton
-            verified={isVerified}
-            canVerify={canVerify}
-            busy={verifyBusy}
-            onToggle={() => handleSetVerified(!isVerified)}
-          />
+          {showVerify && (
+            <VerifyButton
+              verified={isVerified}
+              canVerify={canVerify}
+              busy={verifyBusy}
+              onToggle={() => handleSetVerified(!isVerified)}
+            />
+          )}
           {onClose && (
             <button type="button" className="ipreview-close" onClick={onClose} title="Close">
               ✕
@@ -385,7 +391,7 @@ export default function PreviewPanel({
       <div className="ipreview-grid-sec">
         <div className="ipreview-sec-h">
           <span>Extracted Vessels</span>
-          {editMode && <span className="ipreview-edit-hint">Double-click a cell to edit, then Save changes</span>}
+          {editMode && <span className="ipreview-edit-hint">Click a cell to edit, then Save changes</span>}
         </div>
         {error && <div className="ipreview-err">{error}</div>}
         <div className="ipreview-grid-wrap">
@@ -394,12 +400,11 @@ export default function PreviewPanel({
             gridColumns={previewGridColumns}
             onCellEdit={handleCellEdit}
             onEnterSave={handleSaveChanges}
-            readOnly={isVerified || !editMode}
+            readOnly={!editMode || (showVerify && isVerified)}
             showCheckboxes={false}
             hideGroupHeaders
             stretchToFill={!showAllColumns}
-            columnWidthScale={0.78}
-            highlightEmpty={!isVerified}
+            highlightEmpty
             isActive
             emptyMessage="No vessels extracted for this attachment. Use Retry Failed on the list to re-extract."
           />

@@ -1,68 +1,153 @@
 """
 Agent 2 — Parallel Extraction
-Calls the NVIDIA NIM LLM on every attachment simultaneously using
-asyncio.gather(). Each call extracts a JSON array of vessel objects
-from the raw .eml text and saves them to the vessels table.
+Calls Claude (Anthropic) on every broker email simultaneously using
+asyncio.gather(). Each call reads the email body text AND any attached
+images / PDF / spreadsheet / Word documents (vision), extracts a JSON array
+of vessel objects, and saves them to the vessels table.
 """
 import asyncio
 import json
 import re
 import logging
+from pathlib import Path
 from typing import Any
 
-from openai import AsyncOpenAI
 from database import supabase
 from config import settings
-from column_defs import resolve_vessel_company
+from column_defs import resolve_vessel_company, map_raw_to_standard, normalize_columns_in_email
 from sse_manager import sse_manager
+from llm import claude_client, files_to_content_blocks
+from verification import try_auto_verify_attachment
+from email_text import prepare_extraction_text
+
+# ── NVIDIA NIM (legacy — kept for reference, no longer used) ──────────────────
+# from openai import AsyncOpenAI
+# nvidia_client = AsyncOpenAI(
+#     base_url=settings.NVIDIA_API_BASE_URL,
+#     api_key=settings.NVIDIA_API_KEY,
+# )
 
 logger = logging.getLogger(__name__)
 
-nvidia_client = AsyncOpenAI(
-    base_url=settings.NVIDIA_API_BASE_URL,
-    api_key=settings.NVIDIA_API_KEY,
-)
+# Where ingestion stored the email's file attachments on disk.
+FILES_DIR = Path(__file__).resolve().parent.parent / "attachment_files"
 
 EXTRACTION_PROMPT = """\
-You are an expert shipbroking data extractor. Extract ALL vessel/ship position data from the text below.
+You are an expert shipbroking data extractor. Extract ALL vessel/ship position data from this email.
+The position list may appear in the TEXT below and/or inside ATTACHED images, PDFs, spreadsheets, or
+Word documents provided alongside this message — read EVERY source and merge them into one vessel list.
 
-CRITICAL RULES:
-1. Find EVERY vessel/ship mentioned — whether listed as "open positions", "available tonnage", "please propose cargo for", or any similar phrasing. All of these are vessel position records.
-2. Return ONLY a raw JSON array. No markdown code blocks, no explanation, no prefix or suffix text.
-3. Each element in the array represents ONE vessel.
-4. Each vessel object must contain ALL specifications mentioned for that vessel as key-value pairs.
-5. ALWAYS include a "region" key = the PRIMARY port or area where the vessel is currently open/available.
-   - Look for phrases like: "Open at MERAK", "open in SINGAPORE", "available at ECI", "position at FUJAIRAH",
-     "ETA SINGAPORE", "next open: HONG KONG", "open YANGON", "delivery CHENNAI", etc.
-   - Use the OPEN PORT/LOCATION, not the seeking/routing destination.
-   - Examples of good region values: "MERAK", "SINGAPORE", "ECI", "HONG KONG", "FUJAIRAH", "MUMBAI",
-     "YANGON", "CHIBA", "DURBAN", "GEELONG", "NHA BE", "TANJUNG UBAN", "SIKKA"
-   - If the vessel is open in multiple locations pick the first/primary one.
-   - If truly no open location is mentioned, set region to "UNSPECIFIED".
-   - NEVER leave region as null or empty string.
-6. ALWAYS include a "vessel_name" key with the ship's name (e.g. "M/T INCHEON CHEMI", "RAFFLES SAMURAI").
-7. All keys must be lowercase with underscores (e.g. "dwt", "built", "last_cargo", "open_date", "coating").
-8. Values must be strings. Use "UNKNOWN" only if a field is explicitly mentioned but its value is illegible.
-9. Do NOT include keys that are completely absent for a specific vessel.
-10. If the document contains absolutely no vessel/ship data (e.g. only contact information), return an empty array: []
-11. ALWAYS include a "company" key on each vessel = the broker/owner company sending that position (from letterhead, signature, or context near the vessel line). Example: "Arklink Shipping Limited". If the whole email is from one company, use the same value on every vessel.
-12. vessel_name codes like "GS/J19", "OT/MR" etc. are vessel identifiers — extract them as the vessel_name.
-13. Include a "direction" key = the vessel's preferred trading / voyage direction, ONLY if it is mentioned.
-   - Normalize the value to UPPERCASE using ONE of: ANY, NORTHBOUND, SOUTHBOUND, EASTBOUND, WESTBOUND, WCI, AG, WCI/AG, FAR EAST, SEA, WORLDWIDE.
-   - Map common synonyms: "NB" → NORTHBOUND, "SB" → SOUTHBOUND, "EB" → EASTBOUND, "WB" → WESTBOUND,
-     "any dir" / "any direction" / "looking for any direction cargo" → ANY, "feast" / "f.east" → FAR EAST,
-     "w.w" / "ww" / "trading worldwide" → WORLDWIDE, "wci" → WCI, "ag" / "arabian gulf" → AG.
-   - If both WCI and AG are mentioned together, use "WCI/AG".
-   - If no direction is mentioned for the vessel, OMIT the "direction" key entirely (do NOT guess).
+Return ONLY raw JSON (no markdown, no commentary) in this shape:
+{{
+  "columns_in_email": ["vessel_name", "dwt_sdwt", "region", ...],
+  "vessels": [ {{ one vessel object }}, ... ]
+}}
+
+columns_in_email — list every column KEY (from KEYS below) that the source email actually contains
+as a table header, image-table column, or repeated labelled field. Examples:
+- Hafnia image table with VESSEL/DWT/BUILT/IMO/COATING/OPEN/DATES/REMARKS → include those keys only;
+  do NOT include direction or cargo_history_combo if those columns are absent.
+- N.E. Shipping text with DIRECTION TO ANY BOUND lines → include direction.
+- Womar table with Last Cargo / Remarks column → include cargo_history_combo.
+Always include vessel_name when any vessel is listed. Include company when a owner/operator name
+appears in letterhead, title, or signature. If no vessel data at all: {{"columns_in_email": [], "vessels": []}}
+
+Each element in vessels is ONE vessel object.
+Use EXACTLY the key names listed below on each vessel. OMIT a key if that field is not present
+for the vessel (do NOT invent values). All values must be strings.
+
+KEYS:
+- "company": the OWNER / OPERATOR company that owns the tonnage — read it from the letterhead, logo,
+  title, table header or signature (e.g. "Hafnia Chemicals", "Ardmore Shipping", "Womar Logistics",
+  "Stolt Tankers", "N.E. Shipping Pte Ltd"). This is NOT the person forwarding the mail and NOT the
+  email subject. Use the SAME company for every vessel in this email.
+- "vessel_name": ship name incl. prefix/code (e.g. "M/T OCEAN JUPITER", "PVT Jupiter", "GS/J19").
+- "imo": IMO number (7 digits) if given; else the IMO type (e.g. "2", "2/3", "IMO II").
+  Put IMO values ONLY in this key — never in vessel_type.
+- "year_built": year or build date (e.g. "2010", "Feb 2008", "2015").
+- "dwt_sdwt": deadweight DWT, or "DWT / SDWT" when both are given (e.g. "8911", "19,993", "49").
+- "cbm": cubic capacity / M3 (e.g. "9117", "22,186").
+- "tank_coating": coating / tank material (e.g. "ML", "SS/ML", "EPOXY", "MARINE LINE", "SUS 316L", "Stainless Steel").
+- "vessel_type": physical ship category if stated (e.g. "Chemical", "MR", "Product Tanker").
+  NEVER put IMO numbers or IMO type codes (2, 2/3, IMO II) here — omit vessel_type instead.
+- "cargo_type": space / cargo info if stated (e.g. "Full Space", "Part Space").
+- "direction": preferred trading / voyage direction — ONLY if mentioned. Normalize to UPPERCASE, ONE of:
+  ANY, NORTHBOUND, SOUTHBOUND, EASTBOUND, WESTBOUND, WCI, AG, WCI/AG, FAR EAST, SEA, WORLDWIDE, WEST INDIA.
+  Map synonyms: "any bound"/"any dir"/"direction to any bound" → ANY, "to west india bound" → WEST INDIA,
+  "NB" → NORTHBOUND, "SB" → SOUTHBOUND, "feast" → FAR EAST, "ww" → WORLDWIDE, "arabian gulf" → AG.
+  OMIT if not mentioned.
+- "open_location": the PORT/place where the vessel is open/available (e.g. "SINGAPORE STRAIT", "Yosu",
+  "Haldia, India", "Port Klang", "USG"). Use the OPEN port, not the routing destination.
+- "opening_date": open date / laycan (e.g. "20-21 Mar 2026", "18 July", "03-05 Aug 2026").
+- "cargo_history_combo": last cargo / last 3 cargoes / cargo remarks (e.g. "Nap/Nap/ULSD", "5KT P/S Dir China", "NOBL").
+- "region": the broad trade ZONE — PREFER the section header the vessel is grouped under (e.g.
+  "NORTHEAST ASIA", "SOUTHEAST ASIA", "SEA / ECI", "FAR EAST", "MIDDLE EAST / WCI / EAFR",
+  "NORTH AMERICA", "CONT", "BSEA/MED/WAF"). If there is no section header, use the open port/area.
+  NEVER leave region empty — use "UNSPECIFIED" if truly unknown.
+- "flag": flag state (e.g. "KOREA").
+- "draft": draft in metres (e.g. "7.58").
+- "sire_date", "sire_location": SIRE info if present.
+- "cdi_date", "cdi_location": CDI info if present.
+- "remarks": short status / notes (e.g. "ON SUBS", "PPT", "REVERT", "Subs, In ballast").
+- "other_info": anything important not covered above.
+- "q88": "YES" if a Q88 is mentioned/available.
+- "status": e.g. "ON SUBS", "OPEN", "AVAILABLE" if stated.
+
+RULES:
+1. Find EVERY vessel — under "open positions", "available tonnage", "propose cargoes for", grouped tables, images, etc.
+2. When the list is inside an IMAGE, PDF or spreadsheet attachment, READ IT and extract every row.
+3. In grouped/section tables, the section title (region band) applies to ALL rows beneath it until the next title.
+4. Vessel-name codes like "GS/J19", "OT/MR" are the vessel_name.
+5. If there is genuinely no vessel data (only contacts), return {{"columns_in_email": [], "vessels": []}}.
+6. IGNORE crossed-out / strikethrough text everywhere (body, images, PDFs, spreadsheets). Lines or
+   values with a line through them — or wrapped in ~~tildes~~ — are cancelled/obsolete. Do NOT extract
+   dates, ports, directions, or any field from crossed-out text. Use only active (non-crossed-out) values.
+   If a field appears ONLY as crossed-out, OMIT that key for the vessel.
+7. Return vessels in the SAME ORDER they appear in the source (top-to-bottom, first listed = first in
+   the vessels array). Do not sort alphabetically.
 
 TEXT TO PARSE:
 {raw_text}
 
-JSON ARRAY OUTPUT:"""
+JSON OUTPUT:"""
 
 
-def _extract_json_array(text: str) -> list[dict]:
-    """Robustly pull a JSON array from potentially messy LLM output."""
+def _parse_extraction_response(text: str) -> tuple[list[str], list[dict]]:
+    """Parse LLM output — new {columns_in_email, vessels} object or legacy array."""
+    # Strip markdown code fences
+    text = re.sub(r"```(?:json)?\s*", "", text)
+    text = re.sub(r"```\s*$", "", text, flags=re.MULTILINE)
+    text = text.strip()
+
+    def _from_object(obj: Any) -> tuple[list[str], list[dict]] | None:
+        if not isinstance(obj, dict):
+            return None
+        cols_raw = obj.get("columns_in_email")
+        vessels_raw = obj.get("vessels")
+        if not isinstance(vessels_raw, list):
+            return None
+        cols = normalize_columns_in_email(cols_raw if isinstance(cols_raw, list) else None)
+        vessels = [v for v in vessels_raw if isinstance(v, dict)]
+        return cols, vessels
+
+    # Strategy 1: outermost JSON object
+    obj_match = re.search(r"\{.*\}", text, re.DOTALL)
+    if obj_match:
+        try:
+            parsed = json.loads(obj_match.group())
+            result = _from_object(parsed)
+            if result:
+                return result
+        except json.JSONDecodeError:
+            pass
+
+    # Strategy 2: legacy — plain vessel array
+    vessels = _extract_json_array_legacy(text)
+    return normalize_columns_in_email(None), vessels
+
+
+def _extract_json_array_legacy(text: str) -> list[dict]:
+    """Robustly pull a JSON array from potentially messy LLM output (legacy format)."""
     # Strip markdown code fences
     text = re.sub(r"```(?:json)?\s*", "", text)
     text = re.sub(r"```\s*$", "", text, flags=re.MULTILINE)
@@ -124,6 +209,31 @@ def _extract_json_array(text: str) -> list[dict]:
     return []
 
 
+def _load_file_blocks(attachment_id: str, files_meta: list[dict] | None) -> list[dict]:
+    """Read the email's stored file attachments from disk and convert them into
+    Claude content blocks (images/PDF natively, spreadsheets/Word as text)."""
+    if not files_meta:
+        return []
+    dest = FILES_DIR / attachment_id
+    file_dicts: list[dict] = []
+    for meta in files_meta:
+        stored = meta.get("stored")
+        if not stored:
+            continue
+        path = dest / stored
+        try:
+            content = path.read_bytes()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Could not read attachment file %s: %s", path, exc)
+            continue
+        file_dicts.append({
+            "filename": meta.get("name") or stored,
+            "content_type": meta.get("content_type") or "application/octet-stream",
+            "content": content,
+        })
+    return files_to_content_blocks(file_dicts)
+
+
 async def _extract_single_attachment(
     job_id: str,
     attachment_id: str,
@@ -132,8 +242,10 @@ async def _extract_single_attachment(
     mail_from: str,
     parent_sender: str,
     semaphore: asyncio.Semaphore,
+    files_meta: list[dict] | None = None,
+    preview_html: str | None = None,
 ) -> list[dict]:
-    """Run the LLM on one attachment and save the extracted vessels."""
+    """Run Claude on one broker email (body + attachments) and save vessels."""
     async with semaphore:
         # Mark as extracting
         supabase.table("attachments").update({"status": "extracting"}).eq("id", attachment_id).execute()
@@ -142,29 +254,44 @@ async def _extract_single_attachment(
             "filename": filename,
         })
 
+        # Build one user message: prompt text + any image/PDF/doc blocks.
+        file_blocks = _load_file_blocks(attachment_id, files_meta)
+        body_text = prepare_extraction_text(raw_text, preview_html)
+        user_content: list[dict] = [
+            {"type": "text", "text": EXTRACTION_PROMPT.format(raw_text=body_text)}
+        ]
+        user_content.extend(file_blocks)
+        if file_blocks:
+            logger.info("[Extract] %s — %d attachment block(s) added", filename, len(file_blocks))
+
         # Retry loop (up to 3 attempts)
         vessels_data: list[dict] = []
+        columns_in_email: list[str] = normalize_columns_in_email(None)
         last_error: str = ""
         for attempt in range(1, 4):
             try:
-                response = await nvidia_client.chat.completions.create(
-                    model=settings.NVIDIA_LLM_MODEL,
+                response = await claude_client.chat.completions.create(
+                    model=settings.CLAUDE_MODEL,
                     messages=[
                         {
                             "role": "system",
-                            "content": "You are a precise shipbroking data extractor. Output only valid JSON.",
+                            "content": (
+                                "You are a precise shipbroking data extractor. "
+                                "Output only valid JSON with columns_in_email and vessels. "
+                                "Never extract data from crossed-out or strikethrough text."
+                            ),
                         },
                         {
                             "role": "user",
-                            "content": EXTRACTION_PROMPT.format(raw_text=raw_text[:12000]),
+                            "content": user_content,
                         },
                     ],
                     temperature=0.05,
                     max_tokens=8192,
-                    timeout=120,  # prevent a hung request from stalling the whole batch
+                    timeout=180,  # vision/PDF calls can be slower
                 )
                 content = response.choices[0].message.content or ""
-                vessels_data = _extract_json_array(content)
+                columns_in_email, vessels_data = _parse_extraction_response(content)
                 break  # Success
 
             except Exception as exc:
@@ -185,8 +312,11 @@ async def _extract_single_attachment(
             })
             return []
 
-        # Persist each vessel as a separate row
-        for vessel in vessels_data:
+        # Replace prior rows so re-extraction keeps a clean ordered list.
+        supabase.table("vessels").delete().eq("attachment_id", attachment_id).execute()
+
+        # Persist each vessel as a separate row (stored in STANDARD schema).
+        for row_order, vessel in enumerate(vessels_data):
             region = vessel.pop("region", None)
             llm_company = str(vessel.pop("company", "") or vessel.pop("Company", "") or "").strip()
             # Normalise keys: lowercase + underscores
@@ -199,18 +329,33 @@ async def _extract_single_attachment(
                 vessel_name=normalised.get("vessel_name") or "",
                 llm_company=llm_company,
             )
+            # Map raw LLM keys → the fixed standard columns the grid reads, and
+            # normalise the direction value. Done at store time so the grid is
+            # correct immediately after a fetch (no server restart needed).
+            standardized, reg = map_raw_to_standard(normalised, region)
             supabase.table("vessels").insert({
                 "attachment_id": attachment_id,
-                "dynamic_data": normalised,
-                "region": region,
+                "dynamic_data": standardized,
+                "region": reg,
+                "row_order": row_order,
             }).execute()
 
-        supabase.table("attachments").update({"status": "done"}).eq("id", attachment_id).execute()
+        supabase.table("attachments").update({
+            "status": "done",
+            "columns_in_email": columns_in_email,
+        }).eq("id", attachment_id).execute()
         await sse_manager.send(job_id, "extraction_done", {
             "attachment_id": attachment_id,
             "filename": filename,
             "vessel_count": len(vessels_data),
+            "columns_in_email": columns_in_email,
         })
+
+        if try_auto_verify_attachment(supabase, attachment_id):
+            await sse_manager.send(job_id, "attachment_auto_verified", {
+                "attachment_id": attachment_id,
+                "filename": filename,
+            })
 
         return vessels_data
 
@@ -220,10 +365,13 @@ async def run_extraction(job_id: str, attachment_ids: list[str]) -> int:
     Run extraction on all attachments in parallel (max 10 concurrent).
     Returns total number of vessels extracted.
     """
+    if not attachment_ids:
+        return 0
+
     # Fetch attachment metadata
     rows = (
         supabase.table("attachments")
-        .select("id, filename, raw_text, mail_from, parent_email_id")
+        .select("id, filename, raw_text, preview_html, mail_from, parent_email_id, files")
         .in_("id", attachment_ids)
         .execute()
     )
@@ -252,6 +400,8 @@ async def run_extraction(job_id: str, attachment_ids: list[str]) -> int:
             att.get("mail_from") or "",
             parent_sender.get(att.get("parent_email_id") or "", ""),
             semaphore,
+            att.get("files") or [],
+            att.get("preview_html") or "",
         )
         for att in attachments
     ]

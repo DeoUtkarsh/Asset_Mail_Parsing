@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 class Phase1State(TypedDict):
     job_id: str
-    email_id: str
+    email_ids: list[str]
     attachment_ids: list[str]
     attachment_count: int
     superset_columns: list[str]
@@ -46,7 +46,7 @@ async def ingestion_node(state: Phase1State) -> Phase1State:
         result = await run_ingestion(state["job_id"])
         return {
             **state,
-            "email_id": result["email_id"],
+            "email_ids": result["email_ids"],
             "attachment_ids": result["attachment_ids"],
             "attachment_count": result["attachment_count"],
         }
@@ -56,6 +56,9 @@ async def ingestion_node(state: Phase1State) -> Phase1State:
 
 async def extraction_node(state: Phase1State) -> Phase1State:
     if state.get("error"):
+        return state
+    if not state.get("attachment_ids"):
+        logger.info("[Phase1] No new attachments — skipping extraction.")
         return state
     try:
         await run_extraction(state["job_id"], state["attachment_ids"])
@@ -67,9 +70,19 @@ async def extraction_node(state: Phase1State) -> Phase1State:
 async def normalization_node(state: Phase1State) -> Phase1State:
     if state.get("error"):
         return state
+    if not state.get("email_ids"):
+        logger.info("[Phase1] No new emails — skipping normalization.")
+        return state
     try:
-        superset = await run_normalization(state["job_id"], state["email_id"])
-        return {**state, "superset_columns": superset}
+        columns: list[str] = []
+        seen: set[str] = set()
+        for email_id in state.get("email_ids", []):
+            superset = await run_normalization(state["job_id"], email_id)
+            for col in superset:
+                if col not in seen:
+                    seen.add(col)
+                    columns.append(col)
+        return {**state, "superset_columns": columns}
     except Exception as exc:
         return {**state, "error": str(exc)}
 

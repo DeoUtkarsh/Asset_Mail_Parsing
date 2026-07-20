@@ -17,9 +17,11 @@ import re
 from datetime import datetime
 from typing import Any
 
+from column_defs import _looks_like_imo_type
+
 logger = logging.getLogger(__name__)
 
-# Columns stored in vessel_library (imo_type is manual-entry, blank on auto-fill).
+# Columns stored in vessel_library.
 LIBRARY_FIELDS = [
     "vessel_name",
     "imo_no",
@@ -66,16 +68,28 @@ def match_key(vessel_name: str, imo_no: str) -> str:
     return f"name:{norm}" if norm else ""
 
 
+def _imo_type_from_dynamic(dd: dict) -> str:
+    for k in ("imo_type", "imo", "vessel_type"):
+        v = dd.get(k)
+        if _looks_like_imo_type(v):
+            return _clean(v)
+    return ""
+
+
 def _particulars_from_dynamic(dd: dict) -> dict[str, str]:
     """Pull the library fields out of a vessels.dynamic_data blob."""
+    imo_type = _imo_type_from_dynamic(dd)
+    vessel_type = _clean(dd.get("vessel_type"))
+    if _looks_like_imo_type(vessel_type):
+        vessel_type = ""
     return {
         "vessel_name": _clean(dd.get("vessel_name")),
         "imo_no": _imo_number(dd),
-        "imo_type": "",  # manual entry only
+        "imo_type": imo_type,
         "dwt": _clean(dd.get("dwt_sdwt")),
         "year_built": _clean(dd.get("year_built")),
         "tank_coating": _clean(dd.get("tank_coating")),
-        "vessel_type": _clean(dd.get("vessel_type")),
+        "vessel_type": vessel_type,
     }
 
 

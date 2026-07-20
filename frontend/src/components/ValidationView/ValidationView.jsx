@@ -17,6 +17,7 @@ import {
   DRAFT_LOCKED_COLUMN_IDS,
   DRAFT_NON_SELECTABLE_COLUMN_IDS,
   isDraftColumnSelectable,
+  sortVesselsBySourceOrder,
 } from "../../utils/standardColumns";
 
 const RECEIVED_COL = { id: "received", header: "RECEIVED", read_only: true, storage: "derived" };
@@ -46,8 +47,12 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
   const [regionFilter, setRegionFilter] = useState("");
   const [selectedColumnIds, setSelectedColumnIds] = useState(() => defaultDraftSelectedColumnIds());
   const [lastDraftSignature, setLastDraftSignature] = useState(null);
+  const [editMode, setEditMode] = useState(false);
+  const [editSaving, setEditSaving] = useState(false);
   const savedTimer                  = useRef(null);
   const draftSourceRef              = useRef({ vessels: [], columns: [] });
+  const dirtyRef                    = useRef(new Set());
+  const editSnapshot                = useRef(null);
 
   const vesselsRef = useRef(vessels);
   useEffect(() => { vesselsRef.current = vessels; }, [vessels]);
@@ -61,7 +66,7 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
         getAllVesselsCombined(),
         getColumnDefinitions(),
       ]);
-      setVessels(vesselData);
+      setVessels(sortVesselsBySourceOrder(vesselData));
       setColumnDefs(colData.columns || []);
       setSelectedColumnIds(defaultDraftSelectedColumnIds(colData.columns || []));
     } catch (e) {
@@ -102,21 +107,60 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
     savedTimer.current = setTimeout(() => setSavedMsg(false), 2000);
   };
 
-  const handleCellEdit = useCallback(async (rowId, field, value) => {
+  const handleCellEdit = useCallback((rowId, field, value) => {
+    if (!editMode) return;
     if (field === "signature_emails" || field === "signature_phones") return;
-    setVessels((prev) =>
-      prev.map((v) => {
-        if (v.id !== rowId) return v;
-        if (field === "__region__") return { ...v, region: value };
-        return { ...v, dynamic_data: { ...v.dynamic_data, [field]: value } };
-      })
-    );
-    const vessel = vesselsRef.current.find((v) => v.id === rowId);
-    if (!vessel) return;
-    const savePromise = field === "__region__"
-      ? updateVessel(rowId, vessel.dynamic_data, value)
-      : updateVessel(rowId, { ...vessel.dynamic_data, [field]: value }, vessel.region);
-    savePromise.then(flashSaved).catch((e) => setError("Failed to save: " + e.message));
+    const next = vesselsRef.current.map((v) => {
+      if (v.id !== rowId) return v;
+      if (field === "__region__") return { ...v, region: value };
+      return { ...v, dynamic_data: { ...v.dynamic_data, [field]: value } };
+    });
+    vesselsRef.current = next;
+    setVessels(next);
+    dirtyRef.current.add(rowId);
+  }, [editMode]);
+
+  const enterEditMode = useCallback(() => {
+    editSnapshot.current = vesselsRef.current;
+    dirtyRef.current = new Set();
+    setError("");
+    setEditMode(true);
+  }, []);
+
+  const cancelEditMode = useCallback(() => {
+    if (editSnapshot.current) {
+      vesselsRef.current = editSnapshot.current;
+      setVessels(editSnapshot.current);
+    }
+    dirtyRef.current = new Set();
+    setEditMode(false);
+  }, []);
+
+  const handleSaveEdits = useCallback(async () => {
+    const ids = [...dirtyRef.current];
+    if (ids.length === 0) {
+      setEditMode(false);
+      return;
+    }
+    setEditSaving(true);
+    setError("");
+    try {
+      await Promise.all(
+        ids.map((id) => {
+          const v = vesselsRef.current.find((x) => x.id === id);
+          if (!v) return null;
+          return updateVessel(id, v.dynamic_data, v.region);
+        })
+      );
+      dirtyRef.current = new Set();
+      setEditMode(false);
+      editSnapshot.current = null;
+      flashSaved();
+    } catch (e) {
+      setError("Failed to save: " + e.message);
+    } finally {
+      setEditSaving(false);
+    }
   }, []);
 
   const handleAddPosition = useCallback(async (form) => {
@@ -347,6 +391,38 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
         <div className="vgrid-actions">
           <span className={`vgrid-saved ${savedMsg ? "show" : ""}`}>✓ Saved</span>
 
+          {!loading && vessels.length > 0 && (
+            editMode ? (
+              <>
+                <button
+                  type="button"
+                  className="btn-save-changes"
+                  onClick={handleSaveEdits}
+                  disabled={editSaving}
+                >
+                  {editSaving ? <><span className="spin-ring" /> Saving…</> : "Save changes"}
+                </button>
+                <button
+                  type="button"
+                  className="btn-cancel-edit"
+                  onClick={cancelEditMode}
+                  disabled={editSaving}
+                >
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                className="btn-edit"
+                onClick={enterEditMode}
+                title="Edit vessel fields"
+              >
+                ✎ Edit
+              </button>
+            )
+          )}
+
           <button
             type="button"
             className="tb-btn tb-btn-primary tb-btn-sm"
@@ -492,7 +568,9 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
             data={visibleVessels}
             gridColumns={gridColumns}
             onCellEdit={handleCellEdit}
-            readOnly
+            onEnterSave={handleSaveEdits}
+            readOnly={!editMode}
+            highlightEmpty={!editMode}
             showCheckboxes
             selectedIds={selectedIds}
             onToggleSelect={handleToggleSelect}

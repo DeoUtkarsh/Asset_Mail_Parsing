@@ -1,18 +1,22 @@
 """
 Agent 1 — Ingestion
-Connects to Gmail, finds the target email, saves parent_email +
-attachment rows to Supabase, and returns the IDs for Agent 2.
+Connects to the broker mailbox, fetches every incoming broker email
+(skipping automated senders), and — for each NEW email (unseen Message-ID) —
+saves a parent_email + one attachment row (its body + files). Returns the IDs
+for Agent 2. Already-processed emails are skipped (no re-billing of the LLM).
 """
 import asyncio
+import base64
 import logging
 import re
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
 from config import settings
 from database import supabase
-from imap_client import fetch_target_email
+from imap_client import fetch_broker_emails
 from sse_manager import sse_manager
 
 logger = logging.getLogger(__name__)
@@ -45,93 +49,134 @@ def _save_files(att_id: str, files: list[dict]) -> list[dict]:
     return meta
 
 
+def _build_preview_images(files: list[dict]) -> list[dict]:
+    """Image attachments → [{name, data_url}] for the inline formatted preview."""
+    out: list[dict] = []
+    for f in files or []:
+        ct = (f.get("content_type") or "").lower()
+        name = f.get("filename") or ""
+        is_img = ct.startswith("image/") or name.lower().endswith(
+            (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp")
+        )
+        content = f.get("content")
+        if not is_img or not content:
+            continue
+        media = ct if ct.startswith("image/") else "image/png"
+        try:
+            b64 = base64.standard_b64encode(content).decode("ascii")
+        except Exception:  # noqa: BLE001
+            continue
+        out.append({"name": name, "data_url": f"data:{media};base64,{b64}"})
+    return out
+
+
+def _parse_date(raw: str) -> str:
+    try:
+        dt = parsedate_to_datetime(raw)
+        if dt is not None:
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.isoformat()
+    except (TypeError, ValueError, IndexError):
+        pass
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _existing_message_ids(message_ids: list[str]) -> set[str]:
+    """Return the subset of message_ids already present in parent_emails."""
+    if not message_ids:
+        return set()
+    rows = (
+        supabase.table("parent_emails")
+        .select("message_id")
+        .in_("message_id", message_ids)
+        .execute()
+    ).data or []
+    return {r.get("message_id") for r in rows if r.get("message_id")}
+
+
 async def run_ingestion(job_id: str) -> dict[str, Any]:
     """
+    Fetch all broker emails and ingest only the NEW ones.
+
     Returns:
         {
-            "email_id": str,
-            "attachment_ids": [str, ...],
+            "email_ids": [str, ...],       # parent_email ids created this run
+            "attachment_ids": [str, ...],  # one per new email
             "attachment_count": int,
+            "new_count": int,
+            "total_found": int,
         }
-    Raises RuntimeError if no matching email is found.
     """
-    await sse_manager.send(job_id, "ingestion_started", {"message": "Connecting to Gmail…"})
+    await sse_manager.send(job_id, "ingestion_started",
+                           {"message": "Connecting to mailbox…"})
 
     # Run the blocking IMAP call in a thread so we don't block the event loop
-    email_data = await asyncio.to_thread(fetch_target_email)
+    all_emails = await asyncio.to_thread(fetch_broker_emails)
+    total_found = len(all_emails)
 
-    if email_data is None:
-        await sse_manager.send(job_id, "ingestion_error", {"message": "No matching email found in inbox."})
-        raise RuntimeError("No matching email found in inbox.")
+    # ── Only-new: drop emails whose Message-ID already exists ────────────
+    seen = _existing_message_ids([e["message_id"] for e in all_emails])
+    new_emails = [e for e in all_emails if e["message_id"] not in seen]
 
-    # ── Upsert parent_email (deduplicate by message_id) ──────────────────
-    existing = (
-        supabase.table("parent_emails")
-        .select("id")
-        .eq("message_id", email_data["message_id"])
-        .execute()
-    )
+    # Deterministic order (oldest first) so cards read naturally, then cap.
+    new_emails.reverse()
+    limit = settings.MAX_ATTACHMENTS
+    if limit and limit > 0 and len(new_emails) > limit:
+        logger.info("Capping to %d of %d new emails (MAX_ATTACHMENTS=%d)",
+                    limit, len(new_emails), limit)
+        new_emails = new_emails[:limit]
 
-    if existing.data:
-        email_id: str = existing.data[0]["id"]
-        # Reset status so Phase 1 reruns cleanly
-        supabase.table("parent_emails").update({"status": "extracting"}).eq("id", email_id).execute()
-        # Remove old attachments + cascaded vessels so we start fresh
-        supabase.table("attachments").delete().eq("parent_email_id", email_id).execute()
-    else:
-        # Parse date
-        try:
-            date_received = datetime.strptime(
-                email_data["date"], "%a, %d %b %Y %H:%M:%S %z"
-            ).isoformat()
-        except (ValueError, TypeError):
-            date_received = datetime.now(timezone.utc).isoformat()
+    logger.info("Ingestion: %d total, %d already processed, %d new to ingest",
+                total_found, len(seen), len(new_emails))
 
+    await sse_manager.send(job_id, "ingestion_summary", {
+        "total_found": total_found,
+        "already_processed": len(seen),
+        "new_count": len(new_emails),
+    })
+
+    email_ids: list[str] = []
+    attachment_ids: list[str] = []
+
+    for em in new_emails:
         inserted = (
             supabase.table("parent_emails")
             .insert({
-                "subject": email_data["subject"],
-                "sender": email_data["sender"],
-                "date_received": date_received,
+                "subject": em["subject"],
+                "sender": em["sender"],
+                "date_received": _parse_date(em.get("date", "")),
                 "status": "extracting",
-                "message_id": email_data["message_id"],
+                "message_id": em["message_id"],
             })
             .execute()
         )
-        email_id = inserted.data[0]["id"]
+        email_id: str = inserted.data[0]["id"]
+        email_ids.append(email_id)
 
-    # ── Apply attachment limit ────────────────────────────────────────────
-    all_attachments = email_data["attachments"]
-    limit = settings.MAX_ATTACHMENTS
-    if limit and limit > 0:
-        attachments_to_process = all_attachments[:limit]
-        if len(all_attachments) > limit:
-            logger.info(
-                "Limiting to %d of %d attachments (MAX_ATTACHMENTS=%d)",
-                limit, len(all_attachments), limit,
-            )
-    else:
-        attachments_to_process = all_attachments
+        await sse_manager.send(job_id, "email_saved", {
+            "email_id": email_id,
+            "subject": em["subject"],
+        })
 
-    await sse_manager.send(job_id, "email_saved", {
-        "email_id": email_id,
-        "attachment_count": len(attachments_to_process),
-        "total_found": len(all_attachments),
-        "message": f"Processing {len(attachments_to_process)} of {len(all_attachments)} .eml attachments.",
-    })
+        # Original message body, for the formatted (Outlook-style) preview pane.
+        preview_html = em.get("html") or None
+        preview_plain = em.get("raw_text") or None
+        preview_images = _build_preview_images(em.get("files", []))
 
-    # ── Insert attachment rows ────────────────────────────────────────────
-    attachment_ids: list[str] = []
-    for att in attachments_to_process:
+        # One attachment per broker email = its body + files.
         result = (
             supabase.table("attachments")
             .insert({
                 "parent_email_id": email_id,
-                "filename": att["filename"],
-                "raw_text": att["raw_text"],
-                "mail_from": att.get("mail_from", ""),
-                "mail_subject": att.get("mail_subject", ""),
-                "mail_date": att.get("mail_date", ""),
+                "filename": em["filename"],
+                "raw_text": em["raw_text"],
+                "mail_from": em.get("sender", ""),
+                "mail_subject": em.get("subject", ""),
+                "mail_date": em.get("date", ""),
+                "preview_html": preview_html,
+                "preview_plain": preview_plain,
+                "preview_images": preview_images or None,
                 "status": "pending",
             })
             .execute()
@@ -139,19 +184,21 @@ async def run_ingestion(job_id: str) -> dict[str, Any]:
         att_id: str = result.data[0]["id"]
         attachment_ids.append(att_id)
 
-        # Persist the email's real file attachments (PDFs, images, xlsx…) to disk
-        file_meta = _save_files(att_id, att.get("files", []))
+        # Persist real file attachments (images / PDF / xlsx / docx) to disk.
+        file_meta = _save_files(att_id, em.get("files", []))
         if file_meta:
             supabase.table("attachments").update({"files": file_meta}).eq("id", att_id).execute()
 
         await sse_manager.send(job_id, "attachment_saved", {
             "email_id": email_id,
             "attachment_id": att_id,
-            "filename": att["filename"],
+            "filename": em["filename"],
         })
 
     return {
-        "email_id": email_id,
+        "email_ids": email_ids,
         "attachment_ids": attachment_ids,
         "attachment_count": len(attachment_ids),
+        "new_count": len(new_emails),
+        "total_found": total_found,
     }

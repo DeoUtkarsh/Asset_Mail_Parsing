@@ -9,18 +9,20 @@ import asyncio
 import json
 import logging
 import re
-from openai import AsyncOpenAI
 
 from config import settings
 from database import supabase
 from sse_manager import sse_manager
+from llm import claude_client
 
 logger = logging.getLogger(__name__)
 
-nvidia_client = AsyncOpenAI(
-    base_url=settings.NVIDIA_API_BASE_URL,
-    api_key=settings.NVIDIA_API_KEY,
-)
+# ── NVIDIA NIM (legacy — kept for reference, no longer used) ──────────────────
+# from openai import AsyncOpenAI
+# nvidia_client = AsyncOpenAI(
+#     base_url=settings.NVIDIA_API_BASE_URL,
+#     api_key=settings.NVIDIA_API_KEY,
+# )
 
 SIGNATURE_PROMPT = """\
 You are extracting CONTACT INFORMATION from the tail of a shipbroking email.
@@ -259,8 +261,8 @@ async def llm_extract_signature_chunk(chunk: str) -> dict[str, str]:
     if not chunk or len(chunk) < 20:
         return {"emails": "", "phones": ""}
     try:
-        resp = await nvidia_client.chat.completions.create(
-            model=settings.NVIDIA_LLM_MODEL,
+        resp = await claude_client.chat.completions.create(
+            model=settings.CLAUDE_MODEL,
             messages=[
                 {
                     "role": "system",

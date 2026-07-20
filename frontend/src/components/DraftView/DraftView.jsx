@@ -16,8 +16,10 @@ const ZONE_COLORS = {
   "FAR EAST":       "#f59e0b",
   "INDIA":          "#10b981",
   "AG/MIDDLE EAST": "#8b5cf6",
+  "MED/BLACK SEA":  "#14b8a6",
   "EUROPE":         "#3b82f6",
   "AFRICA":         "#ef4444",
+  "AMERICAS":       "#f97316",
   "OCEANIA":        "#ec4899",
   "UNSPECIFIED":    "#94a3b8",
 };

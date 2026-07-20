@@ -11,19 +11,20 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
-from openai import AsyncOpenAI
-
 from config import settings
 from database import supabase
+from llm import claude_client
 from agents.drafter import REGION_TO_ZONE, ZONE_ORDER
-from agents.confidence_score import compute_attachment_confidence
+from agents.confidence_score import attachment_needs_review, compute_attachment_confidence
 
 logger = logging.getLogger(__name__)
 
-nvidia_client = AsyncOpenAI(
-    base_url=settings.NVIDIA_API_BASE_URL,
-    api_key=settings.NVIDIA_API_KEY,
-)
+# ── NVIDIA NIM (legacy — kept for reference, no longer used) ──────────────────
+# from openai import AsyncOpenAI
+# nvidia_client = AsyncOpenAI(
+#     base_url=settings.NVIDIA_API_BASE_URL,
+#     api_key=settings.NVIDIA_API_KEY,
+# )
 
 ZONE_LABELS: dict[str, str] = {
     "STRAITS/SEA": "Straits / SEA",
@@ -353,9 +354,12 @@ async def summarize_home() -> dict[str, Any]:
     """Home dashboard: pipeline aggregates from DB + short AI narrative."""
     from collections import defaultdict
 
+    MANUAL_ENTRIES_MESSAGE_ID = "manual-entries"
+
     emails = (
-        supabase.table("parent_emails").select("id, status").execute()
+        supabase.table("parent_emails").select("id, status, message_id").execute()
     ).data or []
+    emails = [e for e in emails if e.get("message_id") != MANUAL_ENTRIES_MESSAGE_ID]
     email_ids = [e["id"] for e in emails]
     ready_ids = {
         e["id"] for e in emails
@@ -366,7 +370,7 @@ async def summarize_home() -> dict[str, Any]:
     if email_ids:
         attachments = (
             supabase.table("attachments")
-            .select("id, parent_email_id, status, is_verified, manually_reviewed, raw_text")
+            .select("id, parent_email_id, status, is_verified, manually_reviewed, raw_text, columns_in_email")
             .in_("parent_email_id", email_ids)
             .execute()
         ).data or []
@@ -397,10 +401,13 @@ async def summarize_home() -> dict[str, Any]:
             raw_text=a.get("raw_text"),
             retry_suggested=False,
             manually_reviewed=bool(a.get("manually_reviewed")),
+            columns_in_email=a.get("columns_in_email"),
         )
-        tier = conf.get("confidence_tier")
-        st = (a.get("status") or "").lower()
-        if tier in ("medium", "low") or st == "error":
+        if attachment_needs_review(
+            status=a.get("status") or "",
+            confidence_tier=conf.get("confidence_tier"),
+            max_unfilled=conf.get("max_unfilled") or 0,
+        ):
             review_count += 1
 
     verified_att_ids = {
@@ -584,8 +591,8 @@ async def _generate_narrative(brief: dict[str, Any], context: str) -> str:
     system = system_prompts.get(context, system_prompts["vessels"])
     fallback = _fallback_narrative(brief, context)
     try:
-        resp = await nvidia_client.chat.completions.create(
-            model=settings.NVIDIA_LLM_MODEL,
+        resp = await claude_client.chat.completions.create(
+            model=settings.CLAUDE_MODEL,
             messages=[
                 {"role": "system", "content": system},
                 {

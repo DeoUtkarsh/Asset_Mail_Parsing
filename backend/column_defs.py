@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import re
+import json
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -82,6 +83,38 @@ DEFAULT_COLUMN_DEFINITIONS: list[dict[str, Any]] = [
     {"id": "attachments", "header": "ATTACHMENTS", "display_order": 26, "read_only": True, "storage": "derived"},
     {"id": "status", "header": "STATUS", "display_order": 27, "read_only": False, "storage": "dynamic_data"},
 ]
+
+# Default visible columns used for attachment confidence (matches POSITION_LIST_SUMMARY
+# in frontend minus SR. NO). Score ≈ % of applicable columns filled per vessel.
+CONFIDENCE_DEFAULT_COLUMNS: tuple[str, ...] = (
+    "imo",
+    "company",
+    "vessel_name",
+    "region",
+    "dwt_sdwt",
+    "year_built",
+    "tank_coating",
+    "open_location",
+    "opening_date",
+    "direction",
+    "cargo_history_combo",
+)
+
+# Max applicable columns unfilled before forcing Need to Review.
+CONFIDENCE_MAX_UNFILLED = 5
+
+
+def normalize_columns_in_email(raw: list | None) -> list[str]:
+    """Filter/normalize LLM columns_in_email; fall back to all defaults when absent."""
+    allowed = set(CONFIDENCE_DEFAULT_COLUMNS)
+    if not raw:
+        return list(CONFIDENCE_DEFAULT_COLUMNS)
+    out: list[str] = []
+    for item in raw:
+        key = str(item or "").strip().lower().replace(" ", "_")
+        if key in allowed and key not in out:
+            out.append(key)
+    return out if out else list(CONFIDENCE_DEFAULT_COLUMNS)
 
 IMO_NUMBER_RE = re.compile(r"^\d{7}$")
 IMO_EMBEDDED_RE = re.compile(r"\b(\d{7})\b")
@@ -171,13 +204,14 @@ def resolve_vessel_company(
     llm_company: str = "",
     broker_companies: list[str] | None = None,
 ) -> str:
-    """Best-effort broker/owner company label for one vessel row."""
+    """Best-effort owner/operator company label for one vessel row.
+
+    NOTE: in the direct-mail (production) pipeline `filename` is the email
+    SUBJECT line — which is NOT the company — so it is only used as an absolute
+    last resort and only if it actually looks like a company name.
+    """
     if _has_value(llm_company) and not is_generic_company_name(llm_company):
         return str(llm_company).strip()
-
-    from_file = company_name_from_filename(filename)
-    if from_file and not is_generic_company_name(from_file):
-        return from_file
 
     if vessel_name and broker_companies:
         matched = _match_company_from_vessel_name(vessel_name, broker_companies)
@@ -190,10 +224,21 @@ def resolve_vessel_company(
 
     for hdr in (mail_from, parent_sender):
         display = _parse_mail_display_name(hdr)
-        if display:
+        if display and not is_generic_company_name(display):
             return display
 
-    return from_file
+    # Last resort: only if the source label reads like a real company, never a
+    # position-list subject line ("... Position List", "Open Position", etc.).
+    from_file = company_name_from_filename(filename)
+    if (
+        from_file
+        and not is_generic_company_name(from_file)
+        and (_COMPANY_LINE_RE.search(from_file) or _COMPANY_HINT_RE.search(from_file))
+        and not re.search(r"\b(position|positions|open|list|tonnage)\b", from_file, re.I)
+    ):
+        return from_file
+
+    return ""
 
 
 def _has_value(val: Any) -> bool:
@@ -239,24 +284,46 @@ def _looks_like_imo_type(val: Any) -> bool:
     norm = re.sub(r"\s+", "", s.lower())
     if re.match(r"^imo[\d/]+", norm):
         return True
-    if re.match(r"^\d(/\d)?$", norm):
+    if re.match(r"^\d+(/\d+)?$", norm):
         return True
     if re.match(r"^(i{1,3}|ii|iii|iv)(/(i{1,3}|ii|iii|iv))?$", norm):
         return True
     return False
 
 
-def _resolve_vessel_type(dd: dict) -> str:
-    if _has_value(dd.get("vessel_type")):
-        return str(dd["vessel_type"]).strip()
-    primary = _first_hit(dd, ["vessel_type", "type", "imo_type", "tank_type"])
-    if primary:
-        return primary
-    for k in ("imo", "imo_number"):
+def _resolve_imo_for_grid(dd: dict) -> str:
+    """IMO column: 7-digit number, or IMO type (2, 2/3, IMO II) when no number."""
+    num = _extract_imo_number(dd)
+    if num:
+        return num
+    for k in ("imo", "imo_type", "vessel_type"):
         v = dd.get(k)
         if _looks_like_imo_type(v):
             return str(v).strip()
     return ""
+
+
+def _resolve_vessel_type(dd: dict) -> str:
+    if _has_value(dd.get("vessel_type")):
+        vt = str(dd["vessel_type"]).strip()
+        if _looks_like_imo_type(vt):
+            return ""
+        return vt
+    primary = _first_hit(dd, ["vessel_type", "type", "tank_type"])
+    if primary and not _looks_like_imo_type(primary):
+        return primary
+    return ""
+
+
+def _normalize_imo_and_vessel_type(out: dict[str, str]) -> None:
+    """Keep IMO type codes out of vessel_type (common LLM / legacy mis-map)."""
+    imo = (out.get("imo") or "").strip()
+    vt = (out.get("vessel_type") or "").strip()
+    if _looks_like_imo_type(vt) and not _has_value(imo):
+        out["imo"] = vt
+        out["vessel_type"] = ""
+    elif _looks_like_imo_type(vt) or (vt and imo and vt.lower() == imo.lower()):
+        out["vessel_type"] = ""
 
 
 def _resolve_open_fields(dd: dict) -> tuple[str, str]:
@@ -265,7 +332,7 @@ def _resolve_open_fields(dd: dict) -> tuple[str, str]:
     else:
         open_used = None
         loc = ""
-        for k in ("port_name", "position", "area", "open"):
+        for k in ("port_name", "port", "position", "area", "open"):
             v = dd.get(k)
             if _has_value(v):
                 loc = str(v).strip()
@@ -312,7 +379,7 @@ def _resolve_cargo_history(dd: dict) -> str:
 # ── Trading direction ────────────────────────────────────────────────────────
 _DIRECTION_CANON = {
     "ANY", "NORTHBOUND", "SOUTHBOUND", "EASTBOUND", "WESTBOUND",
-    "WCI", "AG", "WCI/AG", "FAR EAST", "SEA", "WORLDWIDE",
+    "WCI", "AG", "WCI/AG", "FAR EAST", "SEA", "WORLDWIDE", "WEST INDIA",
 }
 
 # Full normaliser for an explicit direction phrase (short, dedicated field).
@@ -324,6 +391,7 @@ _DIRECTION_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"west\s*bound|westbound|\bw\.?b\.?\b", re.I), "WESTBOUND"),
     (re.compile(r"far\s*east|f\.?\s*east|feast", re.I), "FAR EAST"),
     (re.compile(r"world\s*wide|worldwide|\bw\.?w\.?\b|trading\s+worldwide", re.I), "WORLDWIDE"),
+    (re.compile(r"west\s+india", re.I), "WEST INDIA"),
     (re.compile(r"wci|west\s+coast\s+india", re.I), "WCI"),
     (re.compile(r"\bag\b|arabian\s+gulf", re.I), "AG"),
     (re.compile(r"south\s*east\s*asia|\bsea\b", re.I), "SEA"),
@@ -396,28 +464,29 @@ def map_raw_to_standard(dd: dict | None, region: str | None = None) -> tuple[dic
 
     if not needs_migration(src):
         out = {k: str(src.get(k, "") or "").strip() for k in STANDARD_DYNAMIC_KEYS}
+        _normalize_imo_and_vessel_type(out)
         reg = (region or _first_hit(src, ["region"]) or "").strip()
         return out, reg
 
     loc, date = _resolve_open_fields(src)
     out: dict[str, str] = {
         "company": _first_hit(src, ["company"]),
-        "imo": _extract_imo_number(src),
+        "imo": _resolve_imo_for_grid(src),
         "vessel_name": _first_hit(src, ["vessel_name", "name"]),
         "call_sign": _first_hit(src, ["call_sign"]),
-        "year_built": _first_hit(src, ["year_built", "built", "yard_built", "when"]),
+        "year_built": _first_hit(src, ["year_built", "built", "yard_built", "year", "when"]),
         "vessel_type": _resolve_vessel_type(src),
         "cargo_type": _first_hit(src, ["cargo_type", "grade", "last_cargo", "cargo_preference"]),
         "direction": _resolve_direction(src),
         "dwt_sdwt": _resolve_dwt_sdwt(src),
-        "cbm": _first_hit(src, ["cbm", "cubic", "cub", "cargo_tank_capacity"]),
+        "cbm": _first_hit(src, ["cbm", "cubic", "cub", "cargo_tank_capacity", "m3", "capacity"]),
         "draft": _first_hit(src, ["draft", "sdraft", "sdwt_draft"]),
         "flag": _first_hit(src, ["flag"]),
         "eta_foc": _first_hit(src, ["eta_foc", "eta foc"]),
         "open_location": loc,
         "opening_date": date,
         "cargo_history_combo": _resolve_cargo_history(src),
-        "tank_coating": _first_hit(src, ["tank_coating", "coating", "coat"]),
+        "tank_coating": _first_hit(src, ["tank_coating", "coating", "coat", "tanks", "tank_type"]),
         "sire_date": _first_hit(src, ["sire_date", "sire"]),
         "sire_location": _first_hit(src, ["sire_location"]),
         "cdi_date": _first_hit(src, ["cdi_date", "cdi"]),
@@ -431,6 +500,7 @@ def map_raw_to_standard(dd: dict | None, region: str | None = None) -> tuple[dic
     reg = (region or _first_hit(src, ["region"]) or loc or "").strip()
     if not reg:
         reg = "UNSPECIFIED"
+    _normalize_imo_and_vessel_type(out)
     return out, reg
 
 
@@ -463,6 +533,29 @@ def sync_column_definitions(supabase) -> None:
         else:
             supabase.table("column_definitions").insert(payload).execute()
     logger.info("Synced %d column_definitions rows", len(DEFAULT_COLUMN_DEFINITIONS))
+
+
+def fix_imo_vessel_type_misplacement(supabase) -> int:
+    """Re-map rows where IMO type was stored in vessel_type (safe to run every startup)."""
+    rows = supabase.table("vessels").select("id, dynamic_data, region").execute()
+    updated = 0
+    for vessel in rows.data or []:
+        dd = vessel.get("dynamic_data") or {}
+        standardized, reg = map_raw_to_standard(dd, vessel.get("region"))
+        old_vt = str(dd.get("vessel_type") or "").strip()
+        new_vt = str(standardized.get("vessel_type") or "").strip()
+        old_imo = str(dd.get("imo") or "").strip()
+        new_imo = str(standardized.get("imo") or "").strip()
+        if old_vt == new_vt and old_imo == new_imo and standardized == dd:
+            continue
+        supabase.table("vessels").update({
+            "dynamic_data": standardized,
+            "region": reg,
+        }).eq("id", vessel["id"]).execute()
+        updated += 1
+    if updated:
+        logger.info("Fixed IMO/vessel_type placement on %d vessel rows", updated)
+    return updated
 
 
 def migrate_all_vessel_rows(supabase) -> int:
@@ -565,14 +658,50 @@ def get_column_ids(supabase) -> list[str]:
     return [c["id"] for c in get_column_definitions(supabase)]
 
 
+def format_attachment_files(files: Any) -> str:
+    """Comma-separated names of real file attachments (PDF/image/xlsx…) on the email."""
+    if not files:
+        return ""
+    if isinstance(files, str):
+        try:
+            files = json.loads(files)
+        except json.JSONDecodeError:
+            return ""
+    if not isinstance(files, list):
+        return ""
+    names: list[str] = []
+    for entry in files:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").strip()
+        if name:
+            names.append(name)
+    return ", ".join(names)
+
+
 def resolve_cell_value(vessel: dict, column_id: str, row_num: int = 1) -> str:
     if column_id == "_num":
         return str(row_num)
     if column_id == "region":
         return str(vessel.get("region") or "").strip()
     if column_id == "attachments":
-        fn = str(vessel.get("filename") or "")
-        return fn[:-4] if fn.lower().endswith(".eml") else fn
+        return format_attachment_files(vessel.get("attachment_files"))
+    if column_id == "vessel_type":
+        dd = vessel.get("dynamic_data") or {}
+        vt = str(dd.get("vessel_type") or "").strip()
+        imo = str(dd.get("imo") or "").strip()
+        if _looks_like_imo_type(vt) or (vt and imo and vt.lower() == imo.lower()):
+            return ""
+        return vt
+    if column_id == "imo":
+        dd = vessel.get("dynamic_data") or {}
+        imo = str(dd.get("imo") or "").strip()
+        if imo:
+            return imo
+        vt = dd.get("vessel_type")
+        if _looks_like_imo_type(vt):
+            return str(vt).strip()
+        return ""
     dd = vessel.get("dynamic_data") or {}
     return str(dd.get(column_id) or "").strip()
 

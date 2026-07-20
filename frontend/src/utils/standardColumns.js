@@ -41,20 +41,20 @@ export const COLUMN_WIDTHS = {
   company: 200,
   vessel_name: 180,
   call_sign: 90,
-  year_built: 90,
+  year_built: 100,
   vessel_type: 110,
   cargo_type: 120,
   direction: 110,
-  dwt_sdwt: 100,
-  cbm: 110,
+  dwt_sdwt: 112,
+  cbm: 130,
   draft: 80,
   flag: 80,
   eta_foc: 120,
   region: 110,
-  open_location: 120,
-  opening_date: 110,
-  cargo_history_combo: 200,
-  tank_coating: 110,
+  open_location: 130,
+  opening_date: 140,
+  cargo_history_combo: 260,
+  tank_coating: 130,
   sire_date: 100,
   sire_location: 110,
   cdi_date: 100,
@@ -214,8 +214,9 @@ export function filterPositionListGridColumns(columnDefs, showAllColumns) {
 /** Always included in draft email tables (no checkbox in grid). */
 export const DRAFT_LOCKED_COLUMN_IDS = new Set(["vessel_name", "region", "imo"]);
 
-/** Grid-only columns — not sent to draft API. */
-export const DRAFT_NON_SELECTABLE_COLUMN_IDS = new Set(["_num", "received", "attachments"]);
+/** Grid-only columns — not sent to draft API. "company" is confidential and must
+ *  never appear in an outgoing position-list email. */
+export const DRAFT_NON_SELECTABLE_COLUMN_IDS = new Set(["_num", "received", "attachments", "company"]);
 
 export function defaultDraftSelectedColumnIds(columnDefs = DEFAULT_COLUMNS) {
   const allowed = new Set(columnDefs.map((c) => c.id));
@@ -275,24 +276,97 @@ export function formatReceived(iso) {
   return `${date}, ${time}`;
 }
 
+/** Comma-separated names of real file attachments on the source email. */
+export function formatAttachmentFiles(files) {
+  if (!files?.length) return "";
+  return files
+    .map((f) => (f?.name || "").trim())
+    .filter(Boolean)
+    .join(", ");
+}
+
+/** True when a value is an IMO type code (2, 2/3, IMO II), not a 7-digit IMO number. */
+export function looksLikeImoType(val) {
+  if (val == null) return false;
+  const s = String(val).trim();
+  if (!s) return false;
+  if (/^\d{7}$/.test(s)) return false;
+  const norm = s.replace(/\s+/g, "").toLowerCase();
+  if (/^imo[\d/]/i.test(norm)) return true;
+  if (/^\d+(\/\d+)?$/.test(norm)) return true;
+  if (/^(i{1,3}|ii|iii|iv)(\/(i{1,3}|ii|iii|iv))?$/.test(norm)) return true;
+  return false;
+}
+
 /** Read cell value directly from DB-shaped vessel row. */
 export function resolveStandardCellValue(vessel, columnId, rowNum = 1) {
   if (columnId === "_num") return String(rowNum);
   if (columnId === "received") return formatReceived(vessel?.date_received);
   if (columnId === "region") return vessel?.region ?? "";
   if (columnId === "attachments") {
-    return (vessel?.filename || "").replace(/\.eml$/i, "") || "";
+    return formatAttachmentFiles(vessel?.attachment_files);
   }
-  return vessel?.dynamic_data?.[columnId] ?? "";
+  const dd = vessel?.dynamic_data || {};
+  if (columnId === "vessel_type") {
+    const vt = dd.vessel_type ?? "";
+    const imo = dd.imo ?? "";
+    if (looksLikeImoType(vt) || (vt && imo && String(vt).trim() === String(imo).trim())) {
+      return "";
+    }
+    return vt;
+  }
+  if (columnId === "imo") {
+    const imo = dd.imo ?? "";
+    if (imo) return imo;
+    if (looksLikeImoType(dd.vessel_type)) return dd.vessel_type;
+    return "";
+  }
+  return dd[columnId] ?? "";
 }
 
 export const EMAIL_TABLE_COLUMNS = DEFAULT_COLUMNS.filter((c) => c.id !== "_num");
 
+/** Sort vessels in source-email order (row_order, then created_at). */
+export function sortVesselsBySourceOrder(vessels) {
+  return [...(vessels || [])].sort((a, b) => {
+    const ao = a?.row_order ?? 0;
+    const bo = b?.row_order ?? 0;
+    if (ao !== bo) return ao - bo;
+    const at = a?.created_at ? new Date(a.created_at).getTime() : 0;
+    const bt = b?.created_at ? new Date(b.created_at).getTime() : 0;
+    return at - bt;
+  });
+}
+
+/** Minimum px width so a grid header label is not clipped (uppercase 10.5px headers). */
+export function minColumnWidthForHeader(header, floor = 48) {
+  const text = String(header ?? "").trim();
+  if (!text) return floor;
+  // Short slash labels (e.g. DWT/SDWT) should stay on one header line.
+  const charW = text.length <= 14 && text.includes("/") ? 7.5 : 7;
+  return Math.max(floor, Math.ceil(text.length * charW) + 24);
+}
+
+/** Grid columns that stay single-line with ellipsis (short numbers/codes only). */
+export const SINGLE_LINE_COLUMN_IDS = new Set([
+  "_num",
+  "received",
+  "imo",
+  "call_sign",
+  "year_built",
+  "dwt_sdwt",
+  "cbm",
+  "draft",
+]);
+
 export function enrichColumnDefs(defs) {
-  return (defs || DEFAULT_COLUMNS).map((c) => ({
-    ...c,
-    width: COLUMN_WIDTHS[c.id] ?? 100,
-    vesselName: c.id === "vessel_name",
-    region: c.storage === "region",
-  }));
+  return (defs || DEFAULT_COLUMNS).map((c) => {
+    const base = COLUMN_WIDTHS[c.id] ?? 100;
+    return {
+      ...c,
+      width: Math.max(base, minColumnWidthForHeader(c.header, base)),
+      vesselName: c.id === "vessel_name",
+      region: c.storage === "region",
+    };
+  });
 }

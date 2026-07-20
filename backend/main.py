@@ -51,8 +51,8 @@ from agents.contact_extract import (
     run_parent_contact_extraction,
 )
 from agents.signature_extract import run_parent_signature_extraction
-from agents.confidence_score import compute_attachment_confidence
-from verification import set_attachment_verified
+from agents.confidence_score import attachment_needs_review, compute_attachment_confidence
+from verification import backfill_auto_verify, set_attachment_verified
 from vessel_library import (
     autofill_library,
     list_library,
@@ -65,6 +65,7 @@ from column_defs import (
     ensure_column_definitions,
     sync_column_definitions,
     migrate_all_vessel_rows,
+    fix_imo_vessel_type_misplacement,
     backfill_vessel_company_names,
     get_column_definitions,
     empty_standard_dynamic_data,
@@ -121,11 +122,11 @@ async def startup_event():
     logger.info("  Shipbroking Email Parser — startup")
     logger.info("=" * 60)
     logger.info("  EMAIL_USER       : %s", settings.EMAIL_USER)
-    logger.info("  FILTER_SENDER    : %s", settings.FILTER_SENDER)
-    logger.info("  NVIDIA_MODEL     : %s", settings.NVIDIA_LLM_MODEL)
+    logger.info("  BLOCKED_SENDERS  : %s", ", ".join(settings.blocked_sender_patterns))
+    logger.info("  CLAUDE_MODEL     : %s", settings.CLAUDE_MODEL)
     logger.info("  DB               : PostgreSQL %s:%s / %s",
                 settings.PG_HOST, settings.PG_PORT, settings.PG_DATABASE)
-    logger.info("  MAX_ATTACHMENTS  : %s",
+    logger.info("  MAX_EMAILS/FETCH : %s",
                 settings.MAX_ATTACHMENTS if settings.MAX_ATTACHMENTS > 0 else "ALL")
     logger.info("=" * 60)
 
@@ -139,6 +140,12 @@ async def startup_event():
         migrated = migrate_all_vessel_rows(db)
         if migrated:
             logger.info("  Vessel data migration: %d rows updated to standard columns", migrated)
+        imo_fixed = fix_imo_vessel_type_misplacement(db)
+        if imo_fixed:
+            logger.info("  IMO/vessel_type fix: %d rows updated", imo_fixed)
+        row_order_fixed = backfill_vessel_row_order(db)
+        if row_order_fixed:
+            logger.info("  Vessel row_order backfill: %d rows updated", row_order_fixed)
         companies = backfill_vessel_company_names(db)
         if companies:
             logger.info("  Vessel company backfill: %d rows updated", companies)
@@ -146,6 +153,9 @@ async def startup_event():
             seeded = autofill_library(db)
             if seeded:
                 logger.info("  Vessel library seeded: %d vessels", seeded)
+        auto_verified = backfill_auto_verify(db)
+        if auto_verified:
+            logger.info("  Auto-verified %d high-confidence attachment(s)", auto_verified)
     except Exception as exc:
         logger.error("  PostgreSQL connection FAILED: %s", exc)
         logger.error("  Check that pgAdmin is running and PG_* settings in .env are correct.")
@@ -159,7 +169,7 @@ async def _run_phase1(job_id: str) -> None:
     logger.info("[Phase1] Starting job_id=%s", job_id)
     initial_state = {
         "job_id": job_id,
-        "email_id": "",
+        "email_ids": [],
         "attachment_ids": [],
         "attachment_count": 0,
         "superset_columns": [],
@@ -170,21 +180,37 @@ async def _run_phase1(job_id: str) -> None:
         if final_state.get("error"):
             logger.error("[Phase1] Failed: %s", final_state["error"])
             await sse_manager.send(job_id, "phase1_failed", {"error": final_state["error"]})
-        else:
-            email_id = final_state["email_id"]
-            if email_id:
-                try:
-                    await run_parent_signature_extraction(job_id, email_id)
-                    await run_parent_contact_extraction(job_id, email_id)
-                    backfill_vessel_company_names(supabase)
-                except Exception as sig_exc:
-                    logger.exception("[Phase1] Signature/contact extraction failed: %s", sig_exc)
-            logger.info("[Phase1] Complete — email_id=%s, columns=%d",
-                        email_id, len(final_state.get("superset_columns", [])))
-            await sse_manager.send(job_id, "phase1_complete", {
-                "email_id": email_id,
-                "columns": final_state.get("superset_columns", []),
+            return
+
+        email_ids = final_state.get("email_ids", []) or []
+        if not email_ids:
+            logger.info("[Phase1] No new emails to process.")
+            await sse_manager.send(job_id, "phase1_no_new", {
+                "message": "No new broker emails found.",
             })
+            return
+
+        # Signature + structured contact extraction per new email.
+        for email_id in email_ids:
+            try:
+                await run_parent_signature_extraction(job_id, email_id)
+                await run_parent_contact_extraction(job_id, email_id)
+            except Exception as sig_exc:
+                logger.exception("[Phase1] Signature/contact extraction failed for %s: %s",
+                                 email_id, sig_exc)
+        try:
+            backfill_vessel_company_names(supabase)
+        except Exception as bf_exc:
+            logger.exception("[Phase1] Company backfill failed: %s", bf_exc)
+
+        logger.info("[Phase1] Complete — %d email(s), columns=%d",
+                    len(email_ids), len(final_state.get("superset_columns", [])))
+        await sse_manager.send(job_id, "phase1_complete", {
+            "email_id": email_ids[0],
+            "email_ids": email_ids,
+            "email_count": len(email_ids),
+            "columns": final_state.get("superset_columns", []),
+        })
     except Exception as exc:
         logger.exception("[Phase1] Crashed: %s", exc)
         await sse_manager.send(job_id, "phase1_failed", {"error": str(exc)})
@@ -252,7 +278,7 @@ async def list_emails():
                 supabase.table("attachments")
                 .select(
                     "id, filename, status, error_message, mail_from, mail_subject, mail_date, files, "
-                    "is_verified, manually_reviewed, created_at, raw_text"
+                    "is_verified, manually_reviewed, created_at, raw_text, columns_in_email"
                 )
                 .eq("parent_email_id", em["id"])
                 .order("created_at")
@@ -285,6 +311,7 @@ async def list_emails():
                     raw_text=att.get("raw_text"),
                     retry_suggested=False,
                     manually_reviewed=bool(att.get("manually_reviewed")),
+                    columns_in_email=att.get("columns_in_email"),
                 )
                 att_list.append({
                     k: v for k, v in att.items() if k != "raw_text"
@@ -293,6 +320,12 @@ async def list_emails():
                     "manually_reviewed": bool(att.get("manually_reviewed")),
                     "vessel_count": vessel_count,
                     "retry_suggested": False,
+                    "columns_in_email": conf.get("applicable_columns") or [],
+                    "needs_review": attachment_needs_review(
+                        status=att.get("status") or "",
+                        confidence_tier=conf.get("confidence_tier"),
+                        max_unfilled=conf.get("max_unfilled") or 0,
+                    ),
                     **conf,
                 })
             att_list.sort(key=lambda a: (str(a.get("created_at") or ""), (a.get("filename") or "").lower()))
@@ -326,8 +359,9 @@ async def get_vessels_for_attachment(att_id: str):
     try:
         rows = (
             supabase.table("vessels")
-            .select("id, dynamic_data, region, is_validated")
+            .select("id, dynamic_data, region, is_validated, row_order, created_at")
             .eq("attachment_id", att_id)
+            .order("row_order")
             .execute()
         )
         return rows.data or []
@@ -371,7 +405,7 @@ async def get_raw_text(att_id: str):
             supabase.table("attachments")
             .select(
                 "raw_text, preview_html, preview_plain, preview_images, "
-                "filename, signature_emails, signature_phones, status, is_verified, manually_reviewed"
+                "filename, signature_emails, signature_phones, status, is_verified, manually_reviewed, files"
             )
             .eq("id", att_id)
             .limit(1)
@@ -414,6 +448,7 @@ async def get_raw_text(att_id: str):
             "is_verified": bool(att.get("is_verified")),
             "manually_reviewed": bool(att.get("manually_reviewed")),
             "vessel_count": len(vrows.data or []),
+            "files": att.get("files") or [],
         }
     except HTTPException:
         raise
@@ -423,20 +458,43 @@ async def get_raw_text(att_id: str):
 
 
 _VESSEL_GRID_COLUMNS = (
-    "id, attachment_id, dynamic_data, region, is_validated, filename, "
-    "parent_email_id, subject, date_received, signature_emails, signature_phones"
+    "id, attachment_id, dynamic_data, region, is_validated, row_order, created_at, filename, "
+    "parent_email_id, subject, date_received, signature_emails, signature_phones, "
+    "attachment_files"
 )
 
 
 def _sort_vessel_rows(rows: list[dict]) -> list[dict]:
-    """Oldest parent email first, then attachment filename."""
+    """Email date → attachment → source row order (matches original mail listing)."""
     return sorted(
         rows,
         key=lambda r: (
             str(r.get("date_received") or ""),
-            str(r.get("filename") or ""),
+            str(r.get("filename") or "").lower(),
+            r.get("row_order") if r.get("row_order") is not None else 0,
+            str(r.get("created_at") or ""),
         ),
     )
+
+
+def backfill_vessel_row_order(supabase) -> int:
+    """Assign row_order from created_at for rows extracted before ordering was stored."""
+    rows = supabase.table("vessels").select("id, attachment_id, created_at, row_order").execute()
+    by_att: dict[str, list[dict]] = {}
+    for row in rows.data or []:
+        aid = row.get("attachment_id")
+        if aid:
+            by_att.setdefault(aid, []).append(row)
+    updated = 0
+    for vessels in by_att.values():
+        vessels.sort(key=lambda v: str(v.get("created_at") or ""))
+        for idx, v in enumerate(vessels):
+            if (v.get("row_order") or 0) != idx:
+                supabase.table("vessels").update({"row_order": idx}).eq("id", v["id"]).execute()
+                updated += 1
+    if updated:
+        logger.info("Backfilled row_order on %d vessel rows", updated)
+    return updated
 
 
 @app.get("/api/vessels")

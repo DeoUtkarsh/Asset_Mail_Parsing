@@ -466,25 +466,47 @@ tr.flag td:first-child{box-shadow:inset 3px 0 0 var(--lo)}
 .vessel-grid-scroll{flex:1;min-height:0;overflow:auto;overscroll-behavior:contain;background:#fff}
 .vessel-grid-scroll.stretch{background:var(--bg)}
 .vessel-grid{width:100%;border-collapse:separate;border-spacing:0;font-size:11.5px;line-height:1.35;color:var(--ink)}
-.vessel-grid thead th{position:sticky;top:0;z-index:40;padding:8px 10px;text-align:left;font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.35px;color:#fff;background:var(--brand);border-bottom:1px solid var(--brand-d);border-right:1px solid rgba(255,255,255,.14);white-space:nowrap;box-sizing:border-box}
+.vessel-grid thead th{position:sticky;top:0;z-index:40;padding:8px 10px;text-align:left;font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.35px;color:#fff;background:var(--brand);border-bottom:1px solid var(--brand-d);border-right:1px solid rgba(255,255,255,.14);white-space:normal;vertical-align:top;line-height:1.35;word-break:keep-all;box-sizing:border-box}
 .vessel-grid thead th.draft-on{background:var(--brand-d)}
 .vessel-grid thead th.col-select{text-align:center;padding:8px 6px}
 .vessel-grid thead th.col-num{padding-left:10px}
 .vessel-grid thead th .col-hdr{display:flex;align-items:flex-start;gap:5px;min-width:0}
-.vessel-grid thead th .col-hdr span{overflow:hidden;text-overflow:ellipsis;line-height:1.25}
-.vessel-grid tbody td{padding:6px 10px;border-bottom:1px solid var(--line);border-right:1px solid #f0f2f5;background:#fff;vertical-align:top;box-sizing:border-box}
+.vessel-grid thead th .col-hdr-stack{flex-direction:column;align-items:stretch;gap:4px;width:100%}
+.vessel-grid thead th .col-hdr-top{display:flex;align-items:flex-start;gap:5px;min-width:0}
+.vessel-grid thead th .col-hdr-label{overflow:visible;text-overflow:clip;white-space:normal;word-break:keep-all;overflow-wrap:normal;line-height:1.35}
+.vessel-grid thead th.col-compact .col-hdr-label{white-space:nowrap}
+.vessel-grid thead th .col-hdr-search-wrap{position:relative;width:100%;min-width:0}
+.vessel-grid thead th .col-hdr-search-wrap.has-value .col-hdr-search{border-color:rgba(255,255,255,.65);padding-right:22px}
+.vessel-grid thead th .col-hdr-search{width:100%;min-width:0;box-sizing:border-box;padding:3px 6px;border-radius:5px;border:1px solid rgba(255,255,255,.35);background:rgba(255,255,255,.95);color:var(--ink);font-size:10px;font-weight:500;font-family:inherit;text-transform:none;letter-spacing:0;outline:none}
+.vessel-grid thead th .col-hdr-search-clear{position:absolute;right:3px;top:50%;transform:translateY(-50%);width:18px;height:18px;padding:0;border:none;border-radius:4px;background:transparent;color:var(--muted);font-size:14px;line-height:1;cursor:pointer;display:grid;place-items:center;font-family:inherit}
+.vessel-grid thead th .col-hdr-search-clear:hover{background:rgba(7,38,56,.08);color:var(--ink)}
+.vessel-grid tbody td.grid-no-match{text-align:center;padding:36px 16px;color:var(--muted);font-style:italic;font-size:13px;background:#fff;border-bottom:1px solid var(--line)}
+.vessel-grid tbody tr.grid-empty-row:hover td{background:#fff}
+.vessel-grid thead th .col-hdr-search::placeholder{color:var(--muted);opacity:.9}
+.vessel-grid thead th .col-hdr-search:focus{border-color:#fff;box-shadow:0 0 0 2px rgba(255,255,255,.35)}
+.vessel-grid thead th.col-select .col-hdr-stack{align-items:center}
+.col-search-bar{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 12px;font-size:11px;color:var(--muted);background:var(--brand-50);border-bottom:1px solid var(--brand-100);flex-shrink:0}
+.col-search-clear{padding:0;border:none;background:none;color:var(--brand-d);font-size:11px;font-weight:600;cursor:pointer;text-decoration:underline;font-family:inherit}
+.col-search-clear:hover{color:var(--brand)}
+.vessel-grid-empty .col-search-clear{margin-top:8px;text-decoration:none;padding:6px 12px;border-radius:8px;border:1px solid var(--brand-100);background:#fff}
+.vessel-grid thead th .col-hdr span{overflow:visible;text-overflow:clip;white-space:normal;word-break:break-word;line-height:1.3}
+.vessel-grid tbody td{padding:7px 10px;border-bottom:1px solid var(--line);border-right:1px solid #f0f2f5;background:#fff;vertical-align:top;box-sizing:border-box;line-height:1.35;overflow:hidden;max-width:0}
 .vessel-grid tbody tr:hover td{background:#f4fafd}
 .vessel-grid tbody tr:hover td.cell-vname{background:#eef7fc}
-.vessel-grid tbody td.cell-select{text-align:center;padding:6px}
+.vessel-grid tbody td.cell-select{text-align:center;padding:7px 6px}
 .vessel-grid tbody td.cell-num{padding-left:10px}
 .vessel-grid tbody td.cell-vname{font-weight:700;color:var(--ink);text-transform:uppercase}
 .vessel-grid tbody td.cell-region{font-weight:700;color:var(--brand-d);text-transform:uppercase}
-.vessel-grid .cell-val{font-size:11.5px;line-height:1.4;max-width:min(260px,32vw);white-space:normal;word-break:break-word;color:var(--ink)}
+.vessel-grid tbody td.cell-compact .cell-val,
+.vessel-grid tbody td.cell-compact .cell-edit,
+.vessel-grid tbody td.cell-num .cell-sr{white-space:nowrap;text-overflow:ellipsis;overflow:hidden}
+.vessel-grid .cell-val{display:block;width:100%;max-width:100%;box-sizing:border-box;font-size:11.5px;line-height:1.35;min-height:1.35em;white-space:normal;word-break:break-word;overflow-wrap:break-word;overflow:hidden;color:var(--ink)}
+.vessel-grid tbody td.cell-compact .cell-val{word-break:normal;overflow-wrap:normal}
 .vessel-grid .cell-val.is-empty{color:var(--icon);font-style:italic}
-.vessel-grid .cell-val.cell-add{display:block;color:var(--mid-d);background:var(--mid-bg);border:1px dashed var(--mid);border-radius:7px;padding:4px 9px;font-style:italic;font-weight:500;text-transform:none}
+.vessel-grid .cell-val.cell-add{display:block;width:100%;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--mid-d);background:var(--mid-bg);border:1px dashed var(--mid);border-radius:5px;padding:1px 6px;font-style:italic;font-weight:500;text-transform:none;line-height:1.35;min-height:1.35em;box-sizing:border-box}
 .vessel-grid tbody tr:hover td .cell-val.cell-add{background:#fff3d6}
 .vessel-grid .cell-sr{font-size:11.5px;font-weight:500;color:var(--muted);font-variant-numeric:tabular-nums}
-.vessel-grid .cell-edit{width:100%;box-sizing:border-box;padding:5px 8px;border-radius:7px;border:1px solid var(--brand-100);background:var(--brand-50);color:var(--ink);font-size:11.5px;font-family:inherit;outline:none}
+.vessel-grid .cell-edit{width:100%;max-width:100%;box-sizing:border-box;padding:4px 8px;border-radius:7px;border:1px solid var(--brand-100);background:var(--brand-50);color:var(--ink);font-size:11.5px;line-height:1.35;font-family:inherit;outline:none}
 .vessel-grid .cell-edit:focus{border-color:var(--brand);box-shadow:0 0 0 2px rgba(33,148,149,.15)}
 .vessel-grid .cell-edit.vname{font-weight:700}
 .vessel-grid .cell-edit.region{font-weight:700;text-transform:uppercase}
@@ -641,6 +663,7 @@ tr.flag td:first-child{box-shadow:inset 3px 0 0 var(--lo)}
 .imail-badges .inbox-btn{padding:3px 9px;font-size:10.5px}
 .imail-badges .conf{font-size:10.5px}
 .imail-badges .st-pill{font-size:10px;padding:2px 8px}
+.imail-vcount{font-size:11px;font-weight:700;color:var(--brand-d);white-space:nowrap}
 .imail-verified{margin-left:auto;font-size:10.5px;font-weight:700;padding:2px 9px;border-radius:999px;background:#eef0f3;color:var(--icon);white-space:nowrap;border:1px solid var(--line)}
 .imail-verified.is-on{background:var(--brand-50);color:var(--brand-d);border-color:var(--brand-100)}
 

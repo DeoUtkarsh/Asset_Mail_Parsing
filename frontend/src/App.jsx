@@ -30,6 +30,16 @@ const ST = {
 };
 const AV_COLORS = ["#219495", "#3b82f6", "#8b5cf6", "#f59e0b", "#ef4444", "#10b981", "#ec4899", "#0ea5e9"];
 
+function countNeedsReviewFromEmails(emails) {
+  let n = 0;
+  for (const em of emails || []) {
+    for (const att of em.attachments || []) {
+      if (att.needs_review) n += 1;
+    }
+  }
+  return n;
+}
+
 const AUTH_KEY = "bs_auth";
 
 export default function App() {
@@ -185,6 +195,15 @@ function MainApp({ onLogout }) {
     }
   }, [homeRefreshKey]);
 
+  // Keep Home review count in sync with the inbox list (avoids stale "1 to check").
+  const syncHomeIfReviewCountChanged = useCallback((emailData) => {
+    const live = countNeedsReviewFromEmails(emailData);
+    const cached = homeSummary?.facts?.review_count;
+    if (cached != null && cached !== live) {
+      setHomeRefreshKey((k) => k + 1);
+    }
+  }, [homeSummary?.facts?.review_count]);
+
   useEffect(() => {
     if (view === "home" && homeLoadedKey.current !== homeRefreshKey && !homeLoading) {
       loadHome();
@@ -330,7 +349,6 @@ function MainApp({ onLogout }) {
                       ) : (
                         <span className={`conf ${band}`} title={r.confidenceLabel || ""}><span className="cd" />{r.pct}%</span>
                       )}
-                      {r.isVerified && <span className="st-pill st-auto" style={{ fontSize: 10, padding: "2px 7px" }}>✓ verified</span>}
                       <span className="vcount">{r.count} position{r.count !== 1 ? "s" : ""}</span>
                     </div>
                   </div>
@@ -343,7 +361,11 @@ function MainApp({ onLogout }) {
 
       {/* ── Right panel ── */}
       <div className={`rpanel ${view === "home" || view === "today" || view === "inbox" || view === "list" || view === "review" || view === "library" ? "rpanel-fill" : ""}`}>
-        {loading && view !== "home" && view !== "inbox" && view !== "list" && view !== "review" && view !== "library" ? (
+        {/* Position List stays mounted so a generated draft survives tab switches */}
+        <div style={{ display: view === "today" ? "contents" : "none" }}>
+          <ValidationView isActive={view === "today"} refreshKey={vesselRefreshKey} />
+        </div>
+        {view === "today" ? null : loading && view !== "home" && view !== "inbox" && view !== "list" && view !== "review" && view !== "library" ? (
           <div className="center-load"><span className="spin-ring" /> Loading…</div>
         ) : view === "home" ? (
           <HomeView
@@ -353,16 +375,16 @@ function MainApp({ onLogout }) {
             onNavigate={go}
             onRefresh={loadHome}
           />
-        ) : view === "today" ? (
-          <ValidationView isActive={view === "today"} refreshKey={vesselRefreshKey} />
         ) : view === "inbox" ? (
           <InboxView
+            onEmailsLoaded={syncHomeIfReviewCountChanged}
             onVesselsUpdated={() => { setVesselRefreshKey((k) => k + 1); setHomeRefreshKey((k) => k + 1); }}
             onContactsUpdated={() => setContactRefreshKey((k) => k + 1)}
           />
         ) : view === "review" ? (
           <InboxView
             reviewMode
+            onEmailsLoaded={syncHomeIfReviewCountChanged}
             onVesselsUpdated={() => { setVesselRefreshKey((k) => k + 1); setHomeRefreshKey((k) => k + 1); }}
             onContactsUpdated={() => setContactRefreshKey((k) => k + 1)}
           />

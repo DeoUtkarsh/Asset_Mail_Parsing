@@ -8,22 +8,38 @@ import logging
 from collections import defaultdict
 from typing import Any, Optional
 
-from openai import AsyncOpenAI
 from database import supabase
 from config import settings
 from sse_manager import sse_manager
+from llm import claude_client
 from column_defs import get_column_definitions, resolve_cell_value, header_for_column
 
 logger = logging.getLogger(__name__)
 
-nvidia_client = AsyncOpenAI(
-    base_url=settings.NVIDIA_API_BASE_URL,
-    api_key=settings.NVIDIA_API_KEY,
-)
+# ── NVIDIA NIM (legacy — kept for reference, no longer used) ──────────────────
+# from openai import AsyncOpenAI
+# nvidia_client = AsyncOpenAI(
+#     base_url=settings.NVIDIA_API_BASE_URL,
+#     api_key=settings.NVIDIA_API_KEY,
+# )
 
 # ── Region → Broad Zone mapping ───────────────────────────────────────────────
 
 REGION_TO_ZONE: dict[str, str] = {
+    # Broad section headers brokers group by (checked first so they win over
+    # individual port names). LLM `region` is usually one of these now.
+    "north east asia": "FAR EAST", "northeast asia": "FAR EAST",
+    "south east asia": "STRAITS/SEA", "southeast asia": "STRAITS/SEA",
+    "seasia": "STRAITS/SEA", "far east": "FAR EAST", "east asia": "FAR EAST",
+    "middle east": "AG/MIDDLE EAST",
+    "north america": "AMERICAS", "south america": "AMERICAS",
+    "americas": "AMERICAS", "america": "AMERICAS",
+    "bsea": "MED/BLACK SEA", "black sea": "MED/BLACK SEA",
+    "med": "MED/BLACK SEA", "mediterranean": "MED/BLACK SEA",
+    "waf": "AFRICA", "west africa": "AFRICA",
+    "eafr": "AFRICA", "east africa": "AFRICA",
+    "cont": "EUROPE", "continent": "EUROPE",
+    "wci": "INDIA", "west coast india": "INDIA", "east coast india": "INDIA",
     # STRAITS / SEA
     "singapore": "STRAITS/SEA", "straits": "STRAITS/SEA",
     "johor": "STRAITS/SEA", "batam": "STRAITS/SEA",
@@ -34,7 +50,9 @@ REGION_TO_ZONE: dict[str, str] = {
     "kalimantan": "STRAITS/SEA", "malaysia": "STRAITS/SEA",
     "kuantan": "STRAITS/SEA", "port klang": "STRAITS/SEA",
     "manila": "STRAITS/SEA", "philippines": "STRAITS/SEA",
+    "kotabaru": "STRAITS/SEA",
     # FAR EAST
+    "taichung": "FAR EAST", "yosu": "FAR EAST",
     "hong kong": "FAR EAST", "china": "FAR EAST",
     "japan": "FAR EAST", "korea": "FAR EAST",
     "taiwan": "FAR EAST", "chiba": "FAR EAST",
@@ -50,7 +68,7 @@ REGION_TO_ZONE: dict[str, str] = {
     "sikka": "INDIA", "vizag": "INDIA",
     "cochin": "INDIA", "chennai": "INDIA",
     "india": "INDIA", "nhava sheva": "INDIA",
-    "kolkata": "INDIA", "haldia": "INDIA",
+    "kolkata": "INDIA", "haldia": "INDIA", "paradip": "INDIA",
     # AG / MIDDLE EAST
     "fujairah": "AG/MIDDLE EAST", "uae": "AG/MIDDLE EAST",
     "kuwait": "AG/MIDDLE EAST", "saudi": "AG/MIDDLE EAST",
@@ -66,14 +84,16 @@ REGION_TO_ZONE: dict[str, str] = {
     "africa": "AFRICA", "mombasa": "AFRICA",
     "dar es salaam": "AFRICA",
     # OCEANIA
-    "australia": "OCEANIA", "sydney": "OCEANIA",
+    "australia": "OCEANIA", "sydney": "OCEANIA", "kwinana": "OCEANIA",
     "melbourne": "OCEANIA", "new zealand": "OCEANIA",
+    # AMERICAS
+    "usg": "AMERICAS", "peru": "AMERICAS", "houston": "AMERICAS",
 }
 
 # Preferred display order
 ZONE_ORDER = [
-    "STRAITS/SEA", "FAR EAST", "INDIA",
-    "AG/MIDDLE EAST", "EUROPE", "AFRICA", "OCEANIA", "UNSPECIFIED",
+    "STRAITS/SEA", "FAR EAST", "INDIA", "AG/MIDDLE EAST",
+    "MED/BLACK SEA", "EUROPE", "AFRICA", "AMERICAS", "OCEANIA", "UNSPECIFIED",
 ]
 
 # Leaflet map marker coordinates [lat, lng] per zone
@@ -82,8 +102,10 @@ ZONE_COORDS: dict[str, list[float]] = {
     "FAR EAST":       [31.23,  121.47],
     "INDIA":          [20.59,   78.96],
     "AG/MIDDLE EAST": [25.20,   55.27],
+    "MED/BLACK SEA":  [37.98,   23.72],
     "EUROPE":         [51.50,   -0.13],
     "AFRICA":         [-26.20,  28.05],
+    "AMERICAS":       [29.76,  -95.37],
     "OCEANIA":        [-33.87, 151.21],
     "UNSPECIFIED":    [0.0,     20.0],
 }
@@ -123,6 +145,8 @@ def _region_to_zone(region: str) -> str:
     if not region:
         return "UNSPECIFIED"
     r = region.strip().lower()
+    if r in ("unspecified", "n/a", "na", "-", "unknown"):
+        return "UNSPECIFIED"
     for key, zone in REGION_TO_ZONE.items():
         if key in r or r in key:
             return zone
@@ -365,6 +389,8 @@ def _build_html(
     if grid_columns:
         allowed = set(grid_columns)
         cols = [c for c in cols if c["id"] in allowed]
+    # "company" is confidential — never include it in an outgoing draft.
+    cols = [c for c in cols if c["id"] != "company"]
     return _build_html_grid(intro_text, zone_groups, cols)
 
 
@@ -406,8 +432,8 @@ async def run_drafter(
     # 2 — Ask LLM for a short intro paragraph only
     intro_text = INTRO_DEFAULT
     try:
-        resp = await nvidia_client.chat.completions.create(
-            model=settings.NVIDIA_LLM_MODEL,
+        resp = await claude_client.chat.completions.create(
+            model=settings.CLAUDE_MODEL,
             messages=[
                 {
                     "role": "system",

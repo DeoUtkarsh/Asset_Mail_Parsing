@@ -1,6 +1,10 @@
 """
-IMAP client: connects to Gmail, finds the target email, and extracts
-raw text from every .eml attachment (or message/rfc822 part).
+IMAP client: connects to the broker mailbox, fetches every incoming email
+(skipping automated/notification senders), and extracts the body text plus
+any real file attachments (images / PDF / Excel / Word) for each one.
+
+Each broker email is returned as its own record — the pipeline then treats
+one email = one position source = one card in "Vessel Extracted Data".
 """
 import imaplib
 import email
@@ -12,6 +16,7 @@ from email.header import decode_header
 from typing import Optional
 
 from config import settings
+from email_text import html_to_plain_text, strip_plain_strikethrough
 
 logger = logging.getLogger(__name__)
 
@@ -50,15 +55,11 @@ def _extract_text_from_message(msg: email.message.Message) -> str:
             text = payload.decode("utf-8", errors="replace")
 
         if content_type == "text/plain":
-            text_parts.append(text)
+            text_parts.append(strip_plain_strikethrough(text))
         elif content_type == "text/html":
-            clean = re.sub(r"<[^>]+>", " ", text)
-            clean = re.sub(r"&nbsp;", " ", clean)
-            clean = re.sub(r"&amp;", "&", clean)
-            clean = re.sub(r"&lt;", "<", clean)
-            clean = re.sub(r"&gt;", ">", clean)
-            clean = re.sub(r"\s{2,}", " ", clean)
-            text_parts.append(clean.strip())
+            clean = html_to_plain_text(text)
+            if clean:
+                text_parts.append(clean)
 
     walk(msg)
     return "\n\n".join(filter(None, text_parts))
@@ -68,6 +69,34 @@ def _extract_text_from_bytes(raw_bytes: bytes) -> str:
     """Parse raw bytes as an email message and extract text."""
     msg = message_from_bytes(raw_bytes, policy=email.policy.compat32)
     return _extract_text_from_message(msg)
+
+
+def _extract_html_from_message(msg: email.message.Message) -> str:
+    """Return the richest text/html body of the message (for a formatted preview)."""
+    html_parts: list[str] = []
+
+    def walk(part: email.message.Message) -> None:
+        if part.is_multipart():
+            for sub in part.get_payload():
+                walk(sub)
+            return
+        if part.get_content_type() != "text/html":
+            return
+        disp = str(part.get("Content-Disposition", "")).lower()
+        if "attachment" in disp:
+            return
+        payload = part.get_payload(decode=True)
+        if not payload:
+            return
+        charset = part.get_content_charset() or "utf-8"
+        try:
+            html_parts.append(payload.decode(charset, errors="replace"))
+        except (LookupError, UnicodeDecodeError):
+            html_parts.append(payload.decode("utf-8", errors="replace"))
+
+    walk(msg)
+    # Prefer the longest HTML body (usually the full message rather than a stub).
+    return max(html_parts, key=len) if html_parts else ""
 
 
 def _extract_files_from_message(msg: email.message.Message) -> list[dict]:
@@ -101,134 +130,98 @@ def _headers_of(msg: email.message.Message) -> dict:
     }
 
 
-def fetch_target_email() -> Optional[dict]:
+def is_blocked_sender(from_header: str) -> bool:
+    """True if the From header matches any automated/notification pattern."""
+    hay = (from_header or "").lower()
+    return any(pat in hay for pat in settings.blocked_sender_patterns)
+
+
+def _subject_to_filename(subject: str, sender: str) -> str:
+    """Human-friendly source label for the attachment/card."""
+    base = (subject or "").strip() or (sender or "").strip() or "email"
+    base = re.sub(r"\s+", " ", base)
+    return base[:200]
+
+
+def fetch_broker_emails() -> list[dict]:
     """
-    Connect to Gmail, find the target email, and return a dict with all
-    .eml attachments (or message/rfc822 parts) and their extracted text.
+    Connect to the mailbox, walk every INBOX message, skip automated senders,
+    and return one record per broker email:
+
+        {
+            "message_id": str,   # stable dedupe key
+            "subject": str,
+            "sender": str,       # full From header
+            "date": str,         # RFC822 Date header
+            "filename": str,     # display label (subject)
+            "raw_text": str,     # body text (plain + stripped html)
+            "files": [ {filename, content_type, content(bytes)}, ... ],
+        }
+
+    Newest first. Dedupe / only-new filtering is handled downstream (ingestion).
     """
-    logger.info("Connecting to IMAP %s:%s as %s", settings.IMAP_SERVER, settings.IMAP_PORT, settings.EMAIL_USER)
+    logger.info("Connecting to IMAP %s:%s as %s",
+                settings.IMAP_SERVER, settings.IMAP_PORT, settings.EMAIL_USER)
     mail = imaplib.IMAP4_SSL(settings.IMAP_SERVER, settings.IMAP_PORT)
     mail.login(settings.EMAIL_USER, settings.EMAIL_PASSWORD)
     mail.select("INBOX")
 
-    # Search ALL emails from the sender (read + unread)
-    search_criteria = f'(FROM "{settings.FILTER_SENDER}")'
-    _, uids = mail.search(None, search_criteria)
-    logger.info("IMAP search '%s' returned %d UIDs", search_criteria,
-                len(uids[0].split()) if uids and uids[0] else 0)
+    _, uids = mail.search(None, "ALL")
+    uid_list = uids[0].split() if uids and uids[0] else []
+    logger.info("INBOX contains %d messages", len(uid_list))
 
-    if not uids or not uids[0]:
-        mail.logout()
-        return None
+    emails: list[dict] = []
+    skipped = 0
 
-    uid_list = uids[0].split()
-    logger.info("Found %d emails from sender. Searching for subject match…", len(uid_list))
+    for uid in reversed(uid_list):  # newest first
+        # Cheap header peek first — decide blocklist without downloading body.
+        _, hdr_data = mail.fetch(
+            uid, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT)])"
+        )
+        from_header = ""
+        if hdr_data and hdr_data[0] and isinstance(hdr_data[0][1], (bytes, bytearray)):
+            hdr_msg = message_from_bytes(bytes(hdr_data[0][1]))
+            from_header = _decode_header_value(hdr_msg.get("From", ""))
 
-    target_msg: Optional[email.message.Message] = None
-    target_meta: dict = {}
+        if from_header and is_blocked_sender(from_header):
+            skipped += 1
+            continue
 
-    for uid in reversed(uid_list):
+        # Keeper → download the full message.
         _, msg_data = mail.fetch(uid, "(RFC822)")
         if not msg_data or not msg_data[0]:
             continue
-
         raw_email = msg_data[0][1]
-        msg = message_from_bytes(raw_email)
-        subject = _decode_header_value(msg.get("Subject", ""))
+        msg = message_from_bytes(raw_email, policy=email.policy.compat32)
 
-        logger.debug("  Checking UID %s — subject: %s", uid.decode(), subject[:80])
-
-        if settings.TARGET_SUBJECT.lower() not in subject.lower():
+        sender = _decode_header_value(msg.get("From", "")) or from_header
+        if is_blocked_sender(sender):  # double-check with full header
+            skipped += 1
             continue
 
-        logger.info("  ✓ Subject match found — UID %s: %s", uid.decode(), subject)
-        target_msg = msg
-        target_meta = {
-            "message_id": msg.get("Message-ID", uid.decode()),
+        subject = _decode_header_value(msg.get("Subject", ""))
+        message_id = msg.get("Message-ID") or f"uid-{uid.decode()}"
+        raw_text = _extract_text_from_message(msg)
+        html_body = _extract_html_from_message(msg)
+        files = _extract_files_from_message(msg)
+
+        logger.info(
+            "  ✓ Keeping '%s' from %s — %d chars body, %d html, %d file(s)",
+            subject[:60], sender[:40], len(raw_text), len(html_body), len(files),
+        )
+
+        emails.append({
+            "message_id": message_id,
             "subject": subject,
-            "sender": _decode_header_value(msg.get("From", "")),
+            "sender": sender,
             "date": msg.get("Date", ""),
-        }
-        break
+            "filename": _subject_to_filename(subject, sender),
+            "raw_text": raw_text,
+            "html": html_body,
+            "files": files,
+        })
 
     mail.logout()
-
-    if target_msg is None:
-        logger.warning("No email found matching subject: %s", settings.TARGET_SUBJECT)
-        return None
-
-    # ── Enumerate ALL MIME parts for debugging ──────────────────────────────
-    logger.info("Enumerating all MIME parts in the matched email:")
-    all_parts = list(target_msg.walk())
-    for i, part in enumerate(all_parts):
-        ct = part.get_content_type()
-        disp = part.get("Content-Disposition", "—")
-        fn = part.get_filename()
-        payload_type = type(part.get_payload()).__name__
-        logger.info(
-            "  Part %02d | type=%-30s | disp=%-20s | filename=%s | payload_type=%s",
-            i, ct, str(disp)[:20], fn or "—", payload_type
-        )
-
-    # ── Extract attachments ─────────────────────────────────────────────────
-    attachments: list[dict] = []
-
-    for i, part in enumerate(all_parts):
-        content_type = part.get_content_type()
-        filename_raw = part.get_filename()
-        filename = _decode_header_value(filename_raw) if filename_raw else ""
-        disp = str(part.get("Content-Disposition", "")).lower()
-
-        is_eml_by_name = filename.lower().endswith(".eml")
-        is_eml_by_type = content_type in ("message/rfc822", "message/delivery-status")
-        is_attachment = "attachment" in disp or "inline" in disp
-
-        if not (is_eml_by_name or is_eml_by_type):
-            continue
-
-        logger.info("  → Found attachment-like part %02d: type=%s filename=%s", i, content_type, filename or "(no name)")
-
-        # Parse the .eml into an inner Message so we can pull headers + its files
-        inner_msg: Optional[email.message.Message] = None
-
-        if content_type == "message/rfc822":
-            inner = part.get_payload()
-            if isinstance(inner, list) and inner:
-                inner = inner[0]
-            if isinstance(inner, email.message.Message):
-                inner_msg = inner
-            elif isinstance(inner, bytes):
-                inner_msg = message_from_bytes(inner, policy=email.policy.compat32)
-        else:
-            raw_bytes = part.get_payload(decode=True)
-            if raw_bytes is None:
-                payload_str = part.get_payload()
-                if isinstance(payload_str, str):
-                    raw_bytes = payload_str.encode("utf-8", errors="replace")
-            if raw_bytes:
-                inner_msg = message_from_bytes(raw_bytes, policy=email.policy.compat32)
-
-        if inner_msg is not None:
-            raw_text = _extract_text_from_message(inner_msg)
-            headers = _headers_of(inner_msg)
-            files = _extract_files_from_message(inner_msg)
-        else:
-            raw_text = str(part.get_payload())
-            headers = {"mail_from": "", "mail_subject": "", "mail_date": ""}
-            files = []
-
-        if not filename:
-            filename = f"attachment_{i:03d}.eml"
-
-        logger.info(
-            "    Extracted %d chars of text + %d file(s) from '%s' (from=%s)",
-            len(raw_text), len(files), filename, headers.get("mail_from", "")[:40]
-        )
-
-        if raw_text.strip() or files:
-            attachments.append({"filename": filename, "raw_text": raw_text, "files": files, **headers})
-        else:
-            logger.warning("    Part %02d produced empty text — skipping", i)
-
-    logger.info("Total usable attachments found: %d", len(attachments))
-    return {**target_meta, "attachments": attachments}
+    logger.info("Fetch complete — %d broker email(s) kept, %d automated skipped",
+                len(emails), skipped)
+    return emails

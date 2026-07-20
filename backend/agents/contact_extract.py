@@ -11,11 +11,12 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from openai import AsyncOpenAI, RateLimitError
+from anthropic import RateLimitError
 
 from config import settings
 from database import supabase
 from sse_manager import sse_manager
+from llm import claude_client
 from agents.signature_extract import (
     _merge_signature_strings,
     preprocess_for_signature,
@@ -24,11 +25,13 @@ from agents.signature_extract import (
 
 logger = logging.getLogger(__name__)
 
-nvidia_client = AsyncOpenAI(
-    base_url=settings.NVIDIA_API_BASE_URL,
-    api_key=settings.NVIDIA_API_KEY,
-    max_retries=0,
-)
+# ── NVIDIA NIM (legacy — kept for reference, no longer used) ──────────────────
+# from openai import AsyncOpenAI, RateLimitError
+# nvidia_client = AsyncOpenAI(
+#     base_url=settings.NVIDIA_API_BASE_URL,
+#     api_key=settings.NVIDIA_API_KEY,
+#     max_retries=0,
+# )
 
 CONTACT_FIELD_KEYS = [
     "contact_name",
@@ -217,8 +220,8 @@ async def llm_extract_contacts(chunk: str, filename_hint: str = "") -> list[dict
 
     for attempt in range(1, max_attempts + 1):
         try:
-            resp = await nvidia_client.chat.completions.create(
-                model=settings.NVIDIA_LLM_MODEL,
+            resp = await claude_client.chat.completions.create(
+                model=settings.CLAUDE_MODEL,
                 messages=[
                     {
                         "role": "system",
