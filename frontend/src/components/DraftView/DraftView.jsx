@@ -132,9 +132,9 @@ function ZoneMap({ zones, onMapReady }) {
       <RecenterControl zones={zones} />
       {zones.map((z) => (
         <Marker
-          key={z.name}
+          key={`${z.name}-${z.lat}-${z.lng}`}
           position={[z.lat, z.lng]}
-          icon={makePinIcon(z.count, ZONE_COLORS[z.name] || "#94a3b8")}
+          icon={makePinIcon(z.count, ZONE_COLORS[z.zone || z.name] || "#94a3b8")}
         >
           <Tooltip direction="top" offset={[0, -4]}>
             <span style={{ fontSize: 11, fontWeight: 600 }}>
@@ -277,10 +277,10 @@ export default function DraftView({ html = "", zones = [], vessels = [], columns
                 </div>
                 <div className="draft-legend">
                   {zones.map((z) => (
-                    <div key={z.name} className="draft-legend-row">
+                    <div key={`${z.name}-${z.lat}-${z.lng}`} className="draft-legend-row">
                       <span
                         className="draft-legend-dot"
-                        style={{ background: ZONE_COLORS[z.name] || "#94a3b8" }}
+                        style={{ background: ZONE_COLORS[z.zone || z.name] || "#94a3b8" }}
                       />
                       <span>{z.name}</span>
                       <b>({z.count})</b>

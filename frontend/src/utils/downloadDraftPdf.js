@@ -14,8 +14,10 @@ const ZONE_COLORS = {
   "FAR EAST": [245, 158, 11],
   INDIA: [16, 185, 129],
   "AG/MIDDLE EAST": [139, 92, 246],
+  "MED/BLACK SEA": [20, 184, 166],
   EUROPE: [59, 130, 246],
   AFRICA: [239, 68, 68],
+  AMERICAS: [249, 115, 22],
   OCEANIA: [236, 72, 153],
   UNSPECIFIED: [148, 163, 184],
 };
@@ -25,8 +27,10 @@ const STATIC_MAP_MARKER = {
   "FAR EAST": "orange",
   INDIA: "green",
   "AG/MIDDLE EAST": "purple",
+  "MED/BLACK SEA": "teal",
   EUROPE: "lightblue1",
   AFRICA: "red",
+  AMERICAS: "orange",
   OCEANIA: "pink",
   UNSPECIFIED: "gray",
 };
@@ -45,7 +49,7 @@ function buildStaticMapUrl(zones) {
   const view = mapViewFromZones(zones);
   const markerStr = (zones || [])
     .map((z) => {
-      const colour = STATIC_MAP_MARKER[z.name] || "gray";
+      const colour = STATIC_MAP_MARKER[z.zone || z.name] || "gray";
       return `${z.lat},${z.lng},${colour}`;
     })
     .join("|");
@@ -181,13 +185,13 @@ function drawLegendBox(doc, zones, x, y, w, h) {
 
   let legY = y + 12;
   const sorted = [...(zones || [])].sort((a, b) => {
-    const ia = ZONE_ORDER.indexOf(a.name);
-    const ib = ZONE_ORDER.indexOf(b.name);
+    const ia = ZONE_ORDER.indexOf(a.zone || a.name);
+    const ib = ZONE_ORDER.indexOf(b.zone || b.name);
     return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
   });
 
   for (const z of sorted) {
-    const rgb = ZONE_COLORS[z.name] || ZONE_COLORS.UNSPECIFIED;
+    const rgb = ZONE_COLORS[z.zone || z.name] || ZONE_COLORS.UNSPECIFIED;
     doc.setFillColor(...rgb);
     doc.circle(x + 5, legY - 1.3, 2, "F");
     doc.text(`${z.name}`, x + 9, legY);

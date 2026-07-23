@@ -137,6 +137,15 @@ async def startup_event():
         logger.info("  PostgreSQL connection: OK ✓")
         ensure_column_definitions(db)
         sync_column_definitions(db)
+        from region_geo import ensure_trade_geo_seeded
+        geo = ensure_trade_geo_seeded(db)
+        if not geo.get("skipped"):
+            logger.info(
+                "  Trade geo seeded: %d regions, %d ports, %d aliases",
+                geo.get("regions", 0),
+                geo.get("ports", 0),
+                geo.get("aliases", 0),
+            )
         migrated = migrate_all_vessel_rows(db)
         if migrated:
             logger.info("  Vessel data migration: %d rows updated to standard columns", migrated)
@@ -151,8 +160,17 @@ async def startup_event():
             logger.info("  Vessel company backfill: %d rows updated", companies)
         if not (db.table("vessel_library").select("id").limit(1).execute().data):
             seeded = autofill_library(db)
-            if seeded:
-                logger.info("  Vessel library seeded: %d vessels", seeded)
+            if seeded.get("inserted"):
+                logger.info("  Vessel library seeded: %d vessels", seeded["inserted"])
+        else:
+            # Keep library in sync with any vessels already extracted (new cols / backlog).
+            synced = autofill_library(db)
+            if synced.get("inserted") or synced.get("updated"):
+                logger.info(
+                    "  Vessel library sync: +%d inserted, %d updated",
+                    synced.get("inserted", 0),
+                    synced.get("updated", 0),
+                )
         auto_verified = backfill_auto_verify(db)
         if auto_verified:
             logger.info("  Auto-verified %d high-confidence attachment(s)", auto_verified)
@@ -202,6 +220,16 @@ async def _run_phase1(job_id: str) -> None:
             backfill_vessel_company_names(supabase)
         except Exception as bf_exc:
             logger.exception("[Phase1] Company backfill failed: %s", bf_exc)
+
+        try:
+            lib_stats = autofill_library(supabase)
+            logger.info(
+                "[Phase1] Vessel library sync — inserted=%d updated=%d",
+                lib_stats.get("inserted", 0),
+                lib_stats.get("updated", 0),
+            )
+        except Exception as lib_exc:
+            logger.exception("[Phase1] Vessel library sync failed: %s", lib_exc)
 
         logger.info("[Phase1] Complete — %d email(s), columns=%d",
                     len(email_ids), len(final_state.get("superset_columns", [])))
@@ -789,9 +817,12 @@ async def set_attachment_verified_route(att_id: str, body: SetAttachmentVerified
 async def update_vessel(vessel_id: str, body: UpdateVesselRequest):
     logger.info("[API] PUT /api/vessels/%s", vessel_id)
     try:
-        update_payload: dict[str, Any] = {"dynamic_data": body.dynamic_data}
-        if body.region is not None:
-            update_payload["region"] = body.region
+        from column_defs import map_raw_to_standard
+
+        # Re-canonicalize dynamic_data and derive standard region from open_location
+        # so edits + Fetch Emails stay consistent.
+        standardized, reg = map_raw_to_standard(body.dynamic_data or {}, body.region)
+        update_payload: dict[str, Any] = {"dynamic_data": standardized, "region": reg}
         if body.is_validated is not None:
             update_payload["is_validated"] = body.is_validated
         result = (
@@ -909,11 +940,11 @@ async def remove_vessel_library(vessel_id: str):
 
 @app.post("/api/vessel-library/autofill")
 async def autofill_vessel_library():
-    """Re-run the auto-fill (idempotent — only inserts vessels not already present)."""
+    """Re-run library sync (insert new + fill blank fields on existing)."""
     logger.info("[API] POST /api/vessel-library/autofill")
     try:
-        inserted = autofill_library(supabase)
-        return {"inserted": inserted}
+        stats = autofill_library(supabase)
+        return stats
     except Exception as exc:
         logger.error("[API] autofill_vessel_library failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -968,17 +999,20 @@ async def create_manual_vessel(body: ManualVesselRequest):
     """Add a position row manually — appears in the Vessel Position List immediately."""
     logger.info("[API] POST /api/vessels/manual")
     try:
+        from column_defs import map_raw_to_standard
+
         att_id = _get_or_create_manual_attachment()
         dd = empty_standard_dynamic_data()
         for key, val in (body.dynamic_data or {}).items():
             if key in dd:
                 dd[key] = str(val or "").strip()
+        standardized, reg = map_raw_to_standard(dd, body.region)
         result = (
             supabase.table("vessels")
             .insert({
                 "attachment_id": att_id,
-                "dynamic_data": dd,
-                "region": (body.region or "").strip(),
+                "dynamic_data": standardized,
+                "region": reg,
                 "is_validated": True,
             })
             .execute()

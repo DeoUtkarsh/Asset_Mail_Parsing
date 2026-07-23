@@ -16,6 +16,13 @@ import {
   writePreviewShowAllColumnsPref,
   sortVesselsBySourceOrder,
 } from "../../utils/standardColumns";
+import {
+  formatStandardField,
+  formatDwtSdwt,
+  parseAiNormalized,
+  formatAiNormalized,
+} from "../../utils/fieldFormat";
+import CellHighlightLegend from "../CellHighlightLegend";
 
 function looksLikeHtml(s) {
   if (!s || s.length < 12) return false;
@@ -251,7 +258,18 @@ export default function PreviewPanel({
     const next = vesselsRef.current.map((v) => {
       if (v.id !== rowId) return v;
       if (field === "__region__") return { ...v, region: value };
-      return { ...v, dynamic_data: { ...v.dynamic_data, [field]: value } };
+      const dd = { ...v.dynamic_data };
+      if (field === "dwt_sdwt" || field === "dwt" || field === "sdwt") {
+        const { value: stored, scaled } = formatDwtSdwt(value);
+        dd.dwt_sdwt = stored || value;
+        const flags = parseAiNormalized(dd.ai_normalized);
+        if (scaled) flags.add("dwt_sdwt");
+        dd.ai_normalized = formatAiNormalized(flags);
+      } else {
+        const stored = formatStandardField(field, value);
+        dd[field] = stored || value;
+      }
+      return { ...v, dynamic_data: dd };
     });
     vesselsRef.current = next;
     setVessels(next);
@@ -363,6 +381,7 @@ export default function PreviewPanel({
           <span className={`ipreview-saved ${savedMsg ? "show" : ""}`}>✓ Saved</span>
         </div>
         <div className="ipreview-head-right">
+          <CellHighlightLegend className="ipreview-legends" />
           {vessels.length > 0 && columnDefs.length > 0 && (
             <AllColumnsToggle
               enabled={showAllColumns}
@@ -404,9 +423,7 @@ export default function PreviewPanel({
             showCheckboxes={false}
             hideGroupHeaders
             stretchToFill={!showAllColumns}
-            highlightEmpty
-            isActive
-            emptyMessage="No vessels extracted for this attachment. Use Retry Failed on the list to re-extract."
+            highlightEmpty={editMode}
           />
         </div>
       </div>

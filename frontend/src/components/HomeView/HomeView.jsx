@@ -17,6 +17,13 @@ export default function HomeView({ data, loading = false, error = "", onNavigate
   const positionsParsed = f.positions_parsed ?? 0;
   const zones = f.zones ?? 0;
 
+  const todayLabel = new Date().toLocaleDateString("en-GB", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+
   const headline =
     positionsReady > 0 && reviewCount === 0
       ? "Ready to send"
@@ -38,49 +45,54 @@ export default function HomeView({ data, loading = false, error = "", onNavigate
 
   return (
     <div className="home-root">
-      <div className="home-head">
-        <span className="home-head-pill"><Icon name="anchor" size={15} /> AI Summary</span>
-        <button type="button" className="home-refresh" onClick={load} disabled={loading} title="Refresh">
-          {loading ? <span className="spin-ring" /> : "↻"} Refresh
-        </button>
-      </div>
-
       {error ? (
         <div className="home-error">{error}</div>
       ) : (
         <>
-          <div className="home-card home-summary">
-            <div className="home-ring" style={{ "--pct": `${readiness}%` }}>
-              <div className="home-ring-inner">
-                <b>{readiness}%</b>
-                <span>READY</span>
+          <div className="home-card home-overview">
+            <div className="home-head">
+              <div className="home-head-center">
+                <span className="home-head-pill"><Icon name="anchor" size={15} /> AI Summary</span>
+                <div className="home-head-date">{todayLabel}</div>
+              </div>
+              <button type="button" className="home-refresh" onClick={load} disabled={loading} title="Refresh">
+                {loading ? <span className="spin-ring" /> : "↻"} Refresh
+              </button>
+            </div>
+
+            <div className="home-summary">
+              <div className="home-ring" style={{ "--pct": `${readiness}%` }}>
+                <div className="home-ring-inner">
+                  <b>{readiness}%</b>
+                  <span>READY</span>
+                </div>
+              </div>
+              <div className="home-summary-text">
+                <h2>{loading ? "Loading…" : headline}</h2>
+                <p>{loading ? "Crunching the latest numbers…" : (data?.narrative || "")}</p>
               </div>
             </div>
-            <div className="home-summary-text">
-              <h2>{loading ? "Loading…" : headline}</h2>
-              <p>{loading ? "Crunching the latest numbers…" : (data?.narrative || "")}</p>
-            </div>
-          </div>
 
-          <div className="home-card home-stepper">
-            {STEPS.map((s, i) => {
-              const state = stepState(s.key);
-              const value = s.fact ? (f[s.fact] ?? 0) : null;
-              return (
-                <div key={s.key} className="home-step-wrap">
-                  {i > 0 && <div className={`home-step-line ${state !== "pending" ? "on" : ""}`} />}
-                  <div className={`home-step ${state}`}>
-                    <div className="home-step-dot">
-                      {state === "done" ? "✓" : state === "current" ? value : <Icon name="navigation" size={13} />}
-                    </div>
-                    <div className="home-step-label">{s.label}</div>
-                    <div className="home-step-sub">
-                      {value != null ? `${value} ${s.unit}` : s.unit}
+            <div className="home-stepper">
+              {STEPS.map((s, i) => {
+                const state = stepState(s.key);
+                const value = s.fact ? (f[s.fact] ?? 0) : null;
+                return (
+                  <div key={s.key} className="home-step-wrap">
+                    {i > 0 && <div className={`home-step-line ${state !== "pending" ? "on" : ""}`} />}
+                    <div className={`home-step ${state}`}>
+                      <div className="home-step-dot">
+                        {state === "done" ? "✓" : state === "current" ? value : <Icon name="navigation" size={13} />}
+                      </div>
+                      <div className="home-step-label">{s.label}</div>
+                      <div className="home-step-sub">
+                        {value != null ? `${value} ${s.unit}` : s.unit}
+                      </div>
                     </div>
                   </div>
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
           </div>
 
           <div className="home-actions">
@@ -92,7 +104,7 @@ export default function HomeView({ data, loading = false, error = "", onNavigate
               <div className="home-action-num">{reviewCount}</div>
               <div className="home-action-title">Need your review</div>
               <div className="home-action-sub">
-                Attachments with low/medium confidence or missing data — a quick check each.
+                Emails with low/medium confidence or missing data — a quick check each.
               </div>
               <div className="home-action-link">Review now →</div>
             </button>
@@ -114,13 +126,13 @@ export default function HomeView({ data, loading = false, error = "", onNavigate
           <div className="home-agents">
             <div className="home-agent live">
               <div className="home-agent-ic"><Icon name="anchor" size={18} /></div>
-              <div className="home-agent-name">Position Agent</div>
+              <div className="home-agent-name">Vessel Position Agent</div>
               <div className="home-agent-chip">Open Positions {positionsReady}</div>
             </div>
 
             <div className="home-agent disabled">
               <div className="home-agent-ic"><Icon name="navigation" size={18} /></div>
-              <div className="home-agent-name">Sell &amp; Purchase Agent</div>
+              <div className="home-agent-name">Vessel Sell and Purchase Agent</div>
               <div className="home-agent-chip">Coming soon</div>
             </div>
 

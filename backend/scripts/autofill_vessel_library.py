@@ -1,12 +1,13 @@
 """
-One-off script: auto-fill the vessel_library table from vessels already in the DB.
+Sync vessel_library from vessels already in the DB.
 
 Run from the backend/ directory:
 
     python -m scripts.autofill_vessel_library
 
-It is idempotent — running it again only inserts vessels that aren't already in
-the library (matched by IMO number, or normalized vessel name when no IMO).
+Idempotent:
+  - inserts vessels not already in the library (IMO / name match)
+  - fills blank fields on existing library rows from extraction data
 """
 import logging
 import os
@@ -24,9 +25,15 @@ logger = logging.getLogger("autofill_vessel_library")
 
 def main() -> None:
     before = len(list_library(supabase))
-    inserted = autofill_library(supabase)
+    stats = autofill_library(supabase)
     after = len(list_library(supabase))
-    logger.info("Vessel library: %d existing → +%d inserted → %d total", before, inserted, after)
+    logger.info(
+        "Vessel library: %d existing → +%d inserted, %d updated → %d total",
+        before,
+        stats.get("inserted", 0),
+        stats.get("updated", 0),
+        after,
+    )
 
 
 if __name__ == "__main__":

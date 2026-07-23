@@ -30,6 +30,104 @@ function SummaryBarChart({ chart }) {
   );
 }
 
+function MatchBriefBody({ facts }) {
+  const hot = facts.hot_list || [];
+  const dead = facts.dead_weight || [];
+  const chips = facts.zone_chips || [];
+  const deadCount = facts.dead_weight_count ?? dead.length;
+
+  return (
+    <div className="aisum-brief">
+      {facts.urgency_line ? (
+        <div className="aisum-callout">{facts.urgency_line}</div>
+      ) : null}
+
+      <section className="aisum-section">
+        <div className="aisum-section-head">
+          <h4>Hot list</h4>
+          <span>Call these first</span>
+        </div>
+        {hot.length === 0 ? (
+          <p className="aisum-empty">No strong candidates yet — fill opens and regions.</p>
+        ) : (
+          <div className="aisum-table-wrap">
+            <table className="aisum-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Vessel</th>
+                  <th>Region</th>
+                  <th>Open</th>
+                  <th>DWT</th>
+                  <th>Why</th>
+                </tr>
+              </thead>
+              <tbody>
+                {hot.map((row, i) => (
+                  <tr key={row.id || `${row.vessel_name}-${i}`}>
+                    <td className="aisum-num">{i + 1}</td>
+                    <td className="aisum-name">{row.vessel_name}</td>
+                    <td>{row.region || "—"}</td>
+                    <td>{row.opening_date || "—"}</td>
+                    <td className="aisum-num">{row.dwt || "—"}</td>
+                    <td className="aisum-why">{row.why || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section className="aisum-section">
+        <div className="aisum-section-head">
+          <h4>Dead weight</h4>
+          <span>{deadCount} incomplete — fix before matching</span>
+        </div>
+        {dead.length === 0 ? (
+          <p className="aisum-empty">No heavy gaps in the current set.</p>
+        ) : (
+          <ul className="aisum-dead">
+            {dead.map((row, i) => (
+              <li key={`${row.vessel_name}-${i}`}>
+                <span className="aisum-name">{row.vessel_name}</span>
+                <span className="aisum-miss">
+                  missing {(row.missing || []).join(", ")}
+                </span>
+              </li>
+            ))}
+            {deadCount > dead.length ? (
+              <li className="aisum-dead-more">+{deadCount - dead.length} more</li>
+            ) : null}
+          </ul>
+        )}
+      </section>
+
+      {chips.length > 0 ? (
+        <section className="aisum-section">
+          <div className="aisum-section-head">
+            <h4>Coverage</h4>
+            <span>By trade zone</span>
+          </div>
+          <div className="aisum-chips">
+            {chips.map((c) => (
+              <span
+                key={c.zone}
+                className="aisum-chip"
+                style={{ borderColor: c.color, background: `${c.color}14` }}
+              >
+                <i style={{ background: c.color }} />
+                {c.zone}
+                <b>{c.count}</b>
+              </span>
+            ))}
+          </div>
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
 export default function AiSummaryModal({
   open,
   onClose,
@@ -48,6 +146,8 @@ export default function AiSummaryModal({
     return () => window.removeEventListener("keydown", onKey);
   }, [open, onClose]);
 
+  const isMatchBrief = data?.facts?.layout === "match_brief";
+
   const handleCopy = useCallback(() => {
     if (!data?.narrative) return;
     navigator.clipboard.writeText(data.narrative).catch(() => {});
@@ -61,7 +161,10 @@ export default function AiSummaryModal({
 
   return createPortal(
     <div className="aisum-bg" onClick={onClose}>
-      <div className="aisum-modal" onClick={(e) => e.stopPropagation()}>
+      <div
+        className={`aisum-modal ${isMatchBrief ? "aisum-modal-wide" : ""}`}
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="aisum-head">
           <span className="aisum-head-title">
             <span className="aisum-spark" aria-hidden>✨</span>
@@ -81,7 +184,7 @@ export default function AiSummaryModal({
           {loading && (
             <div className="aisum-loading">
               <span className="aisum-spin" />
-              Analyzing current data…
+              Building match brief…
             </div>
           )}
 
@@ -100,16 +203,33 @@ export default function AiSummaryModal({
                 </div>
               )}
 
-              {charts.map((chart) => (
-                <SummaryBarChart key={chart.title} chart={chart} />
-              ))}
+              {isMatchBrief ? (
+                <MatchBriefBody facts={data.facts} />
+              ) : (
+                <>
+                  {data.narrative ? (
+                    <div className="aisum-narrative aisum-desknote">
+                      {String(data.narrative).split("\n").map((line, i) => (
+                        <p key={i} className="aisum-deskline">{line}</p>
+                      ))}
+                    </div>
+                  ) : null}
 
-              <div className="aisum-narrative">{data.narrative}</div>
+                  {data.facts?.urgency === "high" && (
+                    <p className="aisum-urgent">
+                      Urgent openings detected — prioritize near-term positions.
+                    </p>
+                  )}
 
-              {data.facts?.urgency === "high" && (
-                <p className="aisum-urgent">
-                  ⚡ Urgent openings detected — prioritize near-term positions.
-                </p>
+                  {charts.length > 0 && (
+                    <div className="aisum-charts">
+                      <h4 className="aisum-charts-label">Breakdown</h4>
+                      {charts.map((chart) => (
+                        <SummaryBarChart key={chart.title} chart={chart} />
+                      ))}
+                    </div>
+                  )}
+                </>
               )}
 
               {generatedAt && (
@@ -127,7 +247,7 @@ export default function AiSummaryModal({
               Refresh
             </button>
             <button type="button" onClick={handleCopy} className="aisum-btn primary">
-              Copy summary
+              Copy brief
             </button>
           </div>
         )}

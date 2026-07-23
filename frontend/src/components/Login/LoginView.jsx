@@ -1,5 +1,4 @@
 import { useState } from "react";
-import Icon from "../icons";
 
 const DEMO_USER = "demo123";
 const DEMO_PASS = "123";
@@ -27,7 +26,7 @@ export default function LoginView({ onLogin }) {
 
       <form className="login-card" onSubmit={submit}>
         <div className="login-brand">
-          <span className="login-mark"><Icon name="anchor" size={26} /></span>
+          <img className="login-mark" src="/logo.png?v=2" alt="Broker Sense" />
           <div className="login-wm">
             <span className="l1">BROKER</span> <span className="l2">SENSE</span>
           </div>

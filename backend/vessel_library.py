@@ -17,7 +17,12 @@ import re
 from datetime import datetime
 from typing import Any
 
-from column_defs import _looks_like_imo_type
+from column_defs import (
+    _looks_like_imo_type,
+    _format_rounded_figures,
+    _format_dwt_sdwt,
+    _format_year_built,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +30,17 @@ logger = logging.getLogger(__name__)
 LIBRARY_FIELDS = [
     "vessel_name",
     "imo_no",
+    "call_sign",
+    "vessel_type",
+    "year_built",
     "imo_type",
     "dwt",
-    "year_built",
-    "tank_coating",
-    "vessel_type",
+    "cbm",
+    "flag",
+    "sire_date",
+    "cdi_date",
+    "tank_coating",  # kept for autofill / legacy rows (not shown in default UI order)
+    "ai_normalized",  # meta: comma-separated fields AI-normalized (e.g. dwt)
 ]
 
 _EMPTY = frozenset({
@@ -82,14 +93,33 @@ def _particulars_from_dynamic(dd: dict) -> dict[str, str]:
     vessel_type = _clean(dd.get("vessel_type"))
     if _looks_like_imo_type(vessel_type):
         vessel_type = ""
+    year = _clean(dd.get("year_built"))
+    dwt = _clean(dd.get("dwt_sdwt"))
+    cbm = _clean(dd.get("cbm"))
+    dwt_fmt, dwt_scaled = _format_dwt_sdwt(dwt) if dwt else ("", False)
+    ai_flags: set[str] = set()
+    for p in str(dd.get("ai_normalized") or "").split(","):
+        p = p.strip()
+        if p == "dwt_sdwt":
+            ai_flags.add("dwt")
+        elif p:
+            ai_flags.add(p)
+    if dwt_scaled:
+        ai_flags.add("dwt")
     return {
         "vessel_name": _clean(dd.get("vessel_name")),
         "imo_no": _imo_number(dd),
-        "imo_type": imo_type,
-        "dwt": _clean(dd.get("dwt_sdwt")),
-        "year_built": _clean(dd.get("year_built")),
-        "tank_coating": _clean(dd.get("tank_coating")),
+        "call_sign": _clean(dd.get("call_sign")),
         "vessel_type": vessel_type,
+        "year_built": _format_year_built(year) if year else "",
+        "imo_type": imo_type,
+        "dwt": dwt_fmt,
+        "cbm": _format_rounded_figures(cbm) if cbm else "",
+        "flag": _clean(dd.get("flag")),
+        "sire_date": _clean(dd.get("sire_date")),
+        "cdi_date": _clean(dd.get("cdi_date")),
+        "tank_coating": _clean(dd.get("tank_coating")),
+        "ai_normalized": ",".join(sorted(ai_flags)),
     }
 
 
@@ -124,21 +154,113 @@ def _existing_keys(supabase) -> set[str]:
 
 # ── Public operations ────────────────────────────────────────────────────────
 
-def autofill_library(supabase) -> int:
-    """Insert deduplicated vessels from the DB into vessel_library (skip existing)."""
+def autofill_library(supabase) -> dict[str, int]:
+    """Sync vessel_library from extracted vessels.
+
+    - Inserts vessels not yet in the library (by match_key)
+    - Fills blank fields on existing library rows from newer extraction data
+    - Re-formats year_built / dwt / cbm on existing rows when needed
+
+    Returns {"inserted": n, "updated": m}.
+    """
     candidates = _candidates_from_vessels(supabase)
-    existing = _existing_keys(supabase)
+    existing_rows = (
+        supabase.table("vessel_library")
+        .select("id, match_key, " + ", ".join(LIBRARY_FIELDS))
+        .execute()
+    ).data or []
+    by_key = {r["match_key"]: r for r in existing_rows if r.get("match_key")}
+
     inserted = 0
+    updated = 0
     for key, particulars in candidates.items():
-        if key in existing:
+        if key in by_key:
+            row = by_key[key]
+            patch: dict[str, Any] = {}
+            for f in LIBRARY_FIELDS:
+                incoming = particulars.get(f) or ""
+                current = _clean(row.get(f))
+                if not current and incoming:
+                    patch[f] = incoming
+                elif f in ("year_built", "dwt", "cbm") and current:
+                    preferred = incoming or (
+                        _format_year_built(current) if f == "year_built"
+                        else (_format_dwt_sdwt(current)[0] if f == "dwt" else _format_rounded_figures(current))
+                    )
+                    if preferred and preferred != current:
+                        patch[f] = preferred
+            if patch:
+                patch["updated_at"] = datetime.utcnow()
+                supabase.table("vessel_library").update(patch).eq("id", row["id"]).execute()
+                updated += 1
             continue
+
         payload = dict(particulars)
         payload["match_key"] = key
         supabase.table("vessel_library").insert(payload).execute()
         inserted += 1
-    if inserted:
-        logger.info("Vessel library auto-fill: inserted %d vessels", inserted)
-    return inserted
+
+    # Reformat any remaining library rows (including library-only entries).
+    updated += normalize_library_formats(supabase)
+
+    if inserted or updated:
+        logger.info(
+            "Vessel library sync: inserted=%d updated=%d",
+            inserted,
+            updated,
+        )
+    return {"inserted": inserted, "updated": updated}
+
+
+def normalize_library_formats(supabase) -> int:
+    """Re-format year_built / dwt / cbm on all vessel_library rows (idempotent)."""
+    rows = (
+        supabase.table("vessel_library")
+        .select("id, year_built, dwt, cbm, ai_normalized")
+        .execute()
+    ).data or []
+    updated = 0
+    for row in rows:
+        patch: dict[str, Any] = {}
+        year = _clean(row.get("year_built"))
+        if year:
+            fmt = _format_year_built(year)
+            if fmt and fmt != year:
+                patch["year_built"] = fmt
+        dwt = _clean(row.get("dwt"))
+        if dwt:
+            fmt, scaled = _format_dwt_sdwt(dwt)
+            if fmt and fmt != dwt:
+                patch["dwt"] = fmt
+            flags = {p.strip() for p in _clean(row.get("ai_normalized")).split(",") if p.strip()}
+            if scaled:
+                flags.add("dwt")
+            elif "dwt" not in flags:
+                for m in re.finditer(r"[\d,]+(?:\.\d+)?", fmt or dwt):
+                    try:
+                        n = float(m.group(0).replace(",", ""))
+                    except ValueError:
+                        continue
+                    if n >= 1000 and float(n).is_integer() and int(n) % 1000 == 0:
+                        q = int(n) // 1000
+                        if 0 < q < 1000:
+                            flags.add("dwt")
+                            break
+            new_flags = ",".join(sorted(flags))
+            if new_flags != _clean(row.get("ai_normalized")):
+                patch["ai_normalized"] = new_flags
+        cbm = _clean(row.get("cbm"))
+        if cbm:
+            fmt = _format_rounded_figures(cbm)
+            if fmt and fmt != cbm:
+                patch["cbm"] = fmt
+        if patch:
+            patch["updated_at"] = datetime.utcnow()
+            supabase.table("vessel_library").update(patch).eq("id", row["id"]).execute()
+            updated += 1
+    if updated:
+        logger.info("Normalized formats on %d vessel_library rows", updated)
+    return updated
 
 
 def list_library(supabase) -> list[dict[str, Any]]:
@@ -203,8 +325,23 @@ def add_library_vessel(supabase, fields: dict[str, Any]) -> dict[str, Any]:
 
 
 def update_library_vessel(supabase, vessel_id: str, fields: dict[str, Any]) -> dict[str, Any]:
-    payload = _payload_from_fields(fields)
-    payload["match_key"] = match_key(payload["vessel_name"], payload["imo_no"])
+    # Only overwrite fields present in the request so omitted legacy columns are kept.
+    present = {f: _clean(fields.get(f)) for f in LIBRARY_FIELDS if f in fields}
+    vessel_name = present.get("vessel_name")
+    imo_no = present.get("imo_no")
+    if vessel_name is None or imo_no is None:
+        existing = (
+            supabase.table("vessel_library")
+            .select("vessel_name, imo_no")
+            .eq("id", vessel_id)
+            .limit(1)
+            .execute()
+        ).data or []
+        if existing:
+            vessel_name = vessel_name if vessel_name is not None else existing[0].get("vessel_name", "")
+            imo_no = imo_no if imo_no is not None else existing[0].get("imo_no", "")
+    payload = dict(present)
+    payload["match_key"] = match_key(vessel_name or "", imo_no or "")
     payload["updated_at"] = datetime.utcnow()
     result = (
         supabase.table("vessel_library")

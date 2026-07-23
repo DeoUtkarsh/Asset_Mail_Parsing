@@ -19,6 +19,8 @@ import {
   isDraftColumnSelectable,
   sortVesselsBySourceOrder,
 } from "../../utils/standardColumns";
+import { formatStandardField, formatDwtSdwt, parseAiNormalized, formatAiNormalized } from "../../utils/fieldFormat";
+import CellHighlightLegend from "../CellHighlightLegend";
 
 const RECEIVED_COL = { id: "received", header: "RECEIVED", read_only: true, storage: "derived" };
 
@@ -80,6 +82,12 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
     load();
   }, [load, refreshKey]);
 
+  // Whenever the Position List is shown / columns resolve, auto-check default draft columns.
+  useEffect(() => {
+    if (!columnDefs?.length) return;
+    setSelectedColumnIds(defaultDraftSelectedColumnIds(columnDefs));
+  }, [columnDefs]);
+
   const handleDraftEvent = useCallback((evt) => {
     if (evt.type === "drafting_done") {
       setGenerating(false);
@@ -113,7 +121,19 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
     const next = vesselsRef.current.map((v) => {
       if (v.id !== rowId) return v;
       if (field === "__region__") return { ...v, region: value };
-      return { ...v, dynamic_data: { ...v.dynamic_data, [field]: value } };
+      const dd = { ...v.dynamic_data };
+      if (field === "dwt_sdwt" || field === "dwt" || field === "sdwt") {
+        const { value: stored, scaled } = formatDwtSdwt(value);
+        dd[field === "dwt_sdwt" ? "dwt_sdwt" : field] = stored || value;
+        if (field !== "dwt_sdwt") dd.dwt_sdwt = stored || value;
+        const flags = parseAiNormalized(dd.ai_normalized);
+        if (scaled) flags.add("dwt_sdwt");
+        dd.ai_normalized = formatAiNormalized(flags);
+      } else {
+        const stored = formatStandardField(field, value);
+        dd[field] = stored || value;
+      }
+      return { ...v, dynamic_data: dd };
     });
     vesselsRef.current = next;
     setVessels(next);
@@ -185,6 +205,13 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
 
   const handleDeleteSelected = useCallback(async () => {
     if (selectedIds.size === 0) return;
+    const n = selectedIds.size;
+    const ok = window.confirm(
+      n === 1
+        ? "Delete this vessel position? This cannot be undone."
+        : `Delete ${n} selected vessel positions? This cannot be undone.`,
+    );
+    if (!ok) return;
     const ids = [...selectedIds];
     setVessels((prev) => prev.filter((v) => !selectedIds.has(v.id)));
     setSelectedIds(new Set());
@@ -219,7 +246,7 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
   const visibleVessels = useMemo(() => {
     const fromTs = dateFrom ? new Date(`${dateFrom}T00:00:00`).getTime() : null;
     const toTs = dateTo ? new Date(`${dateTo}T23:59:59`).getTime() : null;
-    return vessels.filter((v) => {
+    const filtered = vessels.filter((v) => {
       if (regionFilter && (v.region || "").trim() !== regionFilter) return false;
       if (fromTs != null || toTs != null) {
         const t = v.date_received ? new Date(v.date_received).getTime() : NaN;
@@ -229,6 +256,7 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
       }
       return true;
     });
+    return sortVesselsBySourceOrder(filtered);
   }, [vessels, dateFrom, dateTo, regionFilter]);
 
   const filtersActive = Boolean(dateFrom || dateTo || regionFilter);
@@ -392,6 +420,25 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
           <span className={`vgrid-saved ${savedMsg ? "show" : ""}`}>✓ Saved</span>
 
           {!loading && vessels.length > 0 && (
+            <button
+              type="button"
+              className="tb-btn tb-btn-sm vgrid-delete-btn"
+              onClick={handleDeleteSelected}
+              disabled={selectedIds.size === 0 || editMode}
+              title={
+                selectedIds.size === 0
+                  ? "Select vessel row(s) to delete"
+                  : "Delete selected vessel positions"
+              }
+            >
+              <Icon name="trash" size={13} />
+              <span className="vgrid-delete-label">
+                Delete{selectedIds.size > 0 ? ` (${selectedIds.size})` : ""}
+              </span>
+            </button>
+          )}
+
+          {!loading && vessels.length > 0 && (
             editMode ? (
               <>
                 <button
@@ -446,7 +493,7 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
             title={
               selectedIds.size > 0
                 ? `Vessel List — ${selectedIds.size} selected`
-                : "Vessel Position List — AI Summary"
+                : "Vessel Position List — Match Brief"
             }
             disabled={loading || vessels.length === 0}
             className="tb-btn"
@@ -499,7 +546,7 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
       {vessels.length > 0 && (
         <div className="vgrid-stats">
           <Stat label="Vessels" value={visibleVessels.length} />
-          <Stat label="Sources" value={sourceCount} />
+          <Stat label="Emails" value={sourceCount} />
           <Stat label="Regions" value={new Set(visibleVessels.map((v) => v.region).filter(Boolean)).size} />
           <ColumnsStat
             selectedCount={draftColumnIds.length}
@@ -555,6 +602,8 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
           >
             Clear filters
           </button>
+
+          <CellHighlightLegend />
         </div>
       )}
 
@@ -570,7 +619,7 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
             onCellEdit={handleCellEdit}
             onEnterSave={handleSaveEdits}
             readOnly={!editMode}
-            highlightEmpty={!editMode}
+            highlightEmpty={editMode}
             showCheckboxes
             selectedIds={selectedIds}
             onToggleSelect={handleToggleSelect}
@@ -612,8 +661,21 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
 
 function AddPositionModal({ columns, saving, onClose, onSave }) {
   const fieldKey = (c) => (c.storage === "region" ? "__region__" : c.id);
+  const [showAllFields, setShowAllFields] = useState(false);
   const [form, setForm] = useState(() =>
     columns.reduce((acc, c) => ({ ...acc, [fieldKey(c)]: "" }), {})
+  );
+
+  const visibleColumns = useMemo(() => {
+    // Same order/default as Position List (skip SR. NO — form-only fields).
+    const ordered = filterPositionListGridColumns(columns, showAllFields)
+      .filter((c) => c.id !== "_num" && c.storage !== "derived");
+    return ordered;
+  }, [columns, showAllFields]);
+
+  const editableTotal = useMemo(
+    () => columns.filter((c) => c.id !== "_num" && c.storage !== "derived").length,
+    [columns],
   );
 
   const set = (key, val) => setForm((f) => ({ ...f, [key]: val }));
@@ -631,9 +693,19 @@ function AddPositionModal({ columns, saving, onClose, onSave }) {
           <h3>Add position</h3>
           <button type="button" className="vlib-modal-x" onClick={onClose}>✕</button>
         </div>
-        <p className="vlib-modal-note">New entry with the same columns as the position list. Fill what you have and save.</p>
+        <div className="vlib-modal-toolbar">
+          <p className="vlib-modal-note">
+            Same default columns as the position list. Turn on All columns to fill extra fields.
+          </p>
+          <AllColumnsToggle
+            enabled={showAllFields}
+            onChange={setShowAllFields}
+            visibleCount={visibleColumns.length}
+            totalCount={editableTotal}
+          />
+        </div>
         <div className="vlib-modal-grid">
-          {columns.map((c) => {
+          {visibleColumns.map((c) => {
             const key = fieldKey(c);
             return (
               <label key={c.id} className="vlib-field">

@@ -5,6 +5,7 @@ Vessels are grouped into broader trade zones (STRAITS/SEA, FAR EAST, etc.).
 The LLM is used only for the short introductory paragraph.
 """
 import logging
+import re
 from collections import defaultdict
 from typing import Any, Optional
 
@@ -26,18 +27,29 @@ logger = logging.getLogger(__name__)
 # ── Region → Broad Zone mapping ───────────────────────────────────────────────
 
 REGION_TO_ZONE: dict[str, str] = {
+    # Standard region codes (from open_location mapping) — exact / substring match.
+    "usg": "AMERICAS", "usec": "AMERICAS", "uswc": "AMERICAS",
+    "ecsa": "AMERICAS", "wcsa": "AMERICAS", "caribs": "AMERICAS",
+    "waf": "AFRICA", "eaf": "AFRICA", "eafr": "AFRICA",
+    "med": "MED/BLACK SEA", "blacksea": "MED/BLACK SEA", "black sea": "MED/BLACK SEA",
+    "cont / ara": "EUROPE", "ukc": "EUROPE", "baltic": "EUROPE",
+    "ag / pg": "AG/MIDDLE EAST", "rsea": "AG/MIDDLE EAST",
+    "india / wci": "INDIA", "india / eci": "INDIA",
+    "india (subcontinent adj.)": "INDIA",
+    "straits": "STRAITS/SEA", "sea": "STRAITS/SEA",
+    "far east": "FAR EAST", "australia / aus": "OCEANIA",
     # Broad section headers brokers group by (checked first so they win over
     # individual port names). LLM `region` is usually one of these now.
     "north east asia": "FAR EAST", "northeast asia": "FAR EAST",
     "south east asia": "STRAITS/SEA", "southeast asia": "STRAITS/SEA",
-    "seasia": "STRAITS/SEA", "far east": "FAR EAST", "east asia": "FAR EAST",
+    "seasia": "STRAITS/SEA", "east asia": "FAR EAST",
     "middle east": "AG/MIDDLE EAST",
     "north america": "AMERICAS", "south america": "AMERICAS",
     "americas": "AMERICAS", "america": "AMERICAS",
-    "bsea": "MED/BLACK SEA", "black sea": "MED/BLACK SEA",
-    "med": "MED/BLACK SEA", "mediterranean": "MED/BLACK SEA",
-    "waf": "AFRICA", "west africa": "AFRICA",
-    "eafr": "AFRICA", "east africa": "AFRICA",
+    "bsea": "MED/BLACK SEA",
+    "mediterranean": "MED/BLACK SEA",
+    "west africa": "AFRICA",
+    "east africa": "AFRICA",
     "cont": "EUROPE", "continent": "EUROPE",
     "wci": "INDIA", "west coast india": "INDIA", "east coast india": "INDIA",
     # STRAITS / SEA
@@ -96,7 +108,7 @@ ZONE_ORDER = [
     "MED/BLACK SEA", "EUROPE", "AFRICA", "AMERICAS", "OCEANIA", "UNSPECIFIED",
 ]
 
-# Leaflet map marker coordinates [lat, lng] per zone
+# Leaflet map: one pin per broad zone (fallback only — prefer open/region coords below)
 ZONE_COORDS: dict[str, list[float]] = {
     "STRAITS/SEA":    [1.35,   103.82],
     "FAR EAST":       [31.23,  121.47],
@@ -108,6 +120,47 @@ ZONE_COORDS: dict[str, list[float]] = {
     "AMERICAS":       [29.76,  -95.37],
     "OCEANIA":        [-33.87, 151.21],
     "UNSPECIFIED":    [0.0,     20.0],
+}
+
+# Finer pins: open-location slang + region codes/names → [lat, lng]
+# Americas split: USG ≠ WCSA ≠ USEC ≠ USWC ≠ ECSA ≠ CARIBS
+LOCATION_COORDS: dict[str, list[float]] = {
+    # Americas
+    "usg": [29.76, -95.37], "us gulf": [29.76, -95.37], "houston": [29.76, -95.37],
+    "usec": [40.67, -74.02], "us east coast": [40.67, -74.02],
+    "uswc": [33.72, -118.27], "us west coast": [33.72, -118.27],
+    "wcsa": [-12.05, -77.14], "west coast south america": [-12.05, -77.14],
+    "peru": [-12.05, -77.14], "callao": [-12.05, -77.14], "chile": [-33.45, -70.67],
+    "ecsa": [-23.96, -46.33], "east coast south america": [-23.96, -46.33], "brazil": [-23.96, -46.33],
+    "caribs": [18.02, -76.81], "caribbean": [18.02, -76.81],
+    # Straits / SEA
+    "straits": [1.35, 103.82], "spore": [1.27, 103.85], "singapore": [1.27, 103.85],
+    "singapore strait": [1.20, 103.90], "singapore straits": [1.20, 103.90],
+    "southeast asia": [1.0, 104.0], "sea": [1.0, 104.0], "indo": [-6.12, 106.85],
+    "indonesia": [-6.12, 106.85], "port klang": [2.95, 101.39], "kotabaru": [-3.24, 116.22],
+    "tanjung langsat": [1.45, 104.0],
+    # Far East
+    "far east": [31.23, 121.47], "china": [31.23, 121.47], "n china": [36.07, 120.38],
+    "s china": [22.55, 114.10], "taiwan": [25.03, 121.57], "korea": [35.10, 129.04],
+    "yosu": [34.74, 127.74], "chiba": [35.61, 140.12], "japan": [35.45, 139.65],
+    "taichung": [24.27, 120.52],
+    # India
+    "india / wci": [18.96, 72.85], "wci": [18.96, 72.85], "west coast india": [18.96, 72.85],
+    "india / eci": [17.69, 83.22], "eci": [17.69, 83.22], "east coast india": [17.69, 83.22],
+    "haldia": [22.03, 88.06], "paradip": [20.26, 86.67],
+    # AG / Med / Europe / Africa / Aus
+    "ag / pg": [26.20, 50.60], "ag": [26.20, 50.60], "pg": [26.20, 50.60],
+    "arabian gulf / persian gulf": [26.20, 50.60], "rsea": [21.49, 39.19], "red sea": [21.49, 39.19],
+    "med": [35.90, 14.50], "mediterranean": [35.90, 14.50], "e med": [33.90, 35.50],
+    "c med": [35.90, 14.50], "w med": [36.14, -5.35],
+    "blacksea": [43.40, 34.0], "black sea": [43.40, 34.0],
+    "cont / ara": [51.92, 4.48], "ara": [51.92, 4.48],
+    "continent (amsterdam-rotterdam-antwerp range)": [51.92, 4.48],
+    "ukc": [51.50, -0.13], "baltic": [59.33, 18.07],
+    "waf": [6.45, 3.39], "west africa": [6.45, 3.39],
+    "eaf": [-4.04, 39.67], "east africa": [-4.04, 39.67],
+    "australia / aus": [-32.0, 115.75], "australia (often grouped with nz as oceania)": [-32.0, 115.75],
+    "kwinana": [-32.20, 115.77], "aus": [-32.0, 115.75],
 }
 
 # Column display config: (Header, [dynamic_data keys to try in priority order])
@@ -144,13 +197,100 @@ INTRO_DEFAULT = (
 def _region_to_zone(region: str) -> str:
     if not region:
         return "UNSPECIFIED"
-    r = region.strip().lower()
-    if r in ("unspecified", "n/a", "na", "-", "unknown"):
+    r = region.strip()
+    if r.lower() in ("unspecified", "n/a", "na", "-", "unknown"):
         return "UNSPECIFIED"
+    try:
+        from region_map import region_code_to_zone, is_standard_region
+        if is_standard_region(r) and r.upper() != "UNSPECIFIED":
+            return region_code_to_zone(r)
+    except Exception:
+        pass
+    low = r.lower()
     for key, zone in REGION_TO_ZONE.items():
-        if key in r or r in key:
+        if key in low or low in key:
             return zone
     return "UNSPECIFIED"
+
+
+def _norm_loc(text: str) -> str:
+    s = str(text or "").lower().replace("’", "'").replace("`", "'")
+    s = s.replace("-", " ").replace("_", " ")
+    s = re.sub(r"[^\w\s/]+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _lookup_location_coords(text: str | None) -> list[float] | None:
+    """Match open location / region text to a lat/lng pair."""
+    key = _norm_loc(text or "")
+    if not key or key in ("unspecified", "n/a", "na", "-", "—"):
+        return None
+    if key in LOCATION_COORDS:
+        return LOCATION_COORDS[key]
+    # Prefer longer keys so "singapore strait" wins over "singapore"
+    for alias, coords in sorted(LOCATION_COORDS.items(), key=lambda x: -len(x[0])):
+        if alias in key or key in alias:
+            return coords
+    # Compound open: try first decisive token
+    for part in re.split(r"\s*/\s*|\s*,\s*|\s+-\s+", key):
+        p = part.strip()
+        if p in LOCATION_COORDS:
+            return LOCATION_COORDS[p]
+    return None
+
+
+def _pin_label(open_loc: str, region: str, zone: str) -> str:
+    if open_loc:
+        return open_loc.strip()
+    if region and region.upper() != "UNSPECIFIED":
+        return region.strip()
+    return zone
+
+
+def _vessel_map_pin(vessel: dict[str, Any]) -> dict[str, Any]:
+    """Resolve one vessel to a map pin (label + coords + parent zone for colour)."""
+    dd = vessel.get("dynamic_data") or {}
+    open_loc = str(dd.get("open_location") or "").strip()
+    region = str(vessel.get("region") or "").strip()
+    zone = _region_to_zone(region)
+
+    coords = _lookup_location_coords(open_loc) or _lookup_location_coords(region)
+    if not coords:
+        coords = ZONE_COORDS.get(zone, ZONE_COORDS["UNSPECIFIED"])
+
+    return {
+        "name": _pin_label(open_loc, region, zone),
+        "lat": float(coords[0]),
+        "lng": float(coords[1]),
+        "zone": zone,
+        "count": 1,
+    }
+
+
+def _build_map_markers(vessels: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One pin per distinct open/region location (USG and Peru are separate)."""
+    buckets: dict[tuple[float, float, str], dict[str, Any]] = {}
+    for v in vessels:
+        pin = _vessel_map_pin(v)
+        # Cluster only exact same coordinates + same parent zone
+        key = (round(pin["lat"], 3), round(pin["lng"], 3), pin["zone"])
+        if key not in buckets:
+            buckets[key] = dict(pin)
+        else:
+            buckets[key]["count"] += 1
+            # Keep a readable label when stacking identical opens
+            if pin["name"] not in buckets[key]["name"]:
+                buckets[key]["name"] = f"{buckets[key]['name']} / {pin['name']}"
+    # Stable order by zone then name
+    markers = list(buckets.values())
+    markers.sort(
+        key=lambda m: (
+            ZONE_ORDER.index(m["zone"]) if m["zone"] in ZONE_ORDER else 99,
+            m["name"].lower(),
+        )
+    )
+    return markers
 
 
 def _get_cell(dd: dict, keys: list[str]) -> str:
@@ -252,38 +392,47 @@ def _build_html_grid(
             continue
 
         th = "".join(
-            f'<th style="background:#0369a1;color:#e0f2fe;padding:8px 10px;'
-            f'text-align:left;font-size:11px;font-family:Arial,Helvetica,sans-serif;'
-            f'border:1px solid #0284c7;font-weight:600;white-space:nowrap">'
+            f'<th style="background:#219495;color:#ffffff;padding:8px 10px;'
+            f'text-align:left;font-size:11px;font-family:Poppins,Inter,Arial,Helvetica,sans-serif;'
+            f'border:1px solid #1a7a7b;font-weight:600;letter-spacing:0.35px;'
+            f'text-transform:uppercase;white-space:nowrap">'
             f'{header_for_column(col["id"], cols)}</th>'
             for col in cols
         )
 
         rows = ""
         for i, v in enumerate(vessels):
-            bg = "#ffffff" if i % 2 == 0 else "#f8fafc"
             tds = []
             for col in cols:
                 raw = resolve_cell_value(v, col["id"], i + 1)
                 display = raw if _is_meaningful_cell(raw) else empty_cell
-                is_name = col["id"] == "vessel_name"
-                weight = "font-weight:700;" if is_name else ""
-                wrap = "normal" if col["id"] in ("remarks", "cargo_history_combo", "attachments") else "nowrap"
+                cid = col["id"]
+                if cid == "vessel_name":
+                    cell_extra = "font-weight:700;color:#132740;text-transform:uppercase;"
+                elif cid == "region":
+                    cell_extra = "font-weight:700;color:#1a7a7b;"
+                else:
+                    cell_extra = "color:#132740;"
+                wrap = "normal" if cid in ("remarks", "cargo_history_combo", "attachments") else "nowrap"
                 tds.append(
-                    f'<td style="padding:8px 10px;font-size:11px;font-family:Arial,Helvetica,sans-serif;'
-                    f'color:#0c4a6e;border:1px solid #cbd5e1;background:{bg};'
-                    f'white-space:{wrap};vertical-align:top;{weight}">{display}</td>'
+                    f'<td style="padding:8px 10px;font-size:11.5px;'
+                    f'font-family:Poppins,Inter,Arial,Helvetica,sans-serif;'
+                    f'border:1px solid #e5e7ea;background:#ffffff;'
+                    f'white-space:{wrap};vertical-align:top;{cell_extra}">{display}</td>'
                 )
             rows += f"<tr>{''.join(tds)}</tr>"
 
         zone_html_parts.append(
             f'<div style="margin-bottom:24px">'
-            f'<p style="font-size:12px;font-weight:700;color:#0369a1;font-family:Arial,Helvetica,sans-serif;'
-            f'text-transform:uppercase;margin:0 0 8px 0;padding:4px 0;border-bottom:2px solid #0ea5e9">'
+            f'<p style="font-size:12px;font-weight:700;color:#132740;'
+            f'font-family:Poppins,Inter,Arial,Helvetica,sans-serif;'
+            f'text-transform:uppercase;margin:0 0 8px 0;padding:6px 10px;'
+            f'background:#f3f4f6;border:1px solid #e5e7ea">'
             f'{zone}'
             f'</p>'
             f'<table cellpadding="0" cellspacing="0" border="0" '
-            f'style="border-collapse:collapse;width:100%;min-width:600px;font-family:Arial,Helvetica,sans-serif">'
+            f'style="border-collapse:collapse;width:100%;min-width:600px;'
+            f'font-family:Poppins,Inter,Arial,Helvetica,sans-serif;border:1px solid #e5e7ea">'
             f'<thead><tr>{th}</tr></thead>'
             f'<tbody>{rows}</tbody>'
             f'</table></div>'
@@ -293,7 +442,7 @@ def _build_html_grid(
     return f"""<!DOCTYPE html>
 <html>
 <head><meta charset="UTF-8"></head>
-<body style="font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#0c4a6e;margin:0;padding:16px;line-height:1.6;">
+<body style="font-family:Poppins,Inter,Arial,Helvetica,sans-serif;font-size:13px;color:#132740;margin:0;padding:16px;line-height:1.6;">
   <p style="margin:0 0 10px 0;">Dear Utkarsh,</p>
   <p style="margin:0 0 10px 0;">Good day.</p>
   <p style="margin:0 0 16px 0;">{intro_text}</p>
@@ -457,17 +606,8 @@ async def run_drafter(
     draft_html = _build_html(intro_text, ordered, grid_columns or [])
     logger.info("[Drafter] HTML email: %d chars", len(draft_html))
 
-    # 4 — Build zone markers for the Leaflet map
-    zones_for_map = [
-        {
-            "name": zone,
-            "lat": ZONE_COORDS.get(zone, [0.0, 0.0])[0],
-            "lng": ZONE_COORDS.get(zone, [0.0, 0.0])[1],
-            "count": len(vlist),
-        }
-        for zone, vlist in ordered.items()
-        if vlist
-    ]
+    # 4 — Map markers follow open location / region (USG ≠ Peru, etc.)
+    zones_for_map = _build_map_markers(vessels)
 
     # 5 — Mark email as drafted
     supabase.table("parent_emails").update({"status": "drafted"}).eq("id", email_id).execute()

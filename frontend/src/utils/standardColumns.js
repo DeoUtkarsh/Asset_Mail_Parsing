@@ -3,26 +3,28 @@
  * Fallback defaults used until the API responds.
  */
 
+import { formatStandardField } from "./fieldFormat";
+
 export const DEFAULT_COLUMNS = [
   { id: "_num", header: "SR. NO", display_order: 0, read_only: true, storage: "derived" },
-  { id: "imo", header: "IMO", display_order: 1, read_only: false, storage: "dynamic_data" },
-  { id: "company", header: "COMPANY", display_order: 2, read_only: false, storage: "dynamic_data" },
-  { id: "vessel_name", header: "VESSEL NAME", display_order: 3, read_only: false, storage: "dynamic_data" },
-  { id: "call_sign", header: "CALL SIGN", display_order: 4, read_only: false, storage: "dynamic_data" },
-  { id: "year_built", header: "YEAR BUILT", display_order: 5, read_only: false, storage: "dynamic_data" },
-  { id: "vessel_type", header: "VESSEL TYPE", display_order: 6, read_only: false, storage: "dynamic_data" },
-  { id: "cargo_type", header: "CARGO TYPE", display_order: 7, read_only: false, storage: "dynamic_data" },
-  { id: "direction", header: "DIRECTION", display_order: 8, read_only: false, storage: "dynamic_data" },
-  { id: "dwt_sdwt", header: "DWT/SDWT", display_order: 9, read_only: false, storage: "dynamic_data" },
+  { id: "vessel_name", header: "VESSEL NAME", display_order: 1, read_only: false, storage: "dynamic_data" },
+  { id: "dwt_sdwt", header: "DWT/SDWT", display_order: 2, read_only: false, storage: "dynamic_data" },
+  { id: "year_built", header: "YEAR BUILT", display_order: 3, read_only: false, storage: "dynamic_data" },
+  { id: "tank_coating", header: "TANK COATING", display_order: 4, read_only: false, storage: "dynamic_data" },
+  { id: "imo", header: "IMO", display_order: 5, read_only: false, storage: "dynamic_data" },
+  { id: "region", header: "REGION", display_order: 6, read_only: false, storage: "region" },
+  { id: "opening_date", header: "OPENING DATE", display_order: 7, read_only: false, storage: "dynamic_data" },
+  { id: "open_location", header: "OPEN LOCATION", display_order: 8, read_only: false, storage: "dynamic_data" },
+  { id: "direction", header: "DIRECTION", display_order: 9, read_only: false, storage: "dynamic_data" },
   { id: "cbm", header: "CBM/CUBIC METER", display_order: 10, read_only: false, storage: "dynamic_data" },
-  { id: "draft", header: "DRAFT", display_order: 11, read_only: false, storage: "dynamic_data" },
-  { id: "flag", header: "FLAG", display_order: 12, read_only: false, storage: "dynamic_data" },
-  { id: "eta_foc", header: "ETA FOC", display_order: 13, read_only: false, storage: "dynamic_data" },
-  { id: "region", header: "REGION", display_order: 14, read_only: false, storage: "region" },
-  { id: "open_location", header: "OPEN LOCATION", display_order: 15, read_only: false, storage: "dynamic_data" },
-  { id: "opening_date", header: "OPENING DATE", display_order: 16, read_only: false, storage: "dynamic_data" },
-  { id: "cargo_history_combo", header: "CARGO HISTORY/L3C/LAST 3 CARGOES", display_order: 17, read_only: false, storage: "dynamic_data" },
-  { id: "tank_coating", header: "TANK COATING", display_order: 18, read_only: false, storage: "dynamic_data" },
+  { id: "cargo_history_combo", header: "LAST 3 CARGOES", display_order: 11, read_only: false, storage: "dynamic_data" },
+  { id: "company", header: "COMPANY", display_order: 12, read_only: false, storage: "dynamic_data" },
+  { id: "call_sign", header: "CALL SIGN", display_order: 13, read_only: false, storage: "dynamic_data" },
+  { id: "vessel_type", header: "VESSEL TYPE", display_order: 14, read_only: false, storage: "dynamic_data" },
+  { id: "cargo_type", header: "CARGO TYPE", display_order: 15, read_only: false, storage: "dynamic_data" },
+  { id: "draft", header: "DRAFT", display_order: 16, read_only: false, storage: "dynamic_data" },
+  { id: "flag", header: "FLAG", display_order: 17, read_only: false, storage: "dynamic_data" },
+  { id: "eta_foc", header: "ETA FOC", display_order: 18, read_only: false, storage: "dynamic_data" },
   { id: "sire_date", header: "SIRE DATE", display_order: 19, read_only: false, storage: "dynamic_data" },
   { id: "sire_location", header: "SIRE LOCATION", display_order: 20, read_only: false, storage: "dynamic_data" },
   { id: "cdi_date", header: "CDI DATE", display_order: 21, read_only: false, storage: "dynamic_data" },
@@ -166,17 +168,18 @@ export function filterPreviewGridColumns(vessels, columnDefs, compact) {
 /** Vessel Position List default view — fixed summary columns (broker position list layout). */
 export const POSITION_LIST_SUMMARY_COLUMN_ORDER = [
   "_num",
-  "imo",
-  "company",
   "vessel_name",
-  "region",
   "dwt_sdwt",
   "year_built",
   "tank_coating",
-  "open_location",
+  "imo",
+  "region",
   "opening_date",
+  "open_location",
   "direction",
+  "cbm",
   "cargo_history_combo",
+  "company",
 ];
 
 export const POSITION_LIST_SUMMARY_COLUMN_IDS = new Set(POSITION_LIST_SUMMARY_COLUMN_ORDER);
@@ -219,12 +222,15 @@ export const DRAFT_LOCKED_COLUMN_IDS = new Set(["vessel_name", "region", "imo"])
 export const DRAFT_NON_SELECTABLE_COLUMN_IDS = new Set(["_num", "received", "attachments", "company"]);
 
 export function defaultDraftSelectedColumnIds(columnDefs = DEFAULT_COLUMNS) {
-  const allowed = new Set(columnDefs.map((c) => c.id));
-  return new Set(
-    POSITION_LIST_SUMMARY_COLUMN_ORDER.filter(
-      (id) => allowed.has(id) && !DRAFT_NON_SELECTABLE_COLUMN_IDS.has(id),
-    ),
+  const allowed = new Set((columnDefs?.length ? columnDefs : DEFAULT_COLUMNS).map((c) => c.id));
+  // Every default Position List column that belongs in Generate Draft — always on at open.
+  const ids = POSITION_LIST_SUMMARY_COLUMN_ORDER.filter(
+    (id) => allowed.has(id) && !DRAFT_NON_SELECTABLE_COLUMN_IDS.has(id),
   );
+  DRAFT_LOCKED_COLUMN_IDS.forEach((id) => {
+    if (allowed.has(id) && !ids.includes(id)) ids.push(id);
+  });
+  return new Set(ids);
 }
 
 export function isDraftColumnSelectable(columnId) {
@@ -321,14 +327,32 @@ export function resolveStandardCellValue(vessel, columnId, rowNum = 1) {
     if (looksLikeImoType(dd.vessel_type)) return dd.vessel_type;
     return "";
   }
-  return dd[columnId] ?? "";
+  const raw = dd[columnId] ?? "";
+  if (columnId === "ai_normalized") return "";
+  return formatStandardField(columnId, raw);
 }
 
 export const EMAIL_TABLE_COLUMNS = DEFAULT_COLUMNS.filter((c) => c.id !== "_num");
 
-/** Sort vessels in source-email order (row_order, then created_at). */
+/** Sort vessels grouped by source email, then in-mail order (row_order). */
 export function sortVesselsBySourceOrder(vessels) {
-  return [...(vessels || [])].sort((a, b) => {
+  const list = [...(vessels || [])];
+  const groupDate = new Map();
+  for (const v of list) {
+    const aid = v.attachment_id || "_none";
+    const t = v.date_received ? new Date(v.date_received).getTime() : 0;
+    const prev = groupDate.get(aid);
+    if (prev == null || t > prev) groupDate.set(aid, t);
+  }
+  return list.sort((a, b) => {
+    const aidA = a.attachment_id || "_none";
+    const aidB = b.attachment_id || "_none";
+    if (aidA !== aidB) {
+      const da = groupDate.get(aidA) || 0;
+      const db = groupDate.get(aidB) || 0;
+      if (da !== db) return db - da; // newer emails first
+      return String(aidA).localeCompare(String(aidB));
+    }
     const ao = a?.row_order ?? 0;
     const bo = b?.row_order ?? 0;
     if (ao !== bo) return ao - bo;

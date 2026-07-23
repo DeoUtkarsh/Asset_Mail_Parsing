@@ -14,16 +14,19 @@ import {
   isVesselNameColumn,
   isRegionColumn,
   isDraftColumnSelectable,
+  DRAFT_LOCKED_COLUMN_IDS,
   SINGLE_LINE_COLUMN_IDS,
+  hasDisplayValue,
 } from "../../utils/standardColumns";
+import { isAiNormalizedField } from "../../utils/fieldFormat";
 
 const helper = createColumnHelper();
 
 const GRID_BORDER = "1px solid var(--line)";
 
-/** Checkbox (if shown), SR. NO, RECEIVED, IMO, COMPANY, VESSEL NAME, REGION stay fixed when scrolling. */
+/** Checkbox (if shown), SR. NO, RECEIVED, and leading identity cols stay fixed when scrolling. */
 function buildPinnedOrder(showCheckboxes) {
-  const cols = ["_num", "received", "imo", "company", "vessel_name", "region"];
+  const cols = ["_num", "received", "vessel_name", "imo", "region"];
   return showCheckboxes ? ["_select", ...cols] : cols;
 }
 
@@ -44,7 +47,6 @@ function EditableCell({ getValue, row, column, table, vesselName = false, column
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(initial);
   const readOnly = table.options.meta?.readOnly;
-  const highlightEmpty = table.options.meta?.highlightEmpty;
   const editField = editFieldForColumn(column.id, columnDefs);
 
   useEffect(() => {
@@ -59,25 +61,21 @@ function EditableCell({ getValue, row, column, table, vesselName = false, column
   };
 
   if (!editing || readOnly) {
-    const showAddHint = !value && Boolean(editField) && (!readOnly || highlightEmpty);
-    const label = (columnDefs?.find((c) => c.id === column.id)?.header || column.id)
-      .toString()
-      .toLowerCase();
     return (
       <div
         onClick={
           readOnly || !editField ? undefined : () => setEditing(true)
         }
-        className={`cell-val ${value ? "" : "is-empty"} ${showAddHint ? "cell-add" : ""} ${
+        className={`cell-val ${value ? "" : "is-empty"} ${
           readOnly || !editField ? "cursor-default" : "cursor-text"
         } ${vesselName ? "font-bold uppercase" : ""}`}
         title={
           readOnly
-            ? (showAddHint ? "Click Edit to fill this field" : value || "")
+            ? (value || "")
             : value || "Click to edit · Enter to save"
         }
       >
-        {value || (showAddHint ? `add ${label}…` : "—")}
+        {value || "—"}
       </div>
     );
   }
@@ -102,7 +100,6 @@ function EditableRegionCell({ getValue, row, column, table }) {
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(initial);
   const readOnly = table.options.meta?.readOnly;
-  const highlightEmpty = table.options.meta?.highlightEmpty;
 
   useEffect(() => {
     setValue(initial);
@@ -116,21 +113,16 @@ function EditableRegionCell({ getValue, row, column, table }) {
   };
 
   if (!editing || readOnly) {
-    const showAddHint = !value && (!readOnly || highlightEmpty);
     return (
       <div
         onClick={readOnly ? undefined : () => setEditing(true)}
-        className={`cell-val font-bold uppercase ${value ? "" : "is-empty"} ${showAddHint ? "cell-add" : ""} ${
+        className={`cell-val font-bold uppercase ${value ? "" : "is-empty"} ${
           readOnly ? "cursor-default" : "cursor-text"
         }`}
         style={value ? { color: "var(--brand-d)" } : undefined}
-        title={
-          readOnly
-            ? (showAddHint ? "Click Edit to fill this field" : initial || "")
-            : "Click to edit · Enter to save"
-        }
+        title={readOnly ? (initial || "") : "Click to edit · Enter to save"}
       >
-        {value || (showAddHint ? "add region…" : "—")}
+        {value || "—"}
       </div>
     );
   }
@@ -524,6 +516,7 @@ export default function EditableGrid({
 
     const searchable = showColumnSearch && colId !== "_select";
     const draftSelectable = showColumnSelect && isDraftColumnSelectable(colId);
+    const draftLockedOn = showColumnSelect && DRAFT_LOCKED_COLUMN_IDS.has(colId);
 
     return (
       <div className={`col-hdr ${searchable ? "col-hdr-stack" : ""}`}>
@@ -532,9 +525,32 @@ export default function EditableGrid({
             <div className="col-hdr-top">
               <input
                 type="checkbox"
+                className="draft-col-check"
                 checked={selectedColumnIds.has(colId)}
                 onChange={() => onToggleColumnSelect?.(colId)}
                 title="Include in draft email"
+              />
+              <span className="col-hdr-label" title={label}>{label}</span>
+            </div>
+            {searchable && (
+              <ColumnHeaderSearch
+                label={label}
+                value={columnSearchInput[colId] ?? ""}
+                onChange={(v) => setColumnSearchValue(colId, v)}
+                onClear={() => clearColumnSearchValue(colId)}
+              />
+            )}
+          </>
+        ) : draftLockedOn ? (
+          <>
+            <div className="col-hdr-top">
+              <input
+                type="checkbox"
+                className="draft-col-check"
+                checked
+                readOnly
+                onClick={(e) => e.preventDefault()}
+                title="Always included in draft email"
               />
               <span className="col-hdr-label" title={label}>{label}</span>
             </div>
@@ -578,8 +594,10 @@ export default function EditableGrid({
     if (SINGLE_LINE_COLUMN_IDS.has(columnId)) parts.push("col-compact");
     if (
       showColumnSelect
-      && isDraftColumnSelectable(columnId)
-      && selectedColumnIds.has(columnId)
+      && (
+        DRAFT_LOCKED_COLUMN_IDS.has(columnId)
+        || (isDraftColumnSelectable(columnId) && selectedColumnIds.has(columnId))
+      )
     ) {
       parts.push("draft-on");
     }
@@ -598,10 +616,10 @@ export default function EditableGrid({
   const thStyle = (columnId) => {
     const w = effectiveColWidth(columnId);
     const pinned = pinnedLeftById[columnId];
-    const isDraftOn =
-      showColumnSelect
-      && isDraftColumnSelectable(columnId)
-      && selectedColumnIds.has(columnId);
+    const isDraftOn = showColumnSelect && (
+      DRAFT_LOCKED_COLUMN_IDS.has(columnId)
+      || (isDraftColumnSelectable(columnId) && selectedColumnIds.has(columnId))
+    );
     const headerBg = isDraftOn ? "var(--brand-d)" : "var(--brand)";
     return {
       width: w,
@@ -617,20 +635,30 @@ export default function EditableGrid({
     };
   };
 
-  const tdStyle = (columnId) => {
+  const tdStyle = (columnId, { missing = false, aiNormalized = false } = {}) => {
     const w = effectiveColWidth(columnId);
     const pinned = pinnedLeftById[columnId];
+    const bg = missing ? "#fffef8" : aiNormalized ? "#fff8f8" : "#fff";
+    const pinShadow = pinned != null ? pinnedShadows(columnId, bg) : {};
+    const ring = missing
+      ? "inset 0 0 0 2px #F8F4D9"
+      : aiNormalized
+        ? "inset 0 0 0 2px #FBDCDB"
+        : "";
+    const boxShadow = [pinShadow.boxShadow, ring].filter(Boolean).join(", ") || undefined;
     return {
       width: w,
       minWidth: w,
       maxWidth: w,
+      ...((missing || aiNormalized) ? { background: bg, borderRadius: 0 } : {}),
+      ...(boxShadow ? { boxShadow } : {}),
       ...(pinned != null
         ? {
             position: "sticky",
             left: pinned,
             zIndex: columnId === "_select" ? 26 : 25,
             ...(columnId === firstPinnedId ? { borderLeft: GRID_BORDER } : {}),
-            ...pinnedShadows(columnId, "#fff"),
+            background: bg,
           }
         : {}),
     };
@@ -732,15 +760,40 @@ export default function EditableGrid({
                     </tr>
                   )}
                   <tr>
-                    {row.getVisibleCells().map((cell) => (
-                      <td
-                        key={cell.id}
-                        style={tdStyle(cell.column.id)}
-                        className={bodyCellClass(cell.column.id)}
-                      >
-                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                      </td>
-                    ))}
+                    {row.getVisibleCells().map((cell) => {
+                      const colId = cell.column.id;
+                      const raw = resolveStandardCellValue(
+                        row.original,
+                        colId,
+                        row.index + 1
+                      );
+                      const canEdit =
+                        colId === "region" || Boolean(editFieldForColumn(colId, standardCols));
+                      const isMissing =
+                        highlightEmpty
+                        && canEdit
+                        && !hasDisplayValue(raw);
+                      const isAiNorm =
+                        !isMissing && isAiNormalizedField(row.original, colId);
+                      return (
+                        <td
+                          key={cell.id}
+                          style={tdStyle(colId, {
+                            missing: isMissing,
+                            aiNormalized: isAiNorm,
+                          })}
+                          className={[
+                            bodyCellClass(colId),
+                            isMissing ? "cell-missing" : "",
+                            isAiNorm ? "cell-ai-norm" : "",
+                          ]
+                            .filter(Boolean)
+                            .join(" ")}
+                        >
+                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                        </td>
+                      );
+                    })}
                   </tr>
                 </Fragment>
               );

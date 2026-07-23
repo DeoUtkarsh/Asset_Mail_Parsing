@@ -7,8 +7,6 @@ import {
 } from "../../services/api";
 import { useSSE } from "../../hooks/useSSE";
 import PreviewPanel from "./PreviewPanel";
-import AiSummaryButton from "../AiSummary/AiSummaryButton";
-import { summarizeInbox } from "../../services/api";
 import Icon from "../icons";
 
 const AV_COLORS = ["#219495", "#3b82f6", "#8b5cf6", "#f59e0b", "#ef4444", "#10b981", "#ec4899", "#0ea5e9"];
@@ -212,11 +210,6 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
   const fetchBusy = fetching;
   const anyJobActive = Boolean(jobId);
 
-  const fetchInboxSummary = useCallback(
-    () => summarizeInbox(emails.map((e) => e.id)),
-    [emails],
-  );
-
   const resolveAttStatus = (att) => {
     if (attStatuses[att.id]) return attStatuses[att.id];
     return mapDbStatus(att.status);
@@ -316,7 +309,16 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
 
       <div className="vgrid-head">
         <div className="vgrid-title">
-          <h2>{reviewMode ? "Need to Review" : "Vessel Extracted Data"}</h2>
+          <div className="vgrid-title-row">
+            <h2>{reviewMode ? "Need to Review" : "Vessel Extracted Data"}</h2>
+            {emails.length > 0 && (
+              <div className="vgrid-stats inline">
+                <InboxStat label="Emails" value={inboxStats.emails} />
+                <InboxStat label="Synced" value={inboxStats.downloaded} />
+                <InboxStat label="Vessels" value={inboxStats.vessels} />
+              </div>
+            )}
+          </div>
           {reviewMode && (
             <span className="vgrid-sub">Please review the medium & low confidence mails.</span>
           )}
@@ -336,12 +338,6 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
               )}
             </button>
           ) : null}
-          <AiSummaryButton
-            fetchSummary={fetchInboxSummary}
-            title="Email Extraction Inbox — AI Summary"
-            disabled={emails.length === 0 || anyJobActive}
-            className="tb-btn"
-          />
           <button
             type="button"
             onClick={handleFetch}
@@ -357,15 +353,6 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
           </button>
         </div>
       </div>
-
-      {emails.length > 0 && (
-        <div className="vgrid-stats">
-          <InboxStat label="Emails" value={inboxStats.emails} />
-          <InboxStat label="Attachments" value={inboxStats.attachments} />
-          <InboxStat label="Downloaded" value={inboxStats.downloaded} />
-          <InboxStat label="Vessels" value={inboxStats.vessels} />
-        </div>
-      )}
 
       {(fetchBusy || retrying || anyJobActive) && statusLog.length > 0 && (
         <div className="inbox-log">
@@ -435,6 +422,12 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
                 const status = resolveAttStatus(row);
                 const sender = row.email.sender || "—";
                 const avColor = AV_COLORS[(sender.charCodeAt(0) || 0) % AV_COLORS.length];
+                const fileLabel = String(row.filename || "").trim();
+                const subject = String(row.email.subject || "").trim();
+                const showFile =
+                  Boolean(fileLabel)
+                  && !/^subject:\s*/i.test(fileLabel)
+                  && fileLabel.toLowerCase() !== subject.toLowerCase();
                 return (
                   <div
                     key={row.id}
@@ -461,12 +454,22 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
                     <div className="imail-subj" title={row.email.subject}>
                       {row.email.subject || "(no subject)"}
                     </div>
-                    <div className="imail-file" title={row.filename || undefined}>
-                      <Icon name="clip" size={12} />
-                      <span>{row.filename || "—"}</span>
-                    </div>
+                    {showFile && (
+                      <div className="imail-file" title={fileLabel}>
+                        <Icon name="clip" size={12} />
+                        <span>{fileLabel}</span>
+                      </div>
+                    )}
                     <div className="imail-badges">
                       <StatusBadge status={status} />
+                      {status === "downloaded" && (
+                        <span
+                          className={`imail-verified ${row.is_verified ? "is-on" : ""}`}
+                          title={row.is_verified ? "On Vessel Position List" : "Not on Vessel Position List"}
+                        >
+                          {row.is_verified ? "Verified" : "Not verified"}
+                        </span>
+                      )}
                       <div className="imail-actions">
                         {status === "failed" && (
                           <button
@@ -508,8 +511,8 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
               emailId={selectedRow.email.id}
               initialVerified={Boolean(selectedRow.is_verified)}
               vesselCount={selectedRow.vessel_count || 0}
-              showVerify={reviewMode}
-              showEdit={reviewMode}
+              showVerify
+              showEdit
               onVerifiedChange={(isVerified) => {
                 patchAttachmentVerified(selectedRow.id, isVerified);
                 onVesselsUpdated?.();
@@ -654,7 +657,7 @@ function ConfidenceBadge({ score, tier, label, status, reviewed = false }) {
 function StatusBadge({ status }) {
   const map = {
     in_progress: { label: "In Progress", cls: "st-proc", spin: true },
-    downloaded:  { label: "Downloaded", cls: "st-auto", spin: false },
+    downloaded:  { label: "Synced", cls: "st-auto", spin: false },
     failed:      { label: "Failed", cls: "st-err", spin: false },
     pending:     { label: "Pending", cls: "st-out", spin: false },
   };

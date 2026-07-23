@@ -31,8 +31,10 @@ ZONE_LABELS: dict[str, str] = {
     "FAR EAST": "Far East / Southeast Asia",
     "INDIA": "India",
     "AG/MIDDLE EAST": "AG / Middle East (Dubai area)",
+    "MED/BLACK SEA": "Med/Black Sea",
     "EUROPE": "Europe",
     "AFRICA": "Africa",
+    "AMERICAS": "Americas",
     "OCEANIA": "Oceania",
     "UNSPECIFIED": "Unspecified",
 }
@@ -42,8 +44,10 @@ ZONE_COLORS: dict[str, str] = {
     "FAR EAST": "#f59e0b",
     "INDIA": "#10b981",
     "AG/MIDDLE EAST": "#8b5cf6",
+    "MED/BLACK SEA": "#6366f1",
     "EUROPE": "#3b82f6",
     "AFRICA": "#ef4444",
+    "AMERICAS": "#1d4ed8",
     "OCEANIA": "#ec4899",
     "UNSPECIFIED": "#94a3b8",
 }
@@ -61,6 +65,13 @@ TYPE_COLORS: dict[str, str] = {
 def region_to_zone(region: str | None) -> str:
     if not region:
         return "UNSPECIFIED"
+    # Prefer new standard region codes from open-location mapping
+    try:
+        from region_map import region_code_to_zone, is_standard_region
+        if is_standard_region(region) and str(region).strip().upper() != "UNSPECIFIED":
+            return region_code_to_zone(region)
+    except Exception:
+        pass
     r = region.strip().lower()
     for key, zone in REGION_TO_ZONE.items():
         if key in r or r in key:
@@ -106,6 +117,33 @@ def bucket_opening_date(raw: str | None) -> str:
     return "later"
 
 
+def _parse_dwt_number(raw: str | None) -> float | None:
+    if not raw:
+        return None
+    m = re.search(r"[\d,]+(?:\.\d+)?", str(raw))
+    if not m:
+        return None
+    try:
+        return float(m.group(0).replace(",", ""))
+    except ValueError:
+        return None
+
+
+def bucket_dwt_size(raw: str | None) -> str:
+    n = _parse_dwt_number(raw)
+    if n is None or n <= 0:
+        return "unknown"
+    if n < 10000:
+        return "handy"
+    if n < 55000:
+        return "mr"
+    if n < 80000:
+        return "lr1_panamax"
+    if n < 125000:
+        return "lr2_aframax"
+    return "suez_plus"
+
+
 def top_cargo_tokens(vessels: list[dict[str, Any]], limit: int = 5) -> list[tuple[str, int]]:
     counter: Counter[str] = Counter()
     for v in vessels:
@@ -120,6 +158,12 @@ def top_cargo_tokens(vessels: list[dict[str, Any]], limit: int = 5) -> list[tupl
     return counter.most_common(limit)
 
 
+def _pct(part: int, total: int) -> int:
+    if total <= 0:
+        return 0
+    return int(round(100 * part / total))
+
+
 def _chart_from_counter(
     counter: Counter[str],
     title: str,
@@ -127,17 +171,22 @@ def _chart_from_counter(
     color_map: dict[str, str] | None = None,
     order: list[str] | None = None,
     limit: int = 8,
+    drop_keys: set[str] | None = None,
 ) -> dict[str, Any] | None:
     if not counter:
         return None
-    keys = order or sorted(counter.keys(), key=lambda k: (-counter[k], k))
+    drop = drop_keys or set()
+    usable = Counter({k: v for k, v in counter.items() if k not in drop and v > 0})
+    if not usable:
+        return None
+    keys = order or sorted(usable.keys(), key=lambda k: (-usable[k], k))
     items = []
     for key in keys:
-        if key not in counter:
+        if key not in usable:
             continue
         items.append({
             "label": (label_map or {}).get(key, key.replace("_", " ").title()),
-            "value": counter[key],
+            "value": usable[key],
             "color": (color_map or {}).get(key, "#0369a1"),
         })
         if len(items) >= limit:
@@ -151,11 +200,35 @@ def _aggregate_vessel_facts(vessels: list[dict[str, Any]], scope_label: str) -> 
     by_zone: Counter[str] = Counter()
     by_type: Counter[str] = Counter()
     opening_buckets: Counter[str] = Counter()
+    by_size: Counter[str] = Counter()
+    by_direction: Counter[str] = Counter()
+
+    missing = Counter()
+    n = len(vessels)
 
     for v in vessels:
         by_zone[region_to_zone(v.get("region"))] += 1
-        by_type[normalize_vessel_type(_vessel_field(v, "vessel_type"))] += 1
+        vtype = normalize_vessel_type(_vessel_field(v, "vessel_type"))
+        by_type[vtype] += 1
         opening_buckets[bucket_opening_date(_vessel_field(v, "opening_date"))] += 1
+        by_size[bucket_dwt_size(_vessel_field(v, "dwt_sdwt"))] += 1
+
+        direction = _vessel_field(v, "direction").upper().strip()
+        if direction:
+            by_direction[direction] += 1
+        else:
+            missing["direction"] += 1
+
+        if vtype == "unspecified":
+            missing["vessel_type"] += 1
+        if not _vessel_field(v, "dwt_sdwt"):
+            missing["dwt_sdwt"] += 1
+        if not _vessel_field(v, "open_location"):
+            missing["open_location"] += 1
+        if not _vessel_field(v, "opening_date"):
+            missing["opening_date"] += 1
+        if not (v.get("region") or "").strip():
+            missing["region"] += 1
 
     open_vessels = sum(
         1 for v in vessels
@@ -166,18 +239,68 @@ def _aggregate_vessel_facts(vessels: list[dict[str, Any]], scope_label: str) -> 
         urgency = "normal"
 
     cargoes = top_cargo_tokens(vessels)
+    top_zones = [
+        {"zone": ZONE_LABELS.get(z, z), "count": c}
+        for z, c in by_zone.most_common()
+        if z != "UNSPECIFIED" and c > 0
+    ][:5]
+
+    data_gaps = [
+        {"field": k, "missing": v, "pct": _pct(v, n)}
+        for k, v in missing.most_common()
+        if v > 0
+    ]
+
     charts = []
     zone_chart = _chart_from_counter(
         by_zone, "By trade zone", ZONE_LABELS, ZONE_COLORS, ZONE_ORDER,
+        drop_keys={"UNSPECIFIED"} if by_zone.get("UNSPECIFIED", 0) < max(1, n // 5) else set(),
     )
+    # Keep UNSPECIFIED in zone chart only when it's a meaningful share
+    if not zone_chart:
+        zone_chart = _chart_from_counter(
+            by_zone, "By trade zone", ZONE_LABELS, ZONE_COLORS, ZONE_ORDER,
+        )
     if zone_chart:
         charts.append(zone_chart)
-    type_chart = _chart_from_counter(
-        by_type, "By vessel type", color_map=TYPE_COLORS,
-        order=["tanker", "bulk", "chemical", "other specialist", "other", "unspecified"],
-    )
-    if type_chart:
-        charts.append(type_chart)
+
+    # Skip type chart when almost everything is unspecified — not useful noise.
+    specified_types = n - by_type.get("unspecified", 0)
+    if specified_types >= max(2, n * 0.2):
+        type_chart = _chart_from_counter(
+            by_type, "By vessel type", color_map=TYPE_COLORS,
+            order=["tanker", "bulk", "chemical", "other specialist", "other", "unspecified"],
+            drop_keys={"unspecified"} if by_type.get("unspecified", 0) > specified_types else set(),
+        )
+        if type_chart:
+            charts.append(type_chart)
+
+    size_known = n - by_size.get("unknown", 0)
+    if size_known >= max(2, n * 0.25):
+        size_chart = _chart_from_counter(
+            by_size, "By DWT size",
+            {
+                "handy": "Handy (<10k)",
+                "mr": "MR (10–55k)",
+                "lr1_panamax": "LR1 / Panamax",
+                "lr2_aframax": "LR2 / Aframax",
+                "suez_plus": "Suezmax+",
+                "unknown": "Unknown",
+            },
+            {
+                "handy": "#0ea5e9",
+                "mr": "#3b82f6",
+                "lr1_panamax": "#8b5cf6",
+                "lr2_aframax": "#f59e0b",
+                "suez_plus": "#ef4444",
+                "unknown": "#94a3b8",
+            },
+            ["handy", "mr", "lr1_panamax", "lr2_aframax", "suez_plus", "unknown"],
+            drop_keys={"unknown"},
+        )
+        if size_chart:
+            charts.append(size_chart)
+
     open_chart = _chart_from_counter(
         opening_buckets, "Opening timing",
         {
@@ -201,18 +324,22 @@ def _aggregate_vessel_facts(vessels: list[dict[str, Any]], scope_label: str) -> 
 
     return {
         "scope": scope_label,
-        "vessel_count": len(vessels),
+        "vessel_count": n,
         "open_vessels": open_vessels,
         "by_zone": dict(by_zone),
         "by_vessel_type": dict(by_type),
+        "by_dwt_size": dict(by_size),
+        "by_direction": dict(by_direction),
         "opening_buckets": dict(opening_buckets),
-        "top_cargoes": [{"name": n, "count": c} for n, c in cargoes],
+        "top_zones": top_zones,
+        "top_cargoes": [{"name": name, "count": c} for name, c in cargoes],
+        "data_gaps": data_gaps,
         "urgency": urgency,
         "headline_stats": [
-            {"label": "Vessels", "value": len(vessels)},
+            {"label": "Vessels", "value": n},
             {"label": "Open positions", "value": open_vessels},
-            {"label": "Zones", "value": sum(1 for z, n in by_zone.items() if n > 0 and z != "UNSPECIFIED")},
-            {"label": "Next week", "value": opening_buckets.get("next_week", 0)},
+            {"label": "Zones", "value": sum(1 for z, c in by_zone.items() if c > 0 and z != "UNSPECIFIED")},
+            {"label": "Dated opens", "value": opening_buckets.get("dated", 0) + opening_buckets.get("this_week", 0) + opening_buckets.get("next_week", 0)},
         ],
         "charts": charts,
     }
@@ -331,23 +458,189 @@ async def summarize_inbox(email_ids: list[str] | None = None) -> dict[str, Any]:
 
 
 async def summarize_vessels(vessel_ids: list[str] | None = None) -> dict[str, Any]:
+    """Position List match brief — ranked hot list + incomplete rows (no LLM fluff)."""
     vessels = _load_vessels_by_ids(vessel_ids)
-    scope = "selected_vessels" if vessel_ids else "all_verified_vessels"
-    facts = _aggregate_vessel_facts(vessels, scope)
-
-    brief = {
-        "context": "vessel_position_list",
-        "selection": "selected only" if vessel_ids else "full verified list",
-        "vessel_count": facts["vessel_count"],
-        "open_vessels": facts["open_vessels"],
-        "by_zone": facts["by_zone"],
-        "by_vessel_type": facts["by_vessel_type"],
-        "opening_buckets": facts["opening_buckets"],
-        "top_cargoes": facts["top_cargoes"],
-        "urgency": facts["urgency"],
-    }
-    narrative = await _generate_narrative(brief, "vessels")
+    scope = "selected_vessels" if vessel_ids else "all_vessels"
+    facts = _build_match_brief(vessels, scope)
+    narrative = _match_brief_copy_text(facts)
     return _pack("vessels", narrative, facts)
+
+
+def _opening_priority(bucket: str) -> int:
+    return {
+        "this_week": 100,
+        "next_week": 80,
+        "dated": 60,
+        "later": 20,
+        "unknown": 0,
+    }.get(bucket, 0)
+
+
+def _build_match_brief(vessels: list[dict[str, Any]], scope_label: str) -> dict[str, Any]:
+    n = len(vessels)
+    by_zone: Counter[str] = Counter()
+    opening_buckets: Counter[str] = Counter()
+    scored: list[tuple[int, dict[str, Any]]] = []
+    dead: list[dict[str, Any]] = []
+
+    for v in vessels:
+        dd = v.get("dynamic_data") or {}
+        name = (_vessel_field(v, "vessel_name") or "—").strip() or "—"
+        region = (v.get("region") or "").strip()
+        zone = region_to_zone(region)
+        by_zone[zone] += 1
+        open_date = _vessel_field(v, "opening_date")
+        open_loc = _vessel_field(v, "open_location")
+        dwt = _vessel_field(v, "dwt_sdwt")
+        vtype = _vessel_field(v, "vessel_type")
+        bucket = bucket_opening_date(open_date)
+        opening_buckets[bucket] += 1
+
+        missing: list[str] = []
+        if not vtype or normalize_vessel_type(vtype) == "unspecified":
+            missing.append("type")
+        if not dwt:
+            missing.append("dwt")
+        if not open_loc:
+            missing.append("open loc")
+        if not open_date:
+            missing.append("open date")
+        if not region or zone == "UNSPECIFIED":
+            missing.append("region")
+
+        # Dead weight: too incomplete to match confidently
+        if len(missing) >= 2 or ("type" in missing and "open loc" in missing):
+            dead.append({
+                "vessel_name": name,
+                "region": region or "—",
+                "missing": missing,
+            })
+
+        score = _opening_priority(bucket)
+        if region and zone != "UNSPECIFIED":
+            score += 15
+        if dwt:
+            score += 10
+        if open_loc:
+            score += 10
+        if vtype and normalize_vessel_type(vtype) != "unspecified":
+            score += 8
+        # Prefer actionable opens over blank timing
+        if bucket in ("this_week", "next_week", "dated"):
+            score += 5
+        if len(missing) >= 3:
+            score -= 25
+
+        why_parts = []
+        if bucket == "this_week":
+            why_parts.append("urgent / this week")
+        elif bucket == "next_week":
+            why_parts.append("next week")
+        elif bucket == "dated":
+            why_parts.append("dated open")
+        if zone != "UNSPECIFIED":
+            why_parts.append(ZONE_LABELS.get(zone, zone))
+        if dwt:
+            why_parts.append(f"DWT {dwt}")
+
+        scored.append((score, {
+            "id": v.get("id"),
+            "vessel_name": name,
+            "region": region or ZONE_LABELS.get(zone, zone),
+            "opening_date": open_date or "—",
+            "dwt": dwt or "—",
+            "why": " | ".join(why_parts) if why_parts else "needs review",
+            "score": score,
+        }))
+
+    scored.sort(key=lambda x: (-x[0], x[1]["vessel_name"].upper()))
+    hot_list = [row for s, row in scored if s >= 40][:8]
+    if not hot_list:
+        hot_list = [row for _, row in scored[:5]]
+
+    # Prefer dead rows not already in hot list
+    hot_names = {h["vessel_name"].upper() for h in hot_list}
+    dead_sorted = sorted(
+        [d for d in dead if d["vessel_name"].upper() not in hot_names],
+        key=lambda d: (-len(d["missing"]), d["vessel_name"].upper()),
+    )[:10]
+
+    zone_chips = []
+    for z, c in by_zone.most_common():
+        if c <= 0:
+            continue
+        if z == "UNSPECIFIED" and c < max(1, n // 5):
+            continue
+        zone_chips.append({
+            "zone": ZONE_LABELS.get(z, z),
+            "count": c,
+            "color": ZONE_COLORS.get(z, "#64748b"),
+        })
+
+    dated_n = (
+        opening_buckets.get("dated", 0)
+        + opening_buckets.get("this_week", 0)
+        + opening_buckets.get("next_week", 0)
+    )
+    urgency = "high" if opening_buckets.get("this_week", 0) > 0 or opening_buckets.get("next_week", 0) >= max(2, n // 3) else "normal"
+
+    urgency_line = ""
+    if opening_buckets.get("this_week", 0) > 0:
+        top = next((z for z in zone_chips if z["zone"] != "Unspecified"), None)
+        where = f" in {top['zone']}" if top else ""
+        urgency_line = f"{opening_buckets['this_week']} open this week{where} - call first"
+    elif opening_buckets.get("next_week", 0) >= 2:
+        urgency_line = f"{opening_buckets['next_week']} opens next week - lock interest early"
+
+    open_vessels = sum(
+        1 for v in vessels
+        if _vessel_field(v, "opening_date") or (v.get("region") or "").strip()
+    )
+
+    return {
+        "layout": "match_brief",
+        "scope": scope_label,
+        "vessel_count": n,
+        "open_vessels": open_vessels,
+        "urgency": urgency,
+        "urgency_line": urgency_line,
+        "zone_chips": zone_chips,
+        "hot_list": hot_list,
+        "dead_weight": dead_sorted,
+        "dead_weight_count": len(dead),
+        "opening_buckets": dict(opening_buckets),
+        "headline_stats": [
+            {"label": "Vessels", "value": n},
+            {"label": "Dated opens", "value": dated_n},
+            {"label": "Zones", "value": sum(1 for z, c in by_zone.items() if c > 0 and z != "UNSPECIFIED")},
+            {"label": "Hot list", "value": len(hot_list)},
+        ],
+        "charts": [],
+    }
+
+
+def _match_brief_copy_text(facts: dict[str, Any]) -> str:
+    lines: list[str] = []
+    if facts.get("urgency_line"):
+        lines.append(facts["urgency_line"])
+    lines.append("HOT LIST")
+    for i, row in enumerate(facts.get("hot_list") or [], 1):
+        lines.append(
+            f"{i}. {row.get('vessel_name')} | {row.get('region')} | "
+            f"{row.get('opening_date')} | {row.get('dwt')} | {row.get('why')}"
+        )
+    dead_n = facts.get("dead_weight_count") or 0
+    if dead_n:
+        lines.append(f"DEAD WEIGHT ({dead_n} incomplete - fix before matching)")
+        for row in (facts.get("dead_weight") or [])[:8]:
+            miss = ", ".join(row.get("missing") or [])
+            lines.append(f"- {row.get('vessel_name')}: missing {miss}")
+    chips = facts.get("zone_chips") or []
+    if chips:
+        lines.append(
+            "ZONES: " + ", ".join(f"{c['zone']} {c['count']}" for c in chips)
+        )
+    return "\n".join(lines) if lines else "No vessels in scope."
 
 
 async def summarize_home() -> dict[str, Any]:
@@ -544,7 +837,20 @@ def _sanitize_narrative(raw: str, fallback: str) -> str:
     )
     if any(m in low for m in leak):
         return fallback
-    # Prefer paragraph that starts with Hey
+
+    # Prefer structured desk-note (Position List)
+    if re.search(r"(?im)^focus\s*:", t) and re.search(r"(?im)^action\s*:", t):
+        keep = []
+        for ln in t.replace("\r\n", "\n").split("\n"):
+            line = ln.strip()
+            if re.match(r"(?i)^(focus|gaps|action)\s*:", line):
+                keep.append(line[:220])
+            if len(keep) >= 3:
+                break
+        if len(keep) >= 2:
+            return "\n".join(keep)
+
+    # Prefer paragraph that starts with Hey (inbox / home / contacts)
     for block in t.replace("\r\n", "\n").split("\n\n"):
         for line in block.split("\n"):
             line = line.strip()
@@ -567,9 +873,15 @@ async def _generate_narrative(brief: dict[str, Any], context: str) -> str:
             "3-5 conversational sentences. Start with 'Hey,'. No markdown."
         ),
         "vessels": (
-            "You write ONLY the final briefing paragraph for a shipbroker. "
-            "Never repeat instructions, JSON field names, or your reasoning. "
-            "3-5 conversational sentences. Start with 'Hey,'. No markdown."
+            "You write a shipbroker DESK NOTE for a vessel position list. "
+            "Never repeat instructions, JSON keys, or chart counts verbatim. "
+            "Do NOT start with Hey. Do NOT pad with filler "
+            "(no 'across the board', 'solid options', 'take your time', 'normal pace'). "
+            "Output exactly 3 short lines in this shape:\n"
+            "Focus: ...\n"
+            "Gaps: ...\n"
+            "Action: ...\n"
+            "Each line max ~18 words. Be blunt and useful."
         ),
         "contacts": (
             "You write ONLY the final briefing paragraph for a shipbroker. "
@@ -584,7 +896,11 @@ async def _generate_narrative(brief: dict[str, Any], context: str) -> str:
     }
     user_hints = {
         "inbox": "Summarize emails received, vessels extracted, verification backlog, geography and vessel types.",
-        "vessels": "Summarize vessel count, types, opening timing, regions. Say act fast if urgent.",
+        "vessels": (
+            "Desk note only. Use top_zones, opening_buckets, data_gaps, by_dwt_size, "
+            "top_cargoes, urgency. Call out missing vessel type / open location if high. "
+            "If urgency is high, Action must say prioritize near-term opens."
+        ),
         "contacts": "Summarize contact count, email/phone coverage, fallback rows, top companies.",
         "home": "Summarize how many owner emails came in, vessels parsed, vessels verified and ready, zones compiled, and how many still need review. Use the word 'vessels' (never 'positions').",
     }
@@ -601,7 +917,7 @@ async def _generate_narrative(brief: dict[str, Any], context: str) -> str:
                 },
             ],
             temperature=0.2,
-            max_tokens=200,
+            max_tokens=220 if context == "vessels" else 200,
         )
         text = (resp.choices[0].message.content or "").strip()
         return _sanitize_narrative(text, fallback)
@@ -650,10 +966,23 @@ def _fallback_narrative(brief: dict[str, Any], context: str) -> str:
             f"{brief.get('positions_ready', 0)} are verified and ready to send.{tail}"
         )
     count = brief.get("vessel_count", 0)
-    types = brief.get("by_vessel_type") or {}
-    type_bits = ", ".join(f"{v} {k}" for k, v in sorted(types.items(), key=lambda x: -x[1])[:3])
+    gaps = brief.get("data_gaps") or []
+    gap_bits = ", ".join(
+        f"{g['field'].replace('_', ' ')} {g['pct']}%" for g in gaps[:3]
+    )
+    zones = brief.get("top_zones") or []
+    zone_bits = ", ".join(f"{z['zone']} {z['count']}" for z in zones[:2])
+    opens = brief.get("opening_buckets") or {}
+    dated = int(opens.get("dated", 0) or 0) + int(opens.get("this_week", 0) or 0) + int(opens.get("next_week", 0) or 0)
+    focus = zone_bits or f"{count} vessels"
+    gaps_line = gap_bits or "none major"
+    action = (
+        "Prioritize dated / near-term opens first."
+        if brief.get("urgency") == "high" or dated
+        else "Fill missing particulars before matching."
+    )
     return (
-        f"Hey, {count} vessels in scope"
-        + (f" ({type_bits})" if type_bits else "")
-        + ". Review openings and regions before drafting."
+        f"Focus: {focus} - {dated} dated/near-term opens.\n"
+        f"Gaps: {gaps_line}.\n"
+        f"Action: {action}"
     )

@@ -8,12 +8,26 @@ import {
 
 const MAX_COLS_PER_TABLE = 11;
 
+/** Match Broker Sense UI tokens (index.css) — inline for Gmail/Outlook. */
+const FONT = "Poppins,Inter,Arial,Helvetica,sans-serif";
+const BRAND = "#219495";
+const BRAND_D = "#1a7a7b";
+const INK = "#132740";
+const LINE = "#e5e7ea";
+const MUTED_BG = "#f3f4f6";
+
 const TH_STYLE =
-  "background:#0369a1;color:#ffffff;padding:6px 8px;border:1px solid #475569;font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:bold;white-space:nowrap;text-align:left;vertical-align:top;";
-const TD_STYLE =
-  "padding:6px 8px;border:1px solid #cbd5e1;font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#0c4a6e;vertical-align:top;word-wrap:break-word;";
+  `background:${BRAND};color:#ffffff;padding:8px 10px;border:1px solid ${BRAND_D};` +
+  `font-family:${FONT};font-size:11px;font-weight:600;letter-spacing:0.35px;` +
+  "text-transform:uppercase;white-space:nowrap;text-align:left;vertical-align:top;";
+const TD_BASE =
+  `padding:8px 10px;border:1px solid ${LINE};font-family:${FONT};font-size:11.5px;` +
+  `color:${INK};vertical-align:top;word-wrap:break-word;background:#ffffff;`;
 const GROUP_ROW_STYLE =
-  "background:#dbeafe;padding:6px 8px;border:1px solid #94a3b8;font-family:Arial,Helvetica,sans-serif;font-size:11px;font-weight:bold;color:#0c4a6e;";
+  `background:${MUTED_BG};padding:8px 10px;border:1px solid ${LINE};` +
+  `font-family:${FONT};font-size:11px;font-weight:700;color:${INK};text-transform:uppercase;`;
+const P_STYLE =
+  `margin:0 0 8px 0;font-family:${FONT};font-size:13px;color:${INK};line-height:1.55;`;
 
 function escapeHtml(s) {
   return String(s)
@@ -24,7 +38,7 @@ function escapeHtml(s) {
 }
 
 function pinColumns(allCols) {
-  return ["_num", "imo", "vessel_name"].filter((k) => allCols.some((c) => c.id === k));
+  return ["vessel_name", "imo", "region"].filter((k) => allCols.some((c) => c.id === k));
 }
 
 function splitColumnsForEmail(cols) {
@@ -55,13 +69,13 @@ function continuedLabel(baseLabel, cols, pin) {
 
 function parseIntroOutroFromDraft(fullHtml) {
   const fallbackIntro = [
-    '<p style="margin:0 0 8px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#0c4a6e;">Dear Utkarsh,</p>',
-    '<p style="margin:0 0 8px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#0c4a6e;">Good day.</p>',
-    '<p style="margin:0 0 14px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#0c4a6e;">Please find below the latest vessel open positions consolidated from our network, grouped by trade zone.</p>',
+    `<p style="${P_STYLE}">Dear Utkarsh,</p>`,
+    `<p style="${P_STYLE}">Good day.</p>`,
+    `<p style="${P_STYLE}margin:0 0 14px 0;">Please find below the latest vessel open positions consolidated from our network, grouped by trade zone.</p>`,
   ].join("");
   const fallbackOutro = [
-    '<p style="margin:14px 0 8px 0;font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#0c4a6e;">Should you require any further details, please do not hesitate to reach out.</p>',
-    '<p style="margin:0;font-family:Arial,Helvetica,sans-serif;font-size:13px;color:#0c4a6e;">Best Regards</p>',
+    `<p style="${P_STYLE}margin:14px 0 8px 0;">Should you require any further details, please do not hesitate to reach out.</p>`,
+    `<p style="${P_STYLE}margin:0;">Best Regards</p>`,
   ].join("");
 
   if (!fullHtml) return { introHtml: fallbackIntro, outroHtml: fallbackOutro };
@@ -79,8 +93,12 @@ function parseIntroOutroFromDraft(fullHtml) {
         continue;
       }
       if (el.tagName !== "P") continue;
-      if (!passedTables) intro.push(el.outerHTML);
-      else outro.push(el.outerHTML);
+      // Re-style pasted intro/outro so Gmail matches UI (strip old blue sky styles).
+      const text = (el.textContent || "").trim();
+      if (!text) continue;
+      const styled = `<p style="${P_STYLE}${passedTables && outro.length === 0 ? "margin:14px 0 8px 0;" : ""}">${escapeHtml(text)}</p>`;
+      if (!passedTables) intro.push(styled);
+      else outro.push(styled);
     }
 
     return {
@@ -98,6 +116,16 @@ function plainFromHtml(html) {
   return (tmp.innerText || tmp.textContent || "").trim();
 }
 
+function cellStyleForColumn(colId) {
+  if (colId === "vessel_name") {
+    return `${TD_BASE}font-weight:700;color:${INK};text-transform:uppercase;`;
+  }
+  if (colId === "region") {
+    return `${TD_BASE}font-weight:700;color:${BRAND_D};`;
+  }
+  return TD_BASE;
+}
+
 function buildTableHtml(cols, vessels, zoneLabel, startRowNum) {
   const colCount = cols.length;
 
@@ -107,14 +135,12 @@ function buildTableHtml(cols, vessels, zoneLabel, startRowNum) {
 
   let rowNum = startRowNum;
   const bodyRows = vessels
-    .map((v, i) => {
-      const bg = i % 2 === 0 ? "#ffffff" : "#f1f5f9";
+    .map((v) => {
       const tds = cols
         .map((c) => {
           const raw = resolveStandardCellValue(v, c.id, rowNum);
           const text = hasDisplayValue(raw) ? escapeHtml(raw) : "—";
-          const bold = c.id === "vessel_name" ? "font-weight:bold;" : "";
-          return `<td style="${TD_STYLE}background:${bg};${bold}">${text}</td>`;
+          return `<td style="${cellStyleForColumn(c.id)}">${text}</td>`;
         })
         .join("");
       rowNum += 1;
@@ -124,7 +150,7 @@ function buildTableHtml(cols, vessels, zoneLabel, startRowNum) {
 
   return {
     html: [
-      '<table border="1" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;margin:0 0 12px 0;font-family:Arial,Helvetica,sans-serif;border:1px solid #94a3b8;table-layout:auto;">',
+      `<table border="0" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;margin:0 0 14px 0;font-family:${FONT};border:1px solid ${LINE};table-layout:auto;">`,
       "<tbody>",
       `<tr><td colspan="${colCount}" style="${GROUP_ROW_STYLE}">${escapeHtml(zoneLabel)}</td></tr>`,
       `<tr>${headerRow}</tr>`,
@@ -178,7 +204,9 @@ export function buildContactListEmailHtml(fullHtml, vessels, columns = STANDARD_
 function wrapHtmlDocument(fragment) {
   return [
     "<!DOCTYPE html>",
-    '<html><head><meta charset="utf-8"></head><body>',
+    "<html><head><meta charset=\"utf-8\">",
+    `<style>body{font-family:${FONT};color:${INK};}</style>`,
+    "</head><body>",
     "<!--StartFragment-->",
     fragment,
     "<!--EndFragment-->",

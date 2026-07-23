@@ -276,7 +276,7 @@ function MainApp({ onLogout }) {
       {/* ── Top header ── */}
       <header className="topbar">
         <div className="logo">
-          <span className="mark"><Icon name="anchor" size={22} /></span>
+          <img className="mark" src="/logo.png?v=2" alt="Broker Sense" />
           <div className="wm"><span className="l1">BROKER</span><span className="l2">SENSE</span></div>
         </div>
         <div className="tb-right">

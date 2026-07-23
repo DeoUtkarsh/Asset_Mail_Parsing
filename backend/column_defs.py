@@ -41,6 +41,10 @@ STANDARD_DYNAMIC_KEYS: list[str] = [
     "other_info",
     "q88",
     "status",
+    # Meta: comma-separated field ids AI/system normalized (not shown as a grid column).
+    "ai_normalized",
+    # Broker email region text (audit); working vessels.region is derived from open_location.
+    "region_raw",
 ]
 
 LEGACY_KEY_HINTS = frozenset({
@@ -55,24 +59,24 @@ LEGACY_KEY_HINTS = frozenset({
 
 DEFAULT_COLUMN_DEFINITIONS: list[dict[str, Any]] = [
     {"id": "_num", "header": "SR. NO", "display_order": 0, "read_only": True, "storage": "derived"},
-    {"id": "imo", "header": "IMO", "display_order": 1, "read_only": False, "storage": "dynamic_data"},
-    {"id": "company", "header": "COMPANY", "display_order": 2, "read_only": False, "storage": "dynamic_data"},
-    {"id": "vessel_name", "header": "VESSEL NAME", "display_order": 3, "read_only": False, "storage": "dynamic_data"},
-    {"id": "call_sign", "header": "CALL SIGN", "display_order": 4, "read_only": False, "storage": "dynamic_data"},
-    {"id": "year_built", "header": "YEAR BUILT", "display_order": 5, "read_only": False, "storage": "dynamic_data"},
-    {"id": "vessel_type", "header": "VESSEL TYPE", "display_order": 6, "read_only": False, "storage": "dynamic_data"},
-    {"id": "cargo_type", "header": "CARGO TYPE", "display_order": 7, "read_only": False, "storage": "dynamic_data"},
-    {"id": "direction", "header": "DIRECTION", "display_order": 8, "read_only": False, "storage": "dynamic_data"},
-    {"id": "dwt_sdwt", "header": "DWT/SDWT", "display_order": 9, "read_only": False, "storage": "dynamic_data"},
+    {"id": "vessel_name", "header": "VESSEL NAME", "display_order": 1, "read_only": False, "storage": "dynamic_data"},
+    {"id": "dwt_sdwt", "header": "DWT/SDWT", "display_order": 2, "read_only": False, "storage": "dynamic_data"},
+    {"id": "year_built", "header": "YEAR BUILT", "display_order": 3, "read_only": False, "storage": "dynamic_data"},
+    {"id": "tank_coating", "header": "TANK COATING", "display_order": 4, "read_only": False, "storage": "dynamic_data"},
+    {"id": "imo", "header": "IMO", "display_order": 5, "read_only": False, "storage": "dynamic_data"},
+    {"id": "region", "header": "REGION", "display_order": 6, "read_only": False, "storage": "region"},
+    {"id": "opening_date", "header": "OPENING DATE", "display_order": 7, "read_only": False, "storage": "dynamic_data"},
+    {"id": "open_location", "header": "OPEN LOCATION", "display_order": 8, "read_only": False, "storage": "dynamic_data"},
+    {"id": "direction", "header": "DIRECTION", "display_order": 9, "read_only": False, "storage": "dynamic_data"},
     {"id": "cbm", "header": "CBM/CUBIC METER", "display_order": 10, "read_only": False, "storage": "dynamic_data"},
-    {"id": "draft", "header": "DRAFT", "display_order": 11, "read_only": False, "storage": "dynamic_data"},
-    {"id": "flag", "header": "FLAG", "display_order": 12, "read_only": False, "storage": "dynamic_data"},
-    {"id": "eta_foc", "header": "ETA FOC", "display_order": 13, "read_only": False, "storage": "dynamic_data"},
-    {"id": "region", "header": "REGION", "display_order": 14, "read_only": False, "storage": "region"},
-    {"id": "open_location", "header": "OPEN LOCATION", "display_order": 15, "read_only": False, "storage": "dynamic_data"},
-    {"id": "opening_date", "header": "OPENING DATE", "display_order": 16, "read_only": False, "storage": "dynamic_data"},
-    {"id": "cargo_history_combo", "header": "CARGO HISTORY/L3C/LAST 3 CARGOES", "display_order": 17, "read_only": False, "storage": "dynamic_data"},
-    {"id": "tank_coating", "header": "TANK COATING", "display_order": 18, "read_only": False, "storage": "dynamic_data"},
+    {"id": "cargo_history_combo", "header": "LAST 3 CARGOES", "display_order": 11, "read_only": False, "storage": "dynamic_data"},
+    {"id": "company", "header": "COMPANY", "display_order": 12, "read_only": False, "storage": "dynamic_data"},
+    {"id": "call_sign", "header": "CALL SIGN", "display_order": 13, "read_only": False, "storage": "dynamic_data"},
+    {"id": "vessel_type", "header": "VESSEL TYPE", "display_order": 14, "read_only": False, "storage": "dynamic_data"},
+    {"id": "cargo_type", "header": "CARGO TYPE", "display_order": 15, "read_only": False, "storage": "dynamic_data"},
+    {"id": "draft", "header": "DRAFT", "display_order": 16, "read_only": False, "storage": "dynamic_data"},
+    {"id": "flag", "header": "FLAG", "display_order": 17, "read_only": False, "storage": "dynamic_data"},
+    {"id": "eta_foc", "header": "ETA FOC", "display_order": 18, "read_only": False, "storage": "dynamic_data"},
     {"id": "sire_date", "header": "SIRE DATE", "display_order": 19, "read_only": False, "storage": "dynamic_data"},
     {"id": "sire_location", "header": "SIRE LOCATION", "display_order": 20, "read_only": False, "storage": "dynamic_data"},
     {"id": "cdi_date", "header": "CDI DATE", "display_order": 21, "read_only": False, "storage": "dynamic_data"},
@@ -87,17 +91,18 @@ DEFAULT_COLUMN_DEFINITIONS: list[dict[str, Any]] = [
 # Default visible columns used for attachment confidence (matches POSITION_LIST_SUMMARY
 # in frontend minus SR. NO). Score ≈ % of applicable columns filled per vessel.
 CONFIDENCE_DEFAULT_COLUMNS: tuple[str, ...] = (
-    "imo",
-    "company",
     "vessel_name",
-    "region",
     "dwt_sdwt",
     "year_built",
     "tank_coating",
-    "open_location",
+    "imo",
+    "region",
     "opening_date",
+    "open_location",
     "direction",
+    "cbm",
     "cargo_history_combo",
+    "company",
 )
 
 # Max applicable columns unfilled before forcing Need to Review.
@@ -458,15 +463,262 @@ def needs_migration(dd: dict | None) -> bool:
     return set(dd.keys()) != set(STANDARD_DYNAMIC_KEYS)
 
 
+def _expand_two_digit_year(yy: int) -> int:
+    return 2000 + yy if yy <= 49 else 1900 + yy
+
+
+def _normalize_year_int(raw) -> int | None:
+    digits = re.sub(r"[^\d]", "", str(raw or ""))
+    if not digits:
+        return None
+    try:
+        n = int(digits)
+    except ValueError:
+        return None
+    if 1000 <= n <= 2100:
+        return n
+    if 0 <= n <= 99:
+        return _expand_two_digit_year(n)
+    return None
+
+
+_MONTHS = (
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+)
+_MONTH_INDEX = {}
+for _i, _name in enumerate(_MONTHS):
+    _MONTH_INDEX[_name.lower()] = _i
+    _MONTH_INDEX[_name[:3].lower()] = _i
+_MONTH_INDEX["sept"] = 8
+
+_SMALL_WORDS = frozenset({"of", "the", "a", "an", "and", "to", "for", "in", "on", "at"})
+
+
+def _format_open_position_text(raw: str) -> str:
+    parts: list[str] = []
+    for i, word in enumerate(re.split(r"\s+", raw.strip().lower())):
+        if not word:
+            continue
+        bare = re.sub(r"[^a-z]", "", word)
+        if bare in _MONTH_INDEX:
+            month = _MONTHS[_MONTH_INDEX[bare]]
+            parts.append(re.sub(bare, month, word, count=1, flags=re.I))
+        elif i > 0 and bare in _SMALL_WORDS:
+            parts.append(word.lower())
+        else:
+            parts.append(word[:1].upper() + word[1:] if word else word)
+    return " ".join(parts)
+
+
+def _format_day_month_year(day, month_idx, year) -> str | None:
+    try:
+        d = int(day)
+    except (TypeError, ValueError):
+        return None
+    y = _normalize_year_int(year)
+    if y is None:
+        from datetime import datetime
+        y = datetime.now().year
+    if not (1 <= d <= 31) or month_idx is None or not (0 <= month_idx <= 11):
+        return None
+    return f"{d} {_MONTHS[month_idx]} {y}"
+
+
+def _parse_one_opening_date(fragment: str) -> str | None:
+    s = re.sub(r"\s+", " ", fragment.strip().replace(",", " "))
+    if not s:
+        return None
+
+    m = re.match(r"^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})$", s)
+    if m:
+        return _format_day_month_year(m.group(1), int(m.group(2)) - 1, m.group(3))
+
+    m = re.match(r"^(\d{1,2})[-\s]+([A-Za-z]+)(?:[-\s]+(\d{2,4}))?$", s)
+    if m and m.group(2).lower() in _MONTH_INDEX:
+        from datetime import datetime
+        return _format_day_month_year(
+            m.group(1),
+            _MONTH_INDEX[m.group(2).lower()],
+            m.group(3) or str(datetime.now().year),
+        )
+
+    m = re.match(r"^([A-Za-z]+)[-\s]+(\d{1,2})(?:[-\s]+(\d{2,4}))?$", s)
+    if m and m.group(1).lower() in _MONTH_INDEX:
+        from datetime import datetime
+        return _format_day_month_year(
+            m.group(2),
+            _MONTH_INDEX[m.group(1).lower()],
+            m.group(3) or str(datetime.now().year),
+        )
+
+    m = re.match(r"^(\d{1,2})\s+([A-Za-z]+)\s+(\d{2,4})$", s)
+    if m and m.group(2).lower() in _MONTH_INDEX:
+        return _format_day_month_year(m.group(1), _MONTH_INDEX[m.group(2).lower()], m.group(3))
+
+    return None
+
+
+def _format_opening_date(raw: str) -> str:
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+
+    m = re.match(
+        r"^(\d{1,2})\s*[-/]\s*(\d{1,2})\s+([A-Za-z]+)(?:\s+(\d{2,4}))?$",
+        s,
+        flags=re.I,
+    )
+    if m and m.group(3).lower() in _MONTH_INDEX:
+        from datetime import datetime
+        y = _normalize_year_int(m.group(4) or str(datetime.now().year))
+        return f"{int(m.group(1))}-{int(m.group(2))} {_MONTHS[_MONTH_INDEX[m.group(3).lower()]]} {y}"
+
+    m = re.match(r"^(\d{1,2})\s*[-/]\s*(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})$", s)
+    if m:
+        month = int(m.group(3)) - 1
+        y = _normalize_year_int(m.group(4))
+        if 0 <= month <= 11 and y:
+            return f"{int(m.group(1))}-{int(m.group(2))} {_MONTHS[month]} {y}"
+
+    one = _parse_one_opening_date(s)
+    if one:
+        return one
+    return _format_open_position_text(s)
+
+
+def _format_rounded_figures(raw: str) -> str:
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+
+    def _repl(match: re.Match) -> str:
+        token = match.group(0)
+        try:
+            n = float(token.replace(",", ""))
+        except ValueError:
+            return token
+        return f"{int(round(n)):,}"
+
+    return re.sub(r"[\d,]+(?:\.\d+)?", _repl, s)
+
+
+def _format_dwt_sdwt(raw: str) -> tuple[str, bool]:
+    """Round DWT/SDWT; values under 1000 are ×1000 shorthand (49 → 49,000).
+
+    Returns (formatted, scaled) where scaled is True if any token was multiplied.
+    """
+    s = str(raw or "").strip()
+    if not s:
+        return "", False
+
+    scaled = False
+
+    def _repl(match: re.Match) -> str:
+        nonlocal scaled
+        token = match.group(0)
+        try:
+            n = float(token.replace(",", ""))
+        except ValueError:
+            return token
+        if 0 < n < 1000:
+            n *= 1000
+            scaled = True
+        return f"{int(round(n)):,}"
+
+    return re.sub(r"[\d,]+(?:\.\d+)?", _repl, s), scaled
+
+
+def _parse_ai_normalized(raw) -> set[str]:
+    s = str(raw or "").strip()
+    if not s:
+        return set()
+    return {p.strip() for p in s.split(",") if p.strip()}
+
+
+def _format_ai_normalized(flags: set[str]) -> str:
+    return ",".join(sorted(flags))
+
+
+def _format_year_built(raw: str) -> str:
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    m = re.search(r"\b(\d{4})\b", s) or re.search(r"\b(\d{1,2})\b", s)
+    if not m:
+        return s
+    y = _normalize_year_int(m.group(1))
+    return str(y) if y is not None else s
+
+
+def _normalize_standard_formats(out: dict[str, str]) -> None:
+    flags = _parse_ai_normalized(out.get("ai_normalized"))
+    if _has_value(out.get("opening_date")):
+        out["opening_date"] = _format_opening_date(out["opening_date"])
+    if _has_value(out.get("dwt_sdwt")):
+        formatted, scaled = _format_dwt_sdwt(out["dwt_sdwt"])
+        out["dwt_sdwt"] = formatted
+        if scaled:
+            flags.add("dwt_sdwt")
+        elif "dwt_sdwt" not in flags:
+            # Backfill flag for values already ×1000'd (e.g. 49 → 49,000) on prior runs.
+            for m in re.finditer(r"[\d,]+(?:\.\d+)?", formatted):
+                try:
+                    n = float(m.group(0).replace(",", ""))
+                except ValueError:
+                    continue
+                if n >= 1000 and float(n).is_integer() and int(n) % 1000 == 0:
+                    q = int(n) // 1000
+                    if 0 < q < 1000:
+                        flags.add("dwt_sdwt")
+                        break
+    if _has_value(out.get("cbm")):
+        out["cbm"] = _format_rounded_figures(out["cbm"])
+    if _has_value(out.get("year_built")):
+        out["year_built"] = _format_year_built(out["year_built"])
+    out["ai_normalized"] = _format_ai_normalized(flags)
+
+
+def _broker_region_for_audit(src: dict, region: str | None, existing_raw: str = "") -> str:
+    """Prefer real broker wording; ignore values that are only standard region codes."""
+    from region_map import is_standard_region
+
+    def _usable(text: str) -> str:
+        t = str(text or "").strip()
+        if not t:
+            return ""
+        # Keep non-standard broker strings (e.g. "SEA / ECI"). Standard codes alone
+        # are usually prior derived values, not useful audit text.
+        if is_standard_region(t):
+            return ""
+        return t
+
+    existing = _usable(existing_raw or src.get("region_raw") or "")
+    if existing:
+        return existing
+    passed = _usable(region)
+    if passed:
+        return passed
+    return _usable(_first_hit(src, ["region"]))
+
+
 def map_raw_to_standard(dd: dict | None, region: str | None = None) -> tuple[dict[str, str], str]:
-    """Map legacy or partial LLM output into the standard dynamic_data keys."""
+    """Map legacy or partial LLM output into the standard dynamic_data keys.
+
+    Working ``region`` is always derived from ``open_location`` (see region_map).
+    Broker email region text is preserved in ``dynamic_data.region_raw``.
+    """
     src = dd or {}
 
     if not needs_migration(src):
         out = {k: str(src.get(k, "") or "").strip() for k in STANDARD_DYNAMIC_KEYS}
         _normalize_imo_and_vessel_type(out)
-        reg = (region or _first_hit(src, ["region"]) or "").strip()
-        return out, reg
+        _normalize_standard_formats(out)
+        from region_map import derive_vessel_region
+        broker_region = _broker_region_for_audit(src, region, out.get("region_raw") or "")
+        derived, region_raw = derive_vessel_region(out.get("open_location"), broker_region)
+        out["region_raw"] = region_raw
+        return out, derived
 
     loc, date = _resolve_open_fields(src)
     out: dict[str, str] = {
@@ -495,13 +747,17 @@ def map_raw_to_standard(dd: dict | None, region: str | None = None) -> tuple[dic
         "other_info": _first_hit(src, ["other_info"]),
         "q88": _first_hit(src, ["q88"]),
         "status": _first_hit(src, ["status", "open_status"]),
+        "ai_normalized": str(src.get("ai_normalized") or "").strip(),
+        "region_raw": str(src.get("region_raw") or "").strip(),
     }
 
-    reg = (region or _first_hit(src, ["region"]) or loc or "").strip()
-    if not reg:
-        reg = "UNSPECIFIED"
+    from region_map import derive_vessel_region
+    broker_region = _broker_region_for_audit(src, region, out.get("region_raw") or "")
+    derived, region_raw = derive_vessel_region(out.get("open_location"), broker_region)
+    out["region_raw"] = region_raw
     _normalize_imo_and_vessel_type(out)
-    return out, reg
+    _normalize_standard_formats(out)
+    return out, derived
 
 
 def ensure_column_definitions(supabase) -> None:
@@ -559,6 +815,11 @@ def fix_imo_vessel_type_misplacement(supabase) -> int:
 
 
 def migrate_all_vessel_rows(supabase) -> int:
+    """Normalize every vessel row to the standard schema + display formats.
+
+    Also re-derives ``region`` from ``open_location`` (idempotent) and stores
+    broker wording in ``dynamic_data.region_raw``.
+    """
     rows = supabase.table("vessels").select("id, dynamic_data, region").execute()
     updated = 0
     for vessel in rows.data or []:
@@ -572,6 +833,11 @@ def migrate_all_vessel_rows(supabase) -> int:
     if updated:
         logger.info("Migrated %d vessel rows to standard column schema", updated)
     return updated
+
+
+def normalize_vessel_field_formats(supabase) -> int:
+    """Alias for migrate — reformats opening_date, DWT/CBM, year_built in place."""
+    return migrate_all_vessel_rows(supabase)
 
 
 def backfill_vessel_company_names(supabase) -> int:

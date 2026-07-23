@@ -134,6 +134,11 @@ CREATE TABLE IF NOT EXISTS vessel_library (
     year_built     TEXT NOT NULL DEFAULT '',
     tank_coating   TEXT NOT NULL DEFAULT '',
     vessel_type    TEXT NOT NULL DEFAULT '',
+    call_sign      TEXT NOT NULL DEFAULT '',
+    cbm            TEXT NOT NULL DEFAULT '',
+    flag           TEXT NOT NULL DEFAULT '',
+    sire_date      TEXT NOT NULL DEFAULT '',
+    cdi_date       TEXT NOT NULL DEFAULT '',
     match_key      TEXT NOT NULL DEFAULT '',
     created_at     TIMESTAMPTZ DEFAULT NOW(),
     updated_at     TIMESTAMPTZ DEFAULT NOW()
@@ -141,6 +146,43 @@ CREATE TABLE IF NOT EXISTS vessel_library (
 
 CREATE INDEX IF NOT EXISTS idx_vessel_library_match_key
     ON vessel_library(match_key);
+
+-- ─────────────────────────────────────────────
+-- trade_regions / trade_ports / open_location_aliases
+-- Excel Region-Country-Port mapping living in Postgres.
+-- Seeded once on startup when empty; DB is source of truth thereafter.
+-- ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS trade_regions (
+    id            UUID NOT NULL DEFAULT gen_random_uuid(),
+    code          TEXT PRIMARY KEY,
+    name          TEXT NOT NULL DEFAULT '',
+    zone          TEXT NOT NULL DEFAULT '',
+    display_order INT NOT NULL DEFAULT 0,
+    created_at    TIMESTAMPTZ DEFAULT NOW()
+);
+ALTER TABLE trade_regions ADD COLUMN IF NOT EXISTS id UUID;
+
+CREATE TABLE IF NOT EXISTS trade_ports (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    port_name    TEXT NOT NULL,
+    country      TEXT NOT NULL DEFAULT '',
+    region_code  TEXT NOT NULL REFERENCES trade_regions(code) ON DELETE CASCADE,
+    created_at   TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (port_name, region_code)
+);
+
+CREATE INDEX IF NOT EXISTS idx_trade_ports_region_code ON trade_ports(region_code);
+CREATE INDEX IF NOT EXISTS idx_trade_ports_port_name ON trade_ports(port_name);
+
+CREATE TABLE IF NOT EXISTS open_location_aliases (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    alias        TEXT NOT NULL,
+    region_code  TEXT NOT NULL REFERENCES trade_regions(code) ON DELETE CASCADE,
+    created_at   TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE (alias)
+);
+
+CREATE INDEX IF NOT EXISTS idx_open_location_aliases_alias ON open_location_aliases(alias);
 
 -- ─────────────────────────────────────────────
 -- vessels_full — vessels joined with parent/attachment context (grid queries)
