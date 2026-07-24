@@ -64,7 +64,7 @@ def _build_superset(vessels: list[dict]) -> list[str]:
 async def run_normalization(job_id: str, email_id: str) -> list[str]:
     """
     Builds the superset column list and back-fills missing keys with "".
-    Updates the parent_email status to 'ready_for_validation'.
+    Does NOT mark the parent email ready — that happens after signature + contacts.
     Returns the ordered superset key list.
     """
     await sse_manager.send(job_id, "normalization_started", {
@@ -82,7 +82,12 @@ async def run_normalization(job_id: str, email_id: str) -> list[str]:
 
     if not vessels:
         logger.warning("No vessels found for email_id=%s during normalization.", email_id)
-        supabase.table("parent_emails").update({"status": "ready_for_validation"}).eq("id", email_id).execute()
+        await sse_manager.send(job_id, "normalization_done", {
+            "email_id": email_id,
+            "column_count": 0,
+            "vessel_count": 0,
+            "columns": [],
+        })
         return []
 
     superset = _build_superset(vessels)
@@ -93,9 +98,6 @@ async def run_normalization(job_id: str, email_id: str) -> list[str]:
         updated = {key: original.get(key, "") for key in superset}
         if updated != original:
             supabase.table("vessels").update({"dynamic_data": updated}).eq("id", vessel["id"]).execute()
-
-    # Update parent email status
-    supabase.table("parent_emails").update({"status": "ready_for_validation"}).eq("id", email_id).execute()
 
     await sse_manager.send(job_id, "normalization_done", {
         "email_id": email_id,

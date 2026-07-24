@@ -365,7 +365,16 @@ function MainApp({ onLogout }) {
         <div style={{ display: view === "today" ? "contents" : "none" }}>
           <ValidationView isActive={view === "today"} refreshKey={vesselRefreshKey} />
         </div>
-        {view === "today" ? null : loading && view !== "home" && view !== "inbox" && view !== "list" && view !== "review" && view !== "library" ? (
+        {/* Extracted Data + Need to Review share one InboxView — same edit/verify/grid logic; review only filters low/medium */}
+        <div style={{ display: view === "inbox" || view === "review" ? "contents" : "none" }}>
+          <InboxView
+            reviewMode={view === "review"}
+            onEmailsLoaded={syncHomeIfReviewCountChanged}
+            onVesselsUpdated={() => { setVesselRefreshKey((k) => k + 1); setHomeRefreshKey((k) => k + 1); }}
+            onContactsUpdated={() => setContactRefreshKey((k) => k + 1)}
+          />
+        </div>
+        {view === "today" || view === "inbox" || view === "review" ? null : loading && view !== "home" && view !== "list" && view !== "library" ? (
           <div className="center-load"><span className="spin-ring" /> Loading…</div>
         ) : view === "home" ? (
           <HomeView
@@ -374,19 +383,6 @@ function MainApp({ onLogout }) {
             error={homeError}
             onNavigate={go}
             onRefresh={loadHome}
-          />
-        ) : view === "inbox" ? (
-          <InboxView
-            onEmailsLoaded={syncHomeIfReviewCountChanged}
-            onVesselsUpdated={() => { setVesselRefreshKey((k) => k + 1); setHomeRefreshKey((k) => k + 1); }}
-            onContactsUpdated={() => setContactRefreshKey((k) => k + 1)}
-          />
-        ) : view === "review" ? (
-          <InboxView
-            reviewMode
-            onEmailsLoaded={syncHomeIfReviewCountChanged}
-            onVesselsUpdated={() => { setVesselRefreshKey((k) => k + 1); setHomeRefreshKey((k) => k + 1); }}
-            onContactsUpdated={() => setContactRefreshKey((k) => k + 1)}
           />
         ) : view === "list" ? (
           <ContactListView isActive={view === "list"} refreshKey={contactRefreshKey} />

@@ -48,9 +48,7 @@ from workflow import phase1_graph, phase2_graph
 from agents.summary import summarize_vessels, summarize_inbox, summarize_contacts, summarize_home
 from agents.contact_extract import (
     CONTACT_FIELD_KEYS,
-    run_parent_contact_extraction,
 )
-from agents.signature_extract import run_parent_signature_extraction
 from agents.confidence_score import attachment_needs_review, compute_attachment_confidence
 from verification import backfill_auto_verify, set_attachment_verified
 from vessel_library import (
@@ -60,6 +58,7 @@ from vessel_library import (
     add_library_vessel,
     update_library_vessel,
     delete_library_vessel,
+    normalize_library_formats,
 )
 from column_defs import (
     ensure_column_definitions,
@@ -87,16 +86,19 @@ logging.config.dictConfig({
         "console": {
             "class": "logging.StreamHandler",
             "formatter": "verbose",
-            "level": "DEBUG",
+            "level": "INFO",
         }
     },
-    "root": {"handlers": ["console"], "level": "DEBUG"},
-    # Quieten noisy third-party loggers
+    "root": {"handlers": ["console"], "level": "INFO"},
+    # Anthropic DEBUG dumps full prompts and looks like work is still running after Synced.
     "loggers": {
+        "anthropic":      {"level": "WARNING"},
+        "openai":         {"level": "WARNING"},
         "httpx":          {"level": "WARNING"},
         "httpcore":       {"level": "WARNING"},
         "watchfiles":     {"level": "WARNING"},
         "uvicorn.access": {"level": "INFO"},
+        "sse_starlette":  {"level": "WARNING"},
     },
 })
 
@@ -158,19 +160,14 @@ async def startup_event():
         companies = backfill_vessel_company_names(db)
         if companies:
             logger.info("  Vessel company backfill: %d rows updated", companies)
-        if not (db.table("vessel_library").select("id").limit(1).execute().data):
-            seeded = autofill_library(db)
-            if seeded.get("inserted"):
-                logger.info("  Vessel library seeded: %d vessels", seeded["inserted"])
-        else:
-            # Keep library in sync with any vessels already extracted (new cols / backlog).
-            synced = autofill_library(db)
-            if synced.get("inserted") or synced.get("updated"):
-                logger.info(
-                    "  Vessel library sync: +%d inserted, %d updated",
-                    synced.get("inserted", 0),
-                    synced.get("updated", 0),
-                )
+        # Do NOT autofill vessel_library here — new vessels stay in "Review & add"
+        # until the user promotes them from the Vessel Libraries List.
+        try:
+            fmt_n = normalize_library_formats(db)
+            if fmt_n:
+                logger.info("  Vessel library format normalize: %d rows", fmt_n)
+        except Exception as lib_fmt_exc:
+            logger.warning("  Vessel library format normalize skipped: %s", lib_fmt_exc)
         auto_verified = backfill_auto_verify(db)
         if auto_verified:
             logger.info("  Auto-verified %d high-confidence attachment(s)", auto_verified)
@@ -208,29 +205,7 @@ async def _run_phase1(job_id: str) -> None:
             })
             return
 
-        # Signature + structured contact extraction per new email.
-        for email_id in email_ids:
-            try:
-                await run_parent_signature_extraction(job_id, email_id)
-                await run_parent_contact_extraction(job_id, email_id)
-            except Exception as sig_exc:
-                logger.exception("[Phase1] Signature/contact extraction failed for %s: %s",
-                                 email_id, sig_exc)
-        try:
-            backfill_vessel_company_names(supabase)
-        except Exception as bf_exc:
-            logger.exception("[Phase1] Company backfill failed: %s", bf_exc)
-
-        try:
-            lib_stats = autofill_library(supabase)
-            logger.info(
-                "[Phase1] Vessel library sync — inserted=%d updated=%d",
-                lib_stats.get("inserted", 0),
-                lib_stats.get("updated", 0),
-            )
-        except Exception as lib_exc:
-            logger.exception("[Phase1] Vessel library sync failed: %s", lib_exc)
-
+        # Graph already did vessels + contacts + email_ready. Signal UI done now.
         logger.info("[Phase1] Complete — %d email(s), columns=%d",
                     len(email_ids), len(final_state.get("superset_columns", [])))
         await sse_manager.send(job_id, "phase1_complete", {
@@ -239,6 +214,17 @@ async def _run_phase1(job_id: str) -> None:
             "email_count": len(email_ids),
             "columns": final_state.get("superset_columns", []),
         })
+
+        try:
+            backfill_vessel_company_names(supabase)
+        except Exception as bf_exc:
+            logger.exception("[Phase1] Company backfill failed: %s", bf_exc)
+
+        try:
+            pending = detect_new_vessels(supabase)
+            logger.info("[Phase1] Vessel library review queue: %d new vessel(s)", len(pending))
+        except Exception as lib_exc:
+            logger.exception("[Phase1] Vessel library review detect failed: %s", lib_exc)
     except Exception as exc:
         logger.exception("[Phase1] Crashed: %s", exc)
         await sse_manager.send(job_id, "phase1_failed", {"error": str(exc)})

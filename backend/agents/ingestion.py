@@ -18,6 +18,7 @@ from config import settings
 from database import supabase
 from imap_client import fetch_broker_emails
 from sse_manager import sse_manager
+from agents.contact_extract import clean_subject
 
 logger = logging.getLogger(__name__)
 
@@ -130,20 +131,15 @@ async def run_ingestion(job_id: str) -> dict[str, Any]:
     logger.info("Ingestion: %d total, %d already processed, %d new to ingest",
                 total_found, len(seen), len(new_emails))
 
-    await sse_manager.send(job_id, "ingestion_summary", {
-        "total_found": total_found,
-        "already_processed": len(seen),
-        "new_count": len(new_emails),
-    })
-
     email_ids: list[str] = []
     attachment_ids: list[str] = []
 
     for em in new_emails:
+        subject = clean_subject(em.get("subject") or "")
         inserted = (
             supabase.table("parent_emails")
             .insert({
-                "subject": em["subject"],
+                "subject": subject,
                 "sender": em["sender"],
                 "date_received": _parse_date(em.get("date", "")),
                 "status": "extracting",
@@ -156,7 +152,7 @@ async def run_ingestion(job_id: str) -> dict[str, Any]:
 
         await sse_manager.send(job_id, "email_saved", {
             "email_id": email_id,
-            "subject": em["subject"],
+            "subject": subject,
         })
 
         # Original message body, for the formatted (Outlook-style) preview pane.
@@ -194,6 +190,14 @@ async def run_ingestion(job_id: str) -> dict[str, Any]:
             "attachment_id": att_id,
             "filename": em["filename"],
         })
+
+    await sse_manager.send(job_id, "ingestion_summary", {
+        "total_found": total_found,
+        "already_processed": len(seen),
+        "new_count": len(email_ids),
+        "email_ids": email_ids,
+        "attachment_ids": attachment_ids,
+    })
 
     return {
         "email_ids": email_ids,

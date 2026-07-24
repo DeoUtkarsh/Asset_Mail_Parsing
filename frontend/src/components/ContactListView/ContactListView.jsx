@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback, useRef } from "react";
-import { getContacts, updateBrokerContact, summarizeContacts } from "../../services/api";
-import AiSummaryButton from "../AiSummary/AiSummaryButton";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { getContacts, updateBrokerContact } from "../../services/api";
 import { downloadContactsCsv } from "../../utils/exportContactsCsv";
+import AllColumnsToggle from "../ValidationView/AllColumnsToggle";
+import CellHighlightLegend from "../CellHighlightLegend";
 
 const CONTEXT_COLUMNS = [
   { key: "date_received", label: "Date received", readOnly: true, minW: 120 },
@@ -10,7 +11,8 @@ const CONTEXT_COLUMNS = [
   { key: "filename", label: "Attachment", readOnly: true, minW: 160 },
 ];
 
-const CONTACT_COLUMNS = [
+/** Default summary contact columns (All columns off). */
+const SUMMARY_CONTACT_COLUMNS = [
   { key: "contact_name", label: "Contact name", minW: 120 },
   { key: "designation", label: "Designation", minW: 110 },
   { key: "department", label: "Department", minW: 110 },
@@ -20,6 +22,9 @@ const CONTACT_COLUMNS = [
   { key: "email", label: "Email", minW: 150 },
   { key: "off_phone", label: "Off phone", minW: 120 },
   { key: "mob_phone", label: "Mob phone", minW: 120 },
+];
+
+const EXTRA_CONTACT_COLUMNS = [
   { key: "wechat", label: "WeChat", minW: 90 },
   { key: "whatsapp", label: "WhatsApp", minW: 100 },
   { key: "website_address", label: "Website", minW: 120 },
@@ -28,7 +33,9 @@ const CONTACT_COLUMNS = [
   { key: "status", label: "Status", minW: 80 },
 ];
 
-const ALL_COLUMNS = [...CONTEXT_COLUMNS, ...CONTACT_COLUMNS];
+const ALL_CONTACT_COLUMNS = [...SUMMARY_CONTACT_COLUMNS, ...EXTRA_CONTACT_COLUMNS];
+const ALL_COLUMNS = [...CONTEXT_COLUMNS, ...ALL_CONTACT_COLUMNS];
+const SUMMARY_KEYS = new Set(SUMMARY_CONTACT_COLUMNS.map((c) => c.key));
 
 function formatDate(iso) {
   if (!iso) return "—";
@@ -45,7 +52,13 @@ function formatDate(iso) {
   }
 }
 
-function EditableContactCell({ value, onSave, placeholder = "—", readOnly = false }) {
+function EditableContactCell({
+  value,
+  onChange,
+  placeholder = "—",
+  readOnly = false,
+  highlightMissing = false,
+}) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value ?? "");
 
@@ -57,26 +70,37 @@ function EditableContactCell({ value, onSave, placeholder = "—", readOnly = fa
     setEditing(false);
     const next = draft.trim();
     if (next !== (value ?? "").trim()) {
-      onSave(next);
+      onChange(next);
     }
   };
 
+  const display = value?.trim() || "";
+  const empty = !display;
+
   if (readOnly) {
-    const display = value?.trim() || "";
     return (
-      <div className={`contact-cell ${display ? "" : "is-empty"}`} title={display}>
+      <div className={`contact-cell ${empty ? "is-empty" : ""}`} title={display}>
         {display || placeholder}
       </div>
     );
   }
 
   if (!editing) {
-    const display = value?.trim() || "";
     return (
       <div
-        onDoubleClick={() => setEditing(true)}
-        className={`contact-cell editable ${display ? "" : "is-empty"}`}
-        title={display || "Double-click to edit"}
+        role="button"
+        tabIndex={0}
+        onClick={() => setEditing(true)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setEditing(true);
+          }
+        }}
+        className={`contact-cell editable ${empty ? "is-empty" : ""} ${
+          highlightMissing && empty ? "contact-cell-missing" : ""
+        }`}
+        title={display || "Click to edit"}
       >
         {display || placeholder}
       </div>
@@ -115,7 +139,17 @@ export default function ContactListView({ isActive = false, refreshKey = 0 }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [savedMsg, setSavedMsg] = useState(false);
+  const [editMode, setEditMode] = useState(false);
+  const [editSaving, setEditSaving] = useState(false);
+  const [showAllColumns, setShowAllColumns] = useState(false);
   const savedTimer = useRef(null);
+  const rowsRef = useRef([]);
+  const editSnapshot = useRef(null);
+  const dirtyRef = useRef(new Set());
+
+  useEffect(() => {
+    rowsRef.current = rows;
+  }, [rows]);
 
   const flashSaved = () => {
     setSavedMsg(true);
@@ -129,6 +163,7 @@ export default function ContactListView({ isActive = false, refreshKey = 0 }) {
     try {
       const data = await getContacts();
       setRows(data);
+      rowsRef.current = data;
     } catch (e) {
       setError(e.message);
     } finally {
@@ -140,30 +175,77 @@ export default function ContactListView({ isActive = false, refreshKey = 0 }) {
     if (isActive) load();
   }, [isActive, refreshKey, load]);
 
-  const handleSave = useCallback(
-    async (contactId, field, value) => {
-      setRows((prev) =>
-        prev.map((r) => (r.contact_id === contactId ? { ...r, [field]: value } : r))
-      );
-      try {
-        await updateBrokerContact(contactId, { [field]: value });
-        flashSaved();
-      } catch (e) {
-        setError("Failed to save: " + e.message);
-        load();
-      }
-    },
-    [load]
+  const visibleColumns = useMemo(
+    () =>
+      showAllColumns
+        ? ALL_COLUMNS
+        : [...CONTEXT_COLUMNS, ...SUMMARY_CONTACT_COLUMNS],
+    [showAllColumns]
   );
+
+  const enterEditMode = useCallback(() => {
+    editSnapshot.current = rowsRef.current.map((r) => ({ ...r }));
+    dirtyRef.current = new Set();
+    setError("");
+    setEditMode(true);
+  }, []);
+
+  const cancelEditMode = useCallback(() => {
+    if (editSnapshot.current) {
+      setRows(editSnapshot.current);
+      rowsRef.current = editSnapshot.current;
+    }
+    dirtyRef.current = new Set();
+    setEditMode(false);
+  }, []);
+
+  const handleCellChange = useCallback(
+    (contactId, field, value) => {
+      if (!editMode) return;
+      const next = rowsRef.current.map((r) =>
+        r.contact_id === contactId ? { ...r, [field]: value } : r
+      );
+      rowsRef.current = next;
+      setRows(next);
+      dirtyRef.current.add(contactId);
+    },
+    [editMode]
+  );
+
+  const handleSaveEdits = useCallback(async () => {
+    const ids = [...dirtyRef.current];
+    if (ids.length === 0) {
+      setEditMode(false);
+      return;
+    }
+    setEditSaving(true);
+    setError("");
+    try {
+      await Promise.all(
+        ids.map((id) => {
+          const row = rowsRef.current.find((r) => r.contact_id === id);
+          if (!row) return null;
+          const fields = {};
+          for (const col of ALL_CONTACT_COLUMNS) {
+            fields[col.key] = row[col.key] ?? "";
+          }
+          return updateBrokerContact(id, fields);
+        })
+      );
+      dirtyRef.current = new Set();
+      editSnapshot.current = null;
+      setEditMode(false);
+      flashSaved();
+    } catch (e) {
+      setError("Failed to save: " + e.message);
+    } finally {
+      setEditSaving(false);
+    }
+  }, []);
 
   const withEmail = rows.filter((r) => r.email?.trim()).length;
   const withName = rows.filter((r) => r.contact_name?.trim()).length;
   const fallbackRows = rows.filter((r) => r.used_fallback).length;
-
-  const fetchContactSummary = useCallback(
-    () => summarizeContacts(rows.map((r) => r.contact_id)),
-    [rows],
-  );
 
   const handleExportCsv = () => {
     downloadContactsCsv(rows, ALL_COLUMNS, formatDate);
@@ -171,11 +253,60 @@ export default function ContactListView({ isActive = false, refreshKey = 0 }) {
 
   return (
     <div className="vgrid-root">
-
       <div className="vgrid-head">
         <h2>Contact List</h2>
         <div className="vgrid-actions">
           <span className={`vgrid-saved ${savedMsg ? "show" : ""}`}>✓ Saved</span>
+
+          {!loading && rows.length > 0 && (
+            editMode ? (
+              <>
+                <button
+                  type="button"
+                  className="btn-save-changes"
+                  onClick={handleSaveEdits}
+                  disabled={editSaving}
+                >
+                  {editSaving ? (
+                    <>
+                      <span className="spin-ring" /> Saving…
+                    </>
+                  ) : (
+                    "Save changes"
+                  )}
+                </button>
+                <button
+                  type="button"
+                  className="btn-cancel-edit"
+                  onClick={cancelEditMode}
+                  disabled={editSaving}
+                >
+                  Cancel
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                className="btn-edit"
+                onClick={enterEditMode}
+                title="Edit contact fields"
+              >
+                ✎ Edit
+              </button>
+            )
+          )}
+
+          {editMode && <CellHighlightLegend className="contact-legends" />}
+
+          {!loading && rows.length > 0 && (
+            <AllColumnsToggle
+              enabled={showAllColumns}
+              onChange={setShowAllColumns}
+              visibleCount={CONTEXT_COLUMNS.length + SUMMARY_CONTACT_COLUMNS.length}
+              totalCount={ALL_COLUMNS.length}
+            />
+          )}
+
           <button
             type="button"
             onClick={handleExportCsv}
@@ -185,12 +316,6 @@ export default function ContactListView({ isActive = false, refreshKey = 0 }) {
           >
             Export CSV
           </button>
-          <AiSummaryButton
-            fetchSummary={fetchContactSummary}
-            title="Contact List — AI Summary"
-            disabled={loading || rows.length === 0}
-            className="tb-btn"
-          />
         </div>
       </div>
 
@@ -207,7 +332,9 @@ export default function ContactListView({ isActive = false, refreshKey = 0 }) {
 
       <div className="vgrid-body">
         {loading ? (
-          <div className="center-load"><span className="spin-ring" /> Loading contacts…</div>
+          <div className="center-load">
+            <span className="spin-ring" /> Loading contacts…
+          </div>
         ) : rows.length === 0 ? (
           <div className="vessel-grid-empty">
             No contacts yet. Fetch emails on Vessel Extracted Data — contacts are extracted
@@ -215,27 +342,54 @@ export default function ContactListView({ isActive = false, refreshKey = 0 }) {
           </div>
         ) : (
           <div className="vessel-grid-wrap">
+            {editMode && (
+              <p className="contact-edit-hint">Click a cell to edit, then Save changes</p>
+            )}
             <div className="vessel-grid-scroll">
               <table className="vessel-grid contact-grid">
                 <thead>
                   <tr>
-                    {ALL_COLUMNS.map((col) => (
-                      <th key={col.key} style={{ minWidth: col.minW }}>{col.label}</th>
+                    {visibleColumns.map((col) => (
+                      <th key={col.key} style={{ minWidth: col.minW }}>
+                        {col.label}
+                      </th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map((row) => (
-                    <tr key={row.contact_id} className={row.used_fallback ? "contact-fallback" : undefined}>
-                      {ALL_COLUMNS.map((col) => (
-                        <td key={col.key} style={{ minWidth: col.minW, maxWidth: col.readOnly ? 220 : 280 }}>
-                          <EditableContactCell
-                            value={cellValue(row, col.key)}
-                            readOnly={col.readOnly}
-                            onSave={(v) => handleSave(row.contact_id, col.key, v)}
-                          />
-                        </td>
-                      ))}
+                    <tr
+                      key={row.contact_id}
+                      className={row.used_fallback ? "contact-fallback" : undefined}
+                    >
+                      {visibleColumns.map((col) => {
+                        const raw = cellValue(row, col.key);
+                        const isEditable = editMode && !col.readOnly;
+                        const highlightMissing =
+                          editMode &&
+                          !col.readOnly &&
+                          SUMMARY_KEYS.has(col.key) &&
+                          !(raw || "").trim();
+                        return (
+                          <td
+                            key={col.key}
+                            style={{
+                              minWidth: col.minW,
+                              maxWidth: col.readOnly ? 220 : 280,
+                            }}
+                            className={highlightMissing ? "cell-missing" : undefined}
+                          >
+                            <EditableContactCell
+                              value={raw}
+                              readOnly={!isEditable}
+                              highlightMissing={highlightMissing}
+                              onChange={(v) =>
+                                handleCellChange(row.contact_id, col.key, v)
+                              }
+                            />
+                          </td>
+                        );
+                      })}
                     </tr>
                   ))}
                 </tbody>
@@ -245,9 +399,9 @@ export default function ContactListView({ isActive = false, refreshKey = 0 }) {
         )}
       </div>
 
-      {rows.length > 0 && (
+      {rows.length > 0 && !editMode && (
         <p className="contact-hint">
-          Double-click contact fields to edit · Enter saves · Shift+Enter for new line · Highlighted rows = signature fallback
+          Click Edit to change contact fields · Highlighted rows = signature fallback
         </p>
       )}
     </div>

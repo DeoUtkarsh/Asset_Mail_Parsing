@@ -52,7 +52,7 @@ export const COLUMN_WIDTHS = {
   draft: 80,
   flag: 80,
   eta_foc: 120,
-  region: 110,
+  region: 160,
   open_location: 130,
   opening_date: 140,
   cargo_history_combo: 260,

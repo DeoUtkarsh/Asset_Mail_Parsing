@@ -5,9 +5,7 @@ import { useSSE } from "../../hooks/useSSE";
 import EditableGrid from "./EditableGrid";
 import DraftModal from "./DraftModal";
 import AllColumnsToggle from "./AllColumnsToggle";
-import AiSummaryButton from "../AiSummary/AiSummaryButton";
 import Icon from "../icons";
-import { summarizeVessels } from "../../services/api";
 import {
   filterPositionListGridColumns,
   readPositionListShowAllColumnsPref,
@@ -368,14 +366,6 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
     draftableVisibleIds.length > 0 && draftableVisibleIds.every((id) => selectedColumnIds.has(id));
   const someVisibleDraftSelected = draftableVisibleIds.some((id) => selectedColumnIds.has(id));
 
-  const fetchVesselSummary = useCallback(() => {
-    const ids =
-      selectedIds.size > 0
-        ? [...selectedIds]
-        : visibleVessels.map((v) => v.id);
-    return summarizeVessels(ids);
-  }, [selectedIds, visibleVessels]);
-
   const handleGenerateDraft = async () => {
     if (selectedIds.size === 0) return;
     const emailId =
@@ -419,21 +409,16 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
         <div className="vgrid-actions">
           <span className={`vgrid-saved ${savedMsg ? "show" : ""}`}>✓ Saved</span>
 
-          {!loading && vessels.length > 0 && (
+          {!loading && vessels.length > 0 && selectedIds.size > 0 && !editMode && (
             <button
               type="button"
               className="tb-btn tb-btn-sm vgrid-delete-btn"
               onClick={handleDeleteSelected}
-              disabled={selectedIds.size === 0 || editMode}
-              title={
-                selectedIds.size === 0
-                  ? "Select vessel row(s) to delete"
-                  : "Delete selected vessel positions"
-              }
+              title="Delete selected vessel positions"
             >
               <Icon name="trash" size={13} />
               <span className="vgrid-delete-label">
-                Delete{selectedIds.size > 0 ? ` (${selectedIds.size})` : ""}
+                Delete{selectedIds.size > 1 ? ` (${selectedIds.size})` : ""}
               </span>
             </button>
           )}
@@ -488,17 +473,6 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
             />
           )}
 
-          <AiSummaryButton
-            fetchSummary={fetchVesselSummary}
-            title={
-              selectedIds.size > 0
-                ? `Vessel List — ${selectedIds.size} selected`
-                : "Vessel Position List — Match Brief"
-            }
-            disabled={loading || vessels.length === 0}
-            className="tb-btn"
-          />
-
           <button
             type="button"
             onClick={handleGenerateDraft}
@@ -509,8 +483,7 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
               || selectedIds.size === 0
               || draftMatchesLastGeneration
             }
-            className="btn btn-send"
-            style={{ fontSize: 13, padding: "9px 15px" }}
+            className="btn btn-send vgrid-draft-btn"
             title={
               selectedIds.size === 0
                 ? "Select at least one vessel"

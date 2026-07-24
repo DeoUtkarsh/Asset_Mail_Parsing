@@ -4,11 +4,11 @@ export default function CellHighlightLegend({ className = "" }) {
     <div className={`vf-legends ${className}`.trim()}>
       <div className="vf-legend">
         <span className="vf-legend-swatch missing" aria-hidden="true" />
-        <span>System detected that the fields are empty</span>
+        <span>Missing fields</span>
       </div>
       <div className="vf-legend">
         <span className="vf-legend-swatch ai-norm" aria-hidden="true" />
-        <span>AI normalised the cells</span>
+        <span>Fields corrected by AI</span>
       </div>
     </div>
   );

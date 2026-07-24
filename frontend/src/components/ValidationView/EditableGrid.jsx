@@ -17,6 +17,7 @@ import {
   DRAFT_LOCKED_COLUMN_IDS,
   SINGLE_LINE_COLUMN_IDS,
   hasDisplayValue,
+  POSITION_LIST_SUMMARY_COLUMN_IDS,
 } from "../../utils/standardColumns";
 import { isAiNormalizedField } from "../../utils/fieldFormat";
 
@@ -116,10 +117,9 @@ function EditableRegionCell({ getValue, row, column, table }) {
     return (
       <div
         onClick={readOnly ? undefined : () => setEditing(true)}
-        className={`cell-val font-bold uppercase ${value ? "" : "is-empty"} ${
+        className={`cell-val uppercase ${value ? "" : "is-empty"} ${
           readOnly ? "cursor-default" : "cursor-text"
         }`}
-        style={value ? { color: "var(--brand-d)" } : undefined}
         title={readOnly ? (initial || "") : "Click to edit · Enter to save"}
       >
         {value || "—"}
@@ -437,18 +437,6 @@ export default function EditableGrid({
   const leafColumns = table.getVisibleLeafColumns();
   const colCount = leafColumns.length;
 
-  const pinnedLeftById = (() => {
-    const offsets = {};
-    let left = 0;
-    for (const col of leafColumns) {
-      if (pinnedColIds.has(col.id)) {
-        offsets[col.id] = left;
-        left += col.columnDef.size || 100;
-      }
-    }
-    return offsets;
-  })();
-
   const pinnedLeafColumns = leafColumns.filter((col) => pinnedColIds.has(col.id));
   const firstPinnedId = pinnedLeafColumns[0]?.id;
   const lastPinnedId = pinnedLeafColumns.at(-1)?.id;
@@ -486,6 +474,19 @@ export default function EditableGrid({
     );
     return Math.max(base, containerWidth - othersWidth);
   };
+
+  // Sticky left offsets must match rendered widths (avoids gap/overlap “extra block” when scrolling)
+  const pinnedLeftById = (() => {
+    const offsets = {};
+    let left = 0;
+    for (const col of leafColumns) {
+      if (pinnedColIds.has(col.id)) {
+        offsets[col.id] = left;
+        left += effectiveColWidth(col.id);
+      }
+    }
+    return offsets;
+  })();
 
   const displayTableWidth =
     stretchToFill && containerWidth > totalTableWidth ? containerWidth : totalTableWidth;
@@ -580,11 +581,10 @@ export default function EditableGrid({
     );
   };
 
-  const pinnedShadows = (columnId, bg) => {
-    const parts = [];
-    if (columnId === firstPinnedId) parts.push(`-12px 0 0 0 ${bg}`);
-    if (columnId === lastPinnedId) parts.push("2px 0 6px rgba(7,38,56,0.06)");
-    return parts.length ? { boxShadow: parts.join(", ") } : {};
+  // No outer box-shadow on sticky edges — it paints into the next column and looks like an “extra block”
+  const pinnedEdgeStyle = (columnId) => {
+    if (columnId !== lastPinnedId) return {};
+    return { borderRight: "1px solid var(--line)" };
   };
 
   const headerCellClass = (columnId) => {
@@ -631,27 +631,27 @@ export default function EditableGrid({
       background: headerBg,
       ...(pinned != null ? { left: pinned } : {}),
       ...(columnId === firstPinnedId ? { borderLeft: GRID_BORDER } : {}),
-      ...(pinned != null ? pinnedShadows(columnId, headerBg) : {}),
+      ...(pinned != null ? pinnedEdgeStyle(columnId) : {}),
     };
   };
 
   const tdStyle = (columnId, { missing = false, aiNormalized = false } = {}) => {
     const w = effectiveColWidth(columnId);
     const pinned = pinnedLeftById[columnId];
-    const bg = missing ? "#fffef8" : aiNormalized ? "#fff8f8" : "#fff";
-    const pinShadow = pinned != null ? pinnedShadows(columnId, bg) : {};
+    const bg = missing ? "#fffef8" : aiNormalized ? "#f0f7fb" : "#fff";
+    const edge = pinned != null ? pinnedEdgeStyle(columnId) : {};
     const ring = missing
       ? "inset 0 0 0 2px #F8F4D9"
       : aiNormalized
-        ? "inset 0 0 0 2px #FBDCDB"
+        ? "inset 0 0 0 2px #c5dff0"
         : "";
-    const boxShadow = [pinShadow.boxShadow, ring].filter(Boolean).join(", ") || undefined;
     return {
       width: w,
       minWidth: w,
       maxWidth: w,
       ...((missing || aiNormalized) ? { background: bg, borderRadius: 0 } : {}),
-      ...(boxShadow ? { boxShadow } : {}),
+      ...(ring ? { boxShadow: ring } : {}),
+      ...(edge.borderRight ? { borderRight: edge.borderRight } : {}),
       ...(pinned != null
         ? {
             position: "sticky",
@@ -738,9 +738,7 @@ export default function EditableGrid({
                           maxWidth: pinnedTotalWidth,
                           overflow: "hidden",
                           borderLeft: GRID_BORDER,
-                          boxShadow: pinnedColCount > 0
-                            ? "-12px 0 0 0 var(--brand-50), 2px 0 6px rgba(7,38,56,0.06)"
-                            : undefined,
+                          borderRight: pinnedColCount > 0 ? "1px solid var(--line)" : undefined,
                         }}
                       >
                         <span
@@ -769,9 +767,11 @@ export default function EditableGrid({
                       );
                       const canEdit =
                         colId === "region" || Boolean(editFieldForColumn(colId, standardCols));
+                      // Yellow "missing" only on the default summary columns — not extra "All columns" fields
                       const isMissing =
                         highlightEmpty
                         && canEdit
+                        && POSITION_LIST_SUMMARY_COLUMN_IDS.has(colId)
                         && !hasDisplayValue(raw);
                       const isAiNorm =
                         !isMissing && isAiNormalizedField(row.original, colId);

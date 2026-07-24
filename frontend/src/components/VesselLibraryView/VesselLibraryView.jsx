@@ -7,8 +7,7 @@ import {
   deleteVesselLibrary,
 } from "../../services/api";
 import Icon from "../icons";
-import { formatStandardField, parseAiNormalized } from "../../utils/fieldFormat";
-import CellHighlightLegend from "../CellHighlightLegend";
+import { formatStandardField } from "../../utils/fieldFormat";
 
 const COLS = [
   { key: "vessel_name", label: "Vessel name", ph: "e.g. AMICO PEARL", colClass: "vlib-col-name" },
@@ -51,7 +50,6 @@ export default function VesselLibraryView({ isActive = false, refreshKey = 0, on
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState({ key: null, dir: "asc" });
-  const [editMode, setEditMode] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savedMsg, setSavedMsg] = useState(false);
   const savedTimer = useRef(null);
@@ -190,24 +188,15 @@ export default function VesselLibraryView({ isActive = false, refreshKey = 0, on
           </div>
           <button
             type="button"
-            className={`tb-btn ${editMode ? "tb-btn-primary" : ""}`}
-            onClick={() => setEditMode((v) => !v)}
-            title={editMode ? "Exit edit mode" : "Highlight missing fields"}
-          >
-            {editMode ? "Done" : "✎ Edit"}
-          </button>
-          <button
-            type="button"
             className="tb-btn tb-btn-primary"
             onClick={() => setModal({ mode: "add", data: { ...BLANK } })}
           >
             <Icon name="plus" size={15} /> Add a vessel
           </button>
-          <CellHighlightLegend />
         </div>
       </div>
 
-      {rows.length > 0 && (
+      {(rows.length > 0 || newRows.length > 0) && (
         <div className="vgrid-stats">
           <LibStat label="Vessels in library" value={rows.length} />
           {newRows.length > 0 && <LibStat label="New to review" value={newRows.length} />}
@@ -220,115 +209,13 @@ export default function VesselLibraryView({ isActive = false, refreshKey = 0, on
         {loading ? (
           <div className="center-load"><span className="spin-ring" /> Loading vessel library…</div>
         ) : (
-          <div className="vessel-grid-wrap">
-            <div className="vessel-grid-scroll">
-              <table className={`vessel-grid vlib-grid ${editMode ? "vlib-edit-mode" : ""}`}>
-                <thead>
-                  <tr>
-                    <th style={{ width: 46 }}>SR.</th>
-                    {COLS.map((c) => {
-                      const active = sort.key === c.key;
-                      return (
-                        <th
-                          key={c.key}
-                          className={`vlib-th-sort ${c.colClass || ""}`}
-                          onClick={() => toggleSort(c.key)}
-                          title={`Sort by ${c.label}`}
-                        >
-                          <span className="vlib-th-inner">
-                            {c.label}
-                            <span className={`vlib-sort-ic ${active ? "on" : ""}`}>
-                              {active ? (sort.dir === "asc" ? "▲" : "▼") : ""}
-                            </span>
-                          </span>
-                        </th>
-                      );
-                    })}
-                    <th style={{ width: 84 }}>Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {sorted.length === 0 ? (
-                    <tr>
-                      <td colSpan={COLS.length + 2} className="vlib-empty-cell">
-                        {rows.length === 0
-                          ? "No vessels in the library yet. Fetch emails or click “Add a vessel”."
-                          : "No vessels match your search."}
-                      </td>
-                    </tr>
-                  ) : (
-                    sorted.map((row, i) => (
-                      <tr key={row.id}>
-                        <td className="vlib-sr">{i + 1}</td>
-                        {COLS.map((c) => {
-                          const rawVal = row[c.key];
-                          const empty =
-                            c.key === "vessel_type"
-                              ? !String(rawVal || "").trim() || isImoTypeValue(rawVal)
-                              : !String(rawVal || "").trim();
-                          const aiNorm =
-                            !empty
-                            && (c.key === "dwt" || c.key === "dwt_sdwt")
-                            && (
-                              parseAiNormalized(row.ai_normalized).has("dwt")
-                              || parseAiNormalized(row.ai_normalized).has("dwt_sdwt")
-                            );
-                          return (
-                            <td
-                              key={c.key}
-                              className={[
-                                c.colClass || "",
-                                empty ? "vlib-blank" : "",
-                                editMode && empty ? "vlib-missing" : "",
-                                aiNorm ? "vlib-ai-norm" : "",
-                              ]
-                                .filter(Boolean)
-                                .join(" ")}
-                            >
-                              {c.key === "vessel_type" ? (
-                                <VesselTypeSelect
-                                  value={row.vessel_type}
-                                  onChange={(val) => handleVesselTypeChange(row, val)}
-                                />
-                              ) : (
-                                formatLibCell(c.key, row[c.key])
-                              )}
-                            </td>
-                          );
-                        })}
-                        <td className="vlib-actions">
-                          <button
-                            type="button"
-                            className="vlib-icon-btn"
-                            title="Edit"
-                            onClick={() => setModal({ mode: "edit", data: { ...row } })}
-                          >
-                            <Icon name="edit" size={15} />
-                          </button>
-                          <button
-                            type="button"
-                            className="vlib-icon-btn danger"
-                            title="Delete"
-                            onClick={() => handleDelete(row)}
-                          >
-                            <Icon name="trash" size={15} />
-                          </button>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-        {!loading && newRows.length > 0 && (
-          <div className="vlib-new">
+          <>
+          {!loading && newRows.length > 0 && (
+          <div className="vlib-new" style={{ marginBottom: 14 }}>
             <div className="vlib-new-head">
-              <span className="vlib-new-badge">🆕 New vessels detected</span>
+              <span className="vlib-new-badge">New vessels to review</span>
               <span className="vlib-new-sub">
-                in position lists — review before they’re added to the library.
+                Found in fetched position lists — add only the ones you want to the library.
               </span>
             </div>
             <div className="vessel-grid-wrap">
@@ -375,6 +262,100 @@ export default function VesselLibraryView({ isActive = false, refreshKey = 0, on
               </div>
             </div>
           </div>
+          )}
+
+          <div className="vessel-grid-wrap">
+            <div className="vessel-grid-scroll">
+              <table className="vessel-grid vlib-grid">
+                <thead>
+                  <tr>
+                    <th style={{ width: 46 }}>SR.</th>
+                    {COLS.map((c) => {
+                      const active = sort.key === c.key;
+                      return (
+                        <th
+                          key={c.key}
+                          className={`vlib-th-sort ${c.colClass || ""}`}
+                          onClick={() => toggleSort(c.key)}
+                          title={`Sort by ${c.label}`}
+                        >
+                          <span className="vlib-th-inner">
+                            {c.label}
+                            <span className={`vlib-sort-ic ${active ? "on" : ""}`}>
+                              {active ? (sort.dir === "asc" ? "▲" : "▼") : ""}
+                            </span>
+                          </span>
+                        </th>
+                      );
+                    })}
+                    <th style={{ width: 84 }}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sorted.length === 0 ? (
+                    <tr>
+                      <td colSpan={COLS.length + 2} className="vlib-empty-cell">
+                        {rows.length === 0
+                          ? (newRows.length > 0
+                            ? "Library is empty. Review & add vessels from the list above, or click “Add a vessel”."
+                            : "No vessels in the library yet. Fetch emails, then Review & add — or click “Add a vessel”.")
+                          : "No vessels match your search."}
+                      </td>
+                    </tr>
+                  ) : (
+                    sorted.map((row, i) => (
+                      <tr key={row.id}>
+                        <td className="vlib-sr">{i + 1}</td>
+                        {COLS.map((c) => {
+                          const rawVal = row[c.key];
+                          const empty =
+                            c.key === "vessel_type"
+                              ? !String(rawVal || "").trim() || isImoTypeValue(rawVal)
+                              : !String(rawVal || "").trim();
+                          return (
+                            <td
+                              key={c.key}
+                              className={[c.colClass || "", empty ? "vlib-blank" : ""]
+                                .filter(Boolean)
+                                .join(" ")}
+                            >
+                              {c.key === "vessel_type" ? (
+                                <VesselTypeSelect
+                                  value={row.vessel_type}
+                                  onChange={(val) => handleVesselTypeChange(row, val)}
+                                />
+                              ) : (
+                                formatLibCell(c.key, row[c.key])
+                              )}
+                            </td>
+                          );
+                        })}
+                        <td className="vlib-actions">
+                          <button
+                            type="button"
+                            className="vlib-icon-btn"
+                            title="Edit"
+                            onClick={() => setModal({ mode: "edit", data: { ...row } })}
+                          >
+                            <Icon name="edit" size={15} />
+                          </button>
+                          <button
+                            type="button"
+                            className="vlib-icon-btn danger"
+                            title="Delete"
+                            onClick={() => handleDelete(row)}
+                          >
+                            <Icon name="trash" size={15} />
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          </>
         )}
       </div>
 

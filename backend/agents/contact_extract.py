@@ -1,6 +1,14 @@
 """
 Extract structured broker contact rows from attachment email text (signature / contact blocks).
-Used by the live fetch pipeline, retry paths, and optional audit scripts.
+Used by the live fetch pipeline and retry paths.
+
+Pipeline:
+  1) Claude extract (tight prompt — only facts present in the mail)
+  2) Deterministic scrub / merge / signature-email prefer
+  3) Claude column-remap — review draft vs email, place into required columns
+  4) Final scrub / merge
+  If LLM yields nothing → regex/signature fallback (used_fallback=True; never write
+  "signature fallback" into other_info).
 """
 from __future__ import annotations
 
@@ -25,14 +33,6 @@ from agents.signature_extract import (
 
 logger = logging.getLogger(__name__)
 
-# ── NVIDIA NIM (legacy — kept for reference, no longer used) ──────────────────
-# from openai import AsyncOpenAI, RateLimitError
-# nvidia_client = AsyncOpenAI(
-#     base_url=settings.NVIDIA_API_BASE_URL,
-#     api_key=settings.NVIDIA_API_KEY,
-#     max_retries=0,
-# )
-
 CONTACT_FIELD_KEYS = [
     "contact_name",
     "designation",
@@ -51,24 +51,44 @@ CONTACT_FIELD_KEYS = [
     "status",
 ]
 
+# Legacy marker only — never written into other_info going forward.
+FALLBACK_OTHER_INFO = "signature fallback"
+
 CONTACT_EXTRACT_PROMPT = """\
 You extract BROKER / CHARTERING CONTACT records from the tail of a shipbroking email (.eml body).
 
 Rules:
-1. Focus on signature blocks, company letterheads, and contact lines (Tel, Mobile, Email, WeChat, WhatsApp, website, address).
-2. For fleet position lists dominated by vessel tables, still extract signature / contact blocks at the end (names, Tel, Mobile, Email lines).
-3. Ignore vessel specification tables (DWT, IMO, ETA FOC lists) unless needed for vessel_name on a single-vessel note.
-4. Return ONLY valid JSON with one key "contacts" whose value is an array of objects.
-5. Each object uses EXACTLY these keys (use "" if unknown — do not invent):
-   - contact_name, designation, department, company, company_type, vessel_name
-   - email, off_phone, mob_phone, wechat, whatsapp
-   - website_address, office_address, other_info, status
-6. email: one primary email per contact row (lowercase). If multiple people share one block, create multiple rows.
-7. off_phone: office / direct / tel / DID lines. mob_phone: mobile / cell / handphone.
-8. company_type: e.g. "Owner", "Charterer", "Broker", "Operator" if stated; else "".
-9. vessel_name: only if clearly tied to this contact row or single-vessel position; else "".
-10. status: use "Active" if contact looks current, else "".
-11. Do not include GDPR footers, Proofpoint links, or unsubscribe text.
+1. Focus on signature blocks, company letterheads, and contact lines
+   (Tel, Mobile, Email, WeChat, WhatsApp, website, address).
+2. For fleet position lists dominated by vessel tables, still extract signature /
+   contact blocks (usually at the end).
+3. Ignore vessel specification tables (DWT, IMO, ETA, FOC lists).
+4. Return ONLY valid JSON with one key "contacts" (array of objects).
+5. Each object uses EXACTLY these keys (use "" if unknown — NEVER invent):
+   contact_name, designation, department, company, company_type, vessel_name,
+   email, off_phone, mob_phone, wechat, whatsapp,
+   website_address, office_address, other_info, status
+6. PEOPLE vs SHARED BLOCKS:
+   - If distinct people are named, create ONE ROW PER PERSON (even if they share a desk email).
+     Never collapse multiple named people into a single row.
+   - If the SAME person lists multiple companies, put ALL companies in `company`
+     as comma-separated values in ONE row — do NOT create one row per company.
+   - Only if a shared signature has several emails and NO per-person names, create ONE row
+     with all emails comma-separated in `email`.
+7. email: lowercase. Prefer emails from the signature block over random body mentions.
+8. off_phone = office / Tel / DID. mob_phone = Mobile / Cell / Handphone.
+   Keep readable international format with leading + (e.g. +65 6781 3709). Never invent.
+9. company: clean company / desk name only. Strip "Position List", dates, "Open Tonnage",
+   "Week NN", vessel list titles. If several affiliates for one person → comma-separated.
+10. company_type: ONLY if text has an explicit "Company type:" label. Otherwise "".
+11. wechat / whatsapp: ONLY if a label like WeChat: / WhatsApp: appears. Otherwise "".
+12. website_address: only real sites (www. / http / company domain lines). Else "".
+13. designation = job title (Manager, Director…). department = desk (Chartering, Ops…).
+    Do NOT put geographic region headers (ASIA, EUROPE, AMERICAS) into department.
+14. other_info: Skype / ICE / leave notes only — NEVER write "signature fallback".
+15. status: "Active" if contact looks current, else "".
+16. Do not include GDPR footers, Proofpoint links, or unsubscribe text.
+17. Extract EVERY named person in the signature — missing a named person is an error.
 
 Attachment filename hint: {filename_hint}
 
@@ -76,6 +96,58 @@ TEXT (tail of message):
 {chunk}
 
 JSON OUTPUT ONLY:"""
+
+
+COLUMN_REMAP_PROMPT = """\
+You are a COLUMN-MAPPING reviewer for broker contact extraction.
+
+You receive:
+1) EMAIL_TEXT — the signature / contact tail of a shipbroking email
+2) DRAFT_CONTACTS — JSON array already extracted (may have wrong columns, splits, or gaps)
+
+Your job:
+- Put every fact that EXISTS in EMAIL_TEXT into the correct column.
+- If EMAIL_TEXT does not contain a fact, that column MUST be "".
+- Do NOT invent company_type, WeChat, WhatsApp, designation, department, website, or phones.
+- Do NOT invent contact names that are not in the email.
+- Keep one row per distinct named person. Shared desk email may repeat.
+- Same person + multiple companies → one row, companies comma-separated.
+- Several emails + no person names → one row, emails comma-separated.
+- Clean company names (strip "Position List", dates, open tonnage titles).
+- other_info: only Skype / ICE / leave notes from the email — never "signature fallback".
+- status: "Active" if contact looks current, else "".
+
+Required keys on every object (use "" if unknown):
+contact_name, designation, department, company, company_type, vessel_name,
+email, off_phone, mob_phone, wechat, whatsapp,
+website_address, office_address, other_info, status
+
+Return ONLY valid JSON: {{"contacts": [ ... ]}}
+
+EMAIL_TEXT:
+{chunk}
+
+DRAFT_CONTACTS:
+{draft_json}
+
+JSON OUTPUT ONLY:"""
+
+
+_COMPANY_NOISE = re.compile(
+    r"\s*[-–|/]\s*(?:east of suez\s+)?(?:position|positions|open(?:ing)?|"
+    r"tonnage|fleet|vessel|week|ww|global|updated).*$",
+    re.I,
+)
+_SUBJECT_PREFIX = re.compile(r"^\s*subject\s*:\s*", re.I)
+_WECHAT_LABEL = re.compile(r"\bwe\s*-?\s*chat\b|\bwechat\b", re.I)
+_WHATSAPP_LABEL = re.compile(r"\bwhats\s*-?\s*app\b|\bwa\b\s*[:：]", re.I)
+_SCI_NOTATION = re.compile(r"^\s*\d+(?:\.\d+)?[eE][+-]?\d+\s*$")
+_WEBSITE = re.compile(r"(?:https?://|www\.)[^\s<>\"']+", re.I)
+_REGIONISH_DEPT = re.compile(
+    r"^(?:asia|europe|americas|middle\s*east|far\s*east|usg|ara|med|"
+    r"continent|india|indo|straits|sea|wci|eci)\b",
+    re.I,
+)
 
 
 def _is_retryable_llm_error(exc: Exception) -> bool:
@@ -133,7 +205,12 @@ def _parse_contact_json(text: str) -> list[dict[str, str]]:
     return [r for r in rows if any(r.values())]
 
 
-FALLBACK_OTHER_INFO = "signature fallback"
+def clean_subject(subject: str) -> str:
+    """Drop duplicated 'Subject:' prefix from stored / displayed subjects."""
+    s = (subject or "").strip()
+    while _SUBJECT_PREFIX.match(s):
+        s = _SUBJECT_PREFIX.sub("", s, count=1).strip()
+    return s
 
 
 def _company_hint_from_filename(filename: str) -> str:
@@ -145,6 +222,180 @@ def _company_hint_from_filename(filename: str) -> str:
         flags=re.I,
     )
     return name.strip()
+
+
+def clean_company_name(company: str, filename_hint: str = "") -> str:
+    raw = (company or "").strip()
+    if not raw:
+        raw = _company_hint_from_filename(filename_hint)
+    if not raw:
+        return ""
+    parts = [p.strip() for p in re.split(r"\s*,\s*", raw) if p.strip()]
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        c = _COMPANY_NOISE.sub("", part).strip(" -–|/")
+        c = re.sub(r"\s{2,}", " ", c).strip()
+        key = c.lower()
+        if c and key not in seen:
+            seen.add(key)
+            cleaned.append(c)
+    return ", ".join(cleaned)
+
+
+def format_phone(value: str) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    parts = [p.strip() for p in re.split(r"\s*[,;/|]\s*", raw) if p.strip()]
+    out: list[str] = []
+    for part in parts:
+        if _SCI_NOTATION.match(part):
+            try:
+                part = str(int(float(part)))
+            except ValueError:
+                pass
+        part = re.sub(r"\s+", " ", part).strip()
+        out.append(part)
+    return " ; ".join(out)
+
+
+def _field_in_source(value: str, chunk: str) -> bool:
+    v = (value or "").strip()
+    if not v:
+        return False
+    return v.lower() in (chunk or "").lower()
+
+
+def scrub_invented_fields(contact: dict[str, str], chunk: str) -> dict[str, str]:
+    """Drop company_type / wechat / whatsapp unless evidenced in the mail."""
+    row = dict(contact)
+
+    ct = (row.get("company_type") or "").strip()
+    if ct and not re.search(r"company\s*type\s*[:=]", chunk or "", re.I):
+        row["company_type"] = ""
+
+    for key, label_rx in (("wechat", _WECHAT_LABEL), ("whatsapp", _WHATSAPP_LABEL)):
+        val = (row.get(key) or "").strip()
+        if not val:
+            continue
+        if not label_rx.search(chunk or ""):
+            row[key] = ""
+        elif not _field_in_source(val, chunk):
+            row[key] = ""
+
+    dept = (row.get("department") or "").strip()
+    if dept and _REGIONISH_DEPT.search(dept):
+        row["department"] = ""
+
+    if (row.get("other_info") or "").strip().lower() == FALLBACK_OTHER_INFO:
+        row["other_info"] = ""
+
+    row["company"] = clean_company_name(row.get("company") or "")
+    row["off_phone"] = format_phone(row.get("off_phone") or "")
+    row["mob_phone"] = format_phone(row.get("mob_phone") or "")
+    row["email"] = ", ".join(
+        sorted(
+            {
+                e.strip().lower()
+                for e in re.split(r"\s*[,;]\s*", row.get("email") or "")
+                if e.strip() and "@" in e
+            }
+        )
+    )
+    return row
+
+
+def _merge_text_field(a: str, b: str, sep: str = ", ") -> str:
+    items: list[str] = []
+    seen: set[str] = set()
+    for raw in (a, b):
+        for part in re.split(rf"\s*{re.escape(sep.strip())}\s*|;|,", raw or ""):
+            p = part.strip()
+            if not p:
+                continue
+            key = p.lower()
+            if key not in seen:
+                seen.add(key)
+                items.append(p)
+    return sep.join(items)
+
+
+def merge_contact_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """
+    Same contact_name → merge companies + emails into one row.
+    Empty names → one shared row with comma-separated emails/companies.
+    Distinct named people stay separate.
+    """
+    if not rows:
+        return []
+
+    buckets: dict[str, dict[str, str]] = {}
+    order: list[str] = []
+
+    for row in rows:
+        name = (row.get("contact_name") or "").strip()
+        key = name.lower() if name else "__unnamed__"
+        if key not in buckets:
+            buckets[key] = dict(row)
+            order.append(key)
+            continue
+        base = buckets[key]
+        for field in CONTACT_FIELD_KEYS:
+            if field in ("company", "email"):
+                base[field] = _merge_text_field(base.get(field) or "", row.get(field) or "")
+            elif field in ("off_phone", "mob_phone"):
+                base[field] = _merge_text_field(
+                    base.get(field) or "", row.get(field) or "", sep=" ; "
+                )
+            elif field == "other_info":
+                base[field] = _merge_text_field(
+                    base.get(field) or "", row.get(field) or "", sep="; "
+                )
+            elif not (base.get(field) or "").strip() and (row.get(field) or "").strip():
+                base[field] = row[field]
+        buckets[key] = base
+
+    return [buckets[k] for k in order]
+
+
+def prefer_signature_emails(
+    contacts: list[dict[str, str]],
+    signature_emails: str,
+) -> list[dict[str, str]]:
+    """Signature emails first; backfill only when a single contact row."""
+    sig = [
+        e.strip().lower()
+        for e in re.split(r"\s*;\s*", signature_emails or "")
+        if e.strip() and "@" in e
+    ]
+    if not sig or not contacts:
+        return contacts
+    if len(contacts) != 1:
+        return contacts
+
+    existing = {
+        e.strip().lower()
+        for e in re.split(r"\s*[,;]\s*", contacts[0].get("email") or "")
+        if e.strip()
+    }
+    missing = [e for e in sig if e not in existing]
+    if not missing:
+        return contacts
+
+    out = [dict(c) for c in contacts]
+    out[0]["email"] = _merge_text_field(out[0].get("email") or "", ", ".join(missing))
+    return out
+
+
+def ensure_website_from_chunk(contact: dict[str, str], chunk: str) -> dict[str, str]:
+    row = dict(contact)
+    if (row.get("website_address") or "").strip():
+        return row
+    m = _WEBSITE.search(chunk or "")
+    if m:
+        row["website_address"] = m.group(0).rstrip(".,);]")
+    return row
 
 
 def _split_semicolon_field(value: str) -> list[str]:
@@ -169,7 +420,6 @@ def contacts_from_signature_strings(
             if company_hint:
                 row["company"] = company_hint
             row["status"] = "Active"
-            row["other_info"] = FALLBACK_OTHER_INFO
             rows.append(row)
         for i, phone in enumerate(phones):
             target = rows[i % len(rows)]
@@ -185,10 +435,9 @@ def contacts_from_signature_strings(
             if company_hint:
                 row["company"] = company_hint
             row["status"] = "Active"
-            row["other_info"] = FALLBACK_OTHER_INFO
             rows.append(row)
 
-    return rows
+    return merge_contact_rows(rows)
 
 
 def signature_fallback_contacts(
@@ -204,11 +453,20 @@ def signature_fallback_contacts(
     phones = _merge_signature_strings(signature_phones or "", fb.get("phones") or "", is_email=False)
     if not emails and not phones:
         return []
-    return contacts_from_signature_strings(
+    rows = contacts_from_signature_strings(
         emails,
         phones,
         company_hint=_company_hint_from_filename(filename),
     )
+    cleaned: list[dict[str, str]] = []
+    for row in rows:
+        row = dict(row)
+        row["other_info"] = ""
+        row["company"] = clean_company_name(row.get("company") or "", filename)
+        row["off_phone"] = format_phone(row.get("off_phone") or "")
+        row["mob_phone"] = format_phone(row.get("mob_phone") or "")
+        cleaned.append(row)
+    return merge_contact_rows(cleaned)
 
 
 async def llm_extract_contacts(chunk: str, filename_hint: str = "") -> list[dict[str, str]]:
@@ -227,7 +485,7 @@ async def llm_extract_contacts(chunk: str, filename_hint: str = "") -> list[dict
                         "role": "system",
                         "content": (
                             "You extract structured broker contact rows from email signatures. "
-                            "Output only valid JSON."
+                            "Never invent company_type, WeChat, or WhatsApp. Output only valid JSON."
                         ),
                     },
                     {
@@ -265,6 +523,73 @@ async def llm_extract_contacts(chunk: str, filename_hint: str = "") -> list[dict
     return []
 
 
+async def llm_remap_contacts_to_columns(
+    chunk: str,
+    draft_contacts: list[dict[str, str]],
+    *,
+    filename_hint: str = "",
+) -> list[dict[str, str]]:
+    """Second Claude pass: map draft fields into required columns; never invent."""
+    if not chunk or len(chunk) < 30:
+        return draft_contacts
+
+    draft_json = json.dumps(draft_contacts or [], ensure_ascii=False, indent=2)
+    max_attempts = settings.EXTRACTION_MAX_ATTEMPTS
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = await claude_client.chat.completions.create(
+                model=settings.CLAUDE_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You remap extracted broker contact fields into the correct columns. "
+                            "Use only facts present in the email. Never invent. Output only valid JSON."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": COLUMN_REMAP_PROMPT.format(
+                            chunk=chunk[:12000],
+                            draft_json=draft_json[:8000],
+                        )
+                        + (
+                            f"\n\nAttachment filename hint: {filename_hint}"
+                            if filename_hint
+                            else ""
+                        ),
+                    },
+                ],
+                temperature=0.0,
+                max_tokens=2500,
+            )
+            content = resp.choices[0].message.content or ""
+            remapped = _parse_contact_json(content)
+            return remapped if remapped else draft_contacts
+        except Exception as exc:
+            if attempt < max_attempts and _is_retryable_llm_error(exc):
+                delay = _retry_delay_seconds(exc, attempt)
+                logger.warning(
+                    "[ContactRemap] %s attempt %d/%d failed (%s); retry in %.1fs",
+                    filename_hint,
+                    attempt,
+                    max_attempts,
+                    exc,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+                continue
+            logger.warning(
+                "[ContactRemap] Soft-fail for %s (%s) — keeping draft",
+                filename_hint,
+                exc,
+            )
+            break
+
+    return draft_contacts
+
+
 async def extract_contacts_from_attachment(
     raw_text: str,
     *,
@@ -272,25 +597,54 @@ async def extract_contacts_from_attachment(
     signature_emails: str = "",
     signature_phones: str = "",
     fallback_only: bool = False,
-) -> list[dict[str, str]]:
-    """Preprocess tail + LLM → contact dicts; regex/DB fallback if LLM returns nothing."""
+) -> tuple[list[dict[str, str]], bool]:
+    """
+    Preprocess + LLM extract + column remap; regex/DB fallback if LLM returns nothing.
+    Returns (contacts, used_fallback).
+    """
     chunk = preprocess_for_signature(raw_text or "")
+    used_fallback = False
+    contacts: list[dict[str, str]] = []
+
     if not fallback_only:
         try:
             contacts = await llm_extract_contacts(chunk, filename_hint=filename)
         except Exception:
             contacts = []
-        if contacts:
-            return contacts
-    return signature_fallback_contacts(
-        chunk,
-        filename=filename,
-        signature_emails=signature_emails,
-        signature_phones=signature_phones,
-    )
+
+    if not contacts:
+        used_fallback = True
+        contacts = signature_fallback_contacts(
+            chunk,
+            filename=filename,
+            signature_emails=signature_emails,
+            signature_phones=signature_phones,
+        )
+    else:
+        contacts = [scrub_invented_fields(c, chunk) for c in contacts]
+        contacts = prefer_signature_emails(contacts, signature_emails)
+        contacts = [ensure_website_from_chunk(c, chunk) for c in contacts]
+        contacts = merge_contact_rows(contacts)
+
+    if contacts:
+        remapped = await llm_remap_contacts_to_columns(
+            chunk, contacts, filename_hint=filename
+        )
+        if remapped:
+            contacts = remapped
+        contacts = [scrub_invented_fields(c, chunk) for c in contacts]
+        contacts = prefer_signature_emails(contacts, signature_emails)
+        contacts = merge_contact_rows(contacts)
+        contacts = [scrub_invented_fields(c, chunk) for c in contacts]
+
+    contacts = [
+        c for c in contacts if any((c.get(k) or "").strip() for k in CONTACT_FIELD_KEYS)
+    ]
+    return contacts, used_fallback
 
 
 def contacts_used_fallback(contacts: list[dict[str, str]]) -> bool:
+    """Legacy detection via other_info marker (old rows only)."""
     return bool(contacts) and all(
         (c.get("other_info") or "") == FALLBACK_OTHER_INFO for c in contacts
     )
@@ -356,16 +710,21 @@ def _contact_row_db_payload(
     row_order: int,
     used_fallback: bool,
 ) -> dict[str, Any]:
+    other = (contact.get("other_info") or "").strip()
+    if other.lower() == FALLBACK_OTHER_INFO:
+        other = ""
     row: dict[str, Any] = {
         "attachment_id": attachment_id,
         "parent_email_id": parent_email_id,
         "row_order": row_order,
-        "used_fallback": used_fallback
-        or (contact.get("other_info") or "") == FALLBACK_OTHER_INFO,
+        "used_fallback": used_fallback,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     for key in CONTACT_FIELD_KEYS:
-        row[key] = (contact.get(key) or "").strip()
+        if key == "other_info":
+            row[key] = other
+        else:
+            row[key] = (contact.get(key) or "").strip()
     return row
 
 
@@ -404,7 +763,7 @@ async def _process_attachment_contacts(
     })
 
     if len(raw.strip()) < 30:
-        save_broker_contacts_for_attachment(aid, parent_email_id, [])
+        save_broker_contacts_for_attachment(aid, parent_email_id, [], used_fallback=False)
         await sse_manager.send(job_id, "contact_attachment_done", {
             "attachment_id": aid,
             "filename": filename,
@@ -415,19 +774,21 @@ async def _process_attachment_contacts(
     gap = max(2.0, settings.EXTRACTION_REQUEST_DELAY_SEC)
     await asyncio.sleep(gap)
 
-    contacts = await extract_contacts_from_attachment(
+    contacts, used_fallback = await extract_contacts_from_attachment(
         raw,
         filename=filename,
         signature_emails=att.get("signature_emails") or "",
         signature_phones=att.get("signature_phones") or "",
     )
-    count = save_broker_contacts_for_attachment(aid, parent_email_id, contacts)
+    count = save_broker_contacts_for_attachment(
+        aid, parent_email_id, contacts, used_fallback=used_fallback
+    )
 
     await sse_manager.send(job_id, "contact_attachment_done", {
         "attachment_id": aid,
         "filename": filename,
         "contact_count": count,
-        "used_fallback": contacts_used_fallback(contacts),
+        "used_fallback": used_fallback,
     })
     return count
 
@@ -459,7 +820,7 @@ async def run_attachment_contact_extraction(job_id: str, attachment_id: str) -> 
 async def run_parent_contact_extraction(job_id: str, email_id: str) -> None:
     """
     For each attachment under this parent, extract structured broker contacts
-    (LLM + signature fallback) and save to broker_contacts.
+    (LLM + remap + signature fallback) and save to broker_contacts.
     Run after signature_emails/signature_phones are on attachment rows.
     """
     try:

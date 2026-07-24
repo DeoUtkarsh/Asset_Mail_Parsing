@@ -1,5 +1,5 @@
 /**
- * Toggle button — Verify / Unverify. Verified vessels appear on Vessel Position List.
+ * Toggle button — Verify / Verified. Verified vessels appear on Vessel Position List.
  */
 export default function VerifyButton({
   verified = false,
@@ -22,7 +22,7 @@ export default function VerifyButton({
       className={cls}
       title={
         verified
-          ? "Click to unverify — removes from Vessel Position List"
+          ? "Verified — click to remove from Vessel Position List"
           : !canVerify
             ? "Requires synced status and at least one vessel"
             : "Send vessels to Vessel Position List"
@@ -31,7 +31,7 @@ export default function VerifyButton({
       {busy
         ? <span className="spin-ring" style={{ width: 12, height: 12 }} />
         : verified
-          ? "Unverify"
+          ? "Verified"
           : "Verify"}
     </button>
   );

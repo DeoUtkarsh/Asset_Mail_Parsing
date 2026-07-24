@@ -217,20 +217,17 @@ export default function DraftView({ html = "", zones = [], vessels = [], columns
     <div className="draft-root">
       <div className="draft-head">
         <div className="draft-head-left">
-          <div>
-            <h2>
-              <span className="draft-spark" aria-hidden>⚓</span>
-              Generated Draft
-            </h2>
+          <div className="draft-head-title">
+            <h2>Generated Draft</h2>
             <p className="draft-sub">
               {hasContent
-                ? `Consolidated position list · ${vessels.length} vessel${vessels.length !== 1 ? "s" : ""} · ${zoneCount} zone${zoneCount !== 1 ? "s" : ""}`
+                ? "Consolidated position list"
                 : "Review the final email below, then copy into your email client."}
             </p>
           </div>
 
           {hasGrid && (
-            <div className="draft-stats">
+            <div className="draft-stats" aria-label="Draft summary">
               <div className="draft-stat"><span>Vessels</span> <b>{vessels.length}</b></div>
               <div className="draft-stat"><span>Zones</span> <b>{zoneCount}</b></div>
               <div className="draft-stat"><span>Columns</span> <b>{gridColumns.length}</b></div>

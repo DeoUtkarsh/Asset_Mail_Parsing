@@ -345,10 +345,11 @@ export default function PreviewPanel({
     <div className="ipreview">
       {/* ── Header ── */}
       <div className="ipreview-head">
-        <div className="ipreview-editbar">
+        <div className="ipreview-head-right">
+          {/* Edit → legends → All columns → Verify (compact, right-aligned) */}
           {showEdit && !isVerified && (
             editMode ? (
-              <>
+              <div className="ipreview-editbar">
                 <button
                   type="button"
                   className="btn-save-changes"
@@ -365,7 +366,7 @@ export default function PreviewPanel({
                 >
                   Cancel
                 </button>
-              </>
+              </div>
             ) : (
               <button
                 type="button"
@@ -378,10 +379,10 @@ export default function PreviewPanel({
               </button>
             )
           )}
-          <span className={`ipreview-saved ${savedMsg ? "show" : ""}`}>✓ Saved</span>
-        </div>
-        <div className="ipreview-head-right">
           <CellHighlightLegend className="ipreview-legends" />
+          {savedMsg && (
+            <span className="ipreview-saved show">✓ Saved</span>
+          )}
           {vessels.length > 0 && columnDefs.length > 0 && (
             <AllColumnsToggle
               enabled={showAllColumns}

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   fetchEmails,
   getEmails,
@@ -13,19 +13,48 @@ const AV_COLORS = ["#219495", "#3b82f6", "#8b5cf6", "#f59e0b", "#ef4444", "#10b9
 
 const DEFAULT_FILTERS = { from: "", dateFrom: "", dateTo: "", tiers: [] };
 
-function mapDbStatus(status) {
-  if (status === "done") return "downloaded";
-  if (status === "error") return "failed";
-  if (status === "extracting" || status === "pending") return "in_progress";
-  return status;
+/** Higher rank wins — never flicker back to an earlier stage. */
+const STATUS_RANK = {
+  pending: 0,
+  in_progress: 1,
+  contacts: 2,
+  downloaded: 3,
+  failed: 4,
+};
+
+function mapDbStatus(att, parentStatus) {
+  if (att.status === "error") return "failed";
+  if (parentStatus === "extracting" || parentStatus === "pending") {
+    // DB attachment may already be "done" while contacts still run
+    if (att.status === "done") return "contacts";
+    return "in_progress";
+  }
+  if (att.status === "done" && (parentStatus === "ready_for_validation" || parentStatus === "drafted")) {
+    return "downloaded";
+  }
+  if (att.status === "extracting" || att.status === "pending") return "in_progress";
+  if (att.status === "done") return "downloaded";
+  return "pending";
 }
 
+function canAdvanceStatus(from, to) {
+  if (!from) return true;
+  if (to === "failed") return true;
+  if (from === "failed" && to === "in_progress") return true; // retry
+  if (from === "downloaded") return false;
+  return (STATUS_RANK[to] ?? 0) >= (STATUS_RANK[from] ?? 0);
+}
+
+/**
+ * Vessel Extracted Data + Need to Review share this view.
+ * reviewMode only changes the mail list filter (low/medium / needs_review) and hides Fetch Emails.
+ * Preview grid, edit, verify, column toggle, and highlights are identical.
+ */
 export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUpdated, onEmailsLoaded, reviewMode = false }) {
   const [emails, setEmails]           = useState([]);
   const [fetching, setFetching]       = useState(false);
   const [retrying, setRetrying]       = useState(false);
   const [jobId, setJobId]             = useState(null);
-  const [statusLog, setStatusLog]     = useState([]);
   const [attStatuses, setAttStatuses] = useState({});
   // Inbox and Need-to-Review share this component instance, so keep a separate
   // open-mail + search per tab — each tab remembers its own selection.
@@ -41,6 +70,9 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
   const filters = filtersByMode[modeKey];
   const setFilters = useCallback((next) => setFiltersByMode((p) => ({ ...p, [modeKey]: next })), [modeKey]);
   const [filterOpen, setFilterOpen] = useState(false);
+  const expectedEmailIdsRef = useRef(new Set());
+  const readyEmailIdsRef = useRef(new Set());
+  const loadGenRef = useRef(0);
 
   useEffect(() => { loadEmails(); }, []);
 
@@ -52,12 +84,34 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
   };
 
   const loadEmails = async () => {
+    const gen = ++loadGenRef.current;
     try {
       const data = await getEmails();
-      setEmails(data);
+      if (gen !== loadGenRef.current) return; // ignore stale responses
+      // Merge so a racey refresh cannot wipe vessel_count back to 0
+      setEmails((prev) => {
+        const prevCount = new Map();
+        for (const em of prev) {
+          for (const att of em.attachments || []) {
+            prevCount.set(att.id, att.vessel_count || 0);
+          }
+        }
+        return data.map((em) => ({
+          ...em,
+          attachments: (em.attachments || []).map((att) => {
+            const incoming = att.vessel_count || 0;
+            const kept = prevCount.get(att.id) || 0;
+            return {
+              ...att,
+              vessel_count: Math.max(incoming, kept),
+            };
+          }),
+        }));
+      });
       pickReadyEmail(data);
       onEmailsLoaded?.(data);
     } catch (e) {
+      if (gen !== loadGenRef.current) return;
       console.error("Failed to load emails:", e);
     }
   };
@@ -70,64 +124,129 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
     return Boolean(att.retry_suggested);
   };
 
-  const retryTarget = useMemo(() => {
-    for (const em of emails) {
-      const count = (em.attachments || []).filter(isRetryableAtt).length;
-      if (count > 0) return { emailId: em.id, count };
-    }
-    return null;
-  }, [emails, attStatuses]);
-
   const finishJob = useCallback(() => {
     setFetching(false);
     setRetrying(false);
     setJobId(null);
     setAttStatuses({});
-    setStatusLog([]);
+    expectedEmailIdsRef.current = new Set();
+    readyEmailIdsRef.current = new Set();
     loadEmails();
+  }, []);
+
+  const patchAttachmentMeta = useCallback((attachmentId, patch) => {
+    if (!attachmentId) return;
+    setEmails((prev) =>
+      prev.map((em) => ({
+        ...em,
+        attachments: (em.attachments || []).map((att) => {
+          if (att.id !== attachmentId) return att;
+          const next = { ...att, ...patch };
+          if (typeof patch.vessel_count === "number") {
+            next.vessel_count = Math.max(att.vessel_count || 0, patch.vessel_count);
+          }
+          return next;
+        }),
+      }))
+    );
+  }, []);
+
+  const markAttachments = useCallback((ids, status) => {
+    if (!ids?.length) return;
+    setAttStatuses((p) => {
+      const next = { ...p };
+      for (const id of ids) {
+        if (canAdvanceStatus(next[id], status)) next[id] = status;
+      }
+      return next;
+    });
+  }, []);
+
+  const markOne = useCallback((id, status) => {
+    if (!id) return;
+    setAttStatuses((p) => {
+      if (!canAdvanceStatus(p[id], status)) return p;
+      return { ...p, [id]: status };
+    });
   }, []);
 
   const handleEvent = useCallback((evt) => {
     const { type, ...rest } = evt;
-    setStatusLog((prev) => [{ type, ...rest, ts: Date.now() }, ...prev].slice(0, 50));
     switch (type) {
       case "retry_started":
-        if (rest.attachment_id) {
-          setAttStatuses((p) => ({ ...p, [rest.attachment_id]: "in_progress" }));
+        markOne(rest.attachment_id, "in_progress");
+        break;
+      case "ingestion_summary":
+        if (Array.isArray(rest.email_ids) && rest.email_ids.length) {
+          expectedEmailIdsRef.current = new Set(rest.email_ids);
         }
         break;
       case "email_saved":
+      case "attachment_saved":
+        markOne(rest.attachment_id, "in_progress");
+        if (rest.email_id) expectedEmailIdsRef.current.add(rest.email_id);
         loadEmails();
         break;
-      case "attachment_saved":
-        setAttStatuses((p) => ({ ...p, [rest.attachment_id]: "in_progress" }));
-        break;
+      case "vessels_phase_started":
       case "extraction_started":
+        markOne(rest.attachment_id, "in_progress");
+        if (Array.isArray(rest.email_ids) && rest.email_ids.length) {
+          expectedEmailIdsRef.current = new Set(rest.email_ids);
+        }
+        break;
+      case "extraction_done": {
+        // Vessels done for this mail — keep "Extracting vessels" until contacts phase starts
+        const vc = rest.vessel_count;
+        patchAttachmentMeta(rest.attachment_id, {
+          status: "done",
+          ...(typeof vc === "number" ? { vessel_count: vc } : {}),
+        });
+        break;
+      }
+      case "all_extractions_done":
+      case "contacts_phase_started":
+        if (Array.isArray(rest.email_ids) && rest.email_ids.length) {
+          expectedEmailIdsRef.current = new Set(rest.email_ids);
+        }
+        setAttStatuses((p) => {
+          const next = { ...p };
+          // Promote every known attachment into contacts stage (not Synced yet)
+          const ids = new Set([
+            ...Object.keys(next),
+            ...(rest.attachment_ids || []),
+          ]);
+          for (const id of ids) {
+            const st = next[id] || "in_progress";
+            if (st !== "failed" && st !== "downloaded" && canAdvanceStatus(st, "contacts")) {
+              next[id] = "contacts";
+            }
+          }
+          return next;
+        });
+        loadEmails(); // now safe — all vessels should be in DB
+        break;
+      case "email_contacts_started":
       case "signature_attachment_started":
-        setAttStatuses((p) => ({ ...p, [rest.attachment_id]: "in_progress" }));
-        break;
-      case "extraction_done":
-        setAttStatuses((p) => ({ ...p, [rest.attachment_id]: "in_progress" }));
-        break;
-      case "attachment_auto_verified":
-        setAttStatuses((p) => ({ ...p, [rest.attachment_id]: "downloaded" }));
-        onVesselsUpdated?.();
-        break;
-      case "signature_attachment_done":
-        setAttStatuses((p) => ({ ...p, [rest.attachment_id]: "downloaded" }));
-        onContactsUpdated?.();
+      case "contact_attachment_started":
+        if (rest.attachment_ids?.length) {
+          markAttachments(rest.attachment_ids, "contacts");
+        } else {
+          markOne(rest.attachment_id, "contacts");
+        }
         break;
       case "extraction_error":
-        setAttStatuses((p) => ({ ...p, [rest.attachment_id]: "failed" }));
+        markOne(rest.attachment_id, "failed");
         break;
-      case "batch_ingestion_complete":
+      case "email_ready":
+        // Synced for this mail only — spinner keeps going until phase1_complete
+        markAttachments(rest.attachment_ids || [], "downloaded");
+        if (rest.email_id) readyEmailIdsRef.current.add(rest.email_id);
         loadEmails();
         onContactsUpdated?.();
+        if (rest.email_id) onEmailReady?.(rest.email_id);
         break;
-      case "parent_email_done":
-        loadEmails();
-        onVesselsUpdated?.();
-        onContactsUpdated?.();
+      case "attachment_auto_verified":
+        // Don't spam vessel list reloads mid-fetch
         break;
       case "phase1_complete":
         if (rest.email_id) onEmailReady?.(rest.email_id);
@@ -136,32 +255,30 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
         finishJob();
         break;
       case "phase1_no_new":
-        finishJob();
-        break;
       case "retry_no_work":
-        finishJob();
-        break;
       case "phase1_failed":
         finishJob();
-        break;
-      case "signature_extraction_started":
-      case "signature_extraction_done":
-      case "signature_extraction_error":
-        if (type === "signature_extraction_done") {
-          loadEmails();
-          onContactsUpdated?.();
-        }
         break;
       default:
         break;
     }
-  }, [onEmailReady, onVesselsUpdated, onContactsUpdated, finishJob]);
+  }, [
+    onEmailReady,
+    onVesselsUpdated,
+    onContactsUpdated,
+    finishJob,
+    markAttachments,
+    markOne,
+    patchAttachmentMeta,
+  ]);
 
   useSSE(jobId, handleEvent);
 
   const handleFetch = async () => {
     setFetching(true);
-    setStatusLog([]);
+    expectedEmailIdsRef.current = new Set();
+    readyEmailIdsRef.current = new Set();
+    setAttStatuses({});
     try {
       const { job_id } = await fetchEmails();
       setJobId(job_id);
@@ -174,7 +291,6 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
   const handleRetry = async () => {
     if (!retryTarget?.emailId) return;
     setRetrying(true);
-    setStatusLog([]);
     try {
       const { job_id } = await retryExtraction(retryTarget.emailId);
       setJobId(job_id);
@@ -186,7 +302,6 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
 
   const handleRetryAttachment = async (attId) => {
     setAttStatuses((p) => ({ ...p, [attId]: "in_progress" }));
-    setStatusLog([]);
     try {
       const { job_id } = await retryAttachment(attId);
       setJobId(job_id);
@@ -212,8 +327,10 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
 
   const resolveAttStatus = (att) => {
     if (attStatuses[att.id]) return attStatuses[att.id];
-    return mapDbStatus(att.status);
+    return mapDbStatus(att, att.email?.status);
   };
+
+  const isOpenable = (status) => status === "downloaded" || status === "failed";
 
   const fmtDate = (iso) => {
     const d = new Date(iso);
@@ -248,6 +365,19 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
       return tier === "medium" || tier === "low" || resolveAttStatus(r) === "failed";
     });
   }, [reviewMode, mailRows, attStatuses]);
+
+  // Same retry control on both tabs; review only counts mails in the review list.
+  const retryTarget = useMemo(() => {
+    const attIds = reviewMode ? new Set(scopedRows.map((r) => r.id)) : null;
+    for (const em of emails) {
+      const count = (em.attachments || []).filter((att) => {
+        if (attIds && !attIds.has(att.id)) return false;
+        return isRetryableAtt(att);
+      }).length;
+      if (count > 0) return { emailId: em.id, count };
+    }
+    return null;
+  }, [emails, attStatuses, reviewMode, scopedRows]);
 
   const filteredRows = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -304,6 +434,14 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
     [mailRows, selectedId]
   );
 
+  // Close preview if selected mail is no longer openable (still downloading)
+  useEffect(() => {
+    if (!selectedRow) return;
+    if (!isOpenable(resolveAttStatus(selectedRow))) {
+      setSelectedId(null);
+    }
+  }, [selectedRow, attStatuses, emails]);
+
   return (
     <div className="vgrid-root">
 
@@ -311,7 +449,7 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
         <div className="vgrid-title">
           <div className="vgrid-title-row">
             <h2>{reviewMode ? "Need to Review" : "Vessel Extracted Data"}</h2>
-            {emails.length > 0 && (
+            {emails.length > 0 && (!reviewMode || scopedRows.length > 0) && (
               <div className="vgrid-stats inline">
                 <InboxStat label="Emails" value={inboxStats.emails} />
                 <InboxStat label="Synced" value={inboxStats.downloaded} />
@@ -338,40 +476,23 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
               )}
             </button>
           ) : null}
-          <button
-            type="button"
-            onClick={handleFetch}
-            disabled={fetchBusy || anyJobActive}
-            className="btn btn-send"
-            style={{ fontSize: 13, padding: "9px 15px" }}
-          >
-            {fetchBusy ? (
-              <><span className="spin-ring" /> Fetch in progress…</>
-            ) : (
-              "Fetch Emails"
-            )}
-          </button>
+          {!reviewMode && (
+            <button
+              type="button"
+              onClick={handleFetch}
+              disabled={fetchBusy || anyJobActive}
+              className="btn btn-send"
+              style={{ fontSize: 13, padding: "9px 15px", display: "inline-flex", alignItems: "center", gap: 8 }}
+              title={fetchBusy || anyJobActive ? "Fetching emails…" : "Fetch new broker emails"}
+            >
+              {(fetchBusy || (anyJobActive && fetching)) && (
+                <span className="spin-ring" style={{ width: 14, height: 14 }} />
+              )}
+              Fetch Emails
+            </button>
+          )}
         </div>
       </div>
-
-      {(fetchBusy || retrying || anyJobActive) && statusLog.length > 0 && (
-        <div className="inbox-log">
-          {statusLog.map((log, i) => (
-            <div key={i} className="inbox-log-entry">
-              <span className="inbox-log-type">[{log.type}]</span>{" "}
-              {log.filename && <span>{log.filename}</span>}
-              {log.message && <span> {log.message}</span>}
-              {log.signature_preview != null && log.signature_preview !== "" && (
-                <span> {log.signature_preview}</span>
-              )}
-              {log.error && <span className="inbox-log-err"> {log.error}</span>}
-              {log.vessel_count !== undefined && (
-                <span> → {log.vessel_count} vessels</span>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
 
       <div className="inbox-split">
         {/* ── Left: mail list ── */}
@@ -407,7 +528,11 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
           <div className="inbox-list-scroll">
             {mailRows.length === 0 ? (
               <div className="inbox-list-empty">
-                {fetchBusy ? "Fetching…" : "No emails fetched yet. Click \u201CFetch Emails\u201D to start."}
+                {fetchBusy
+                  ? "Fetching…"
+                  : reviewMode
+                    ? "Nothing to review \uD83C\uDF89"
+                    : "No emails fetched yet. Click \u201CFetch Emails\u201D to start."}
               </div>
             ) : filteredRows.length === 0 ? (
               <div className="inbox-list-empty">
@@ -420,6 +545,7 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
             ) : (
               filteredRows.map((row) => {
                 const status = resolveAttStatus(row);
+                const openable = isOpenable(status);
                 const sender = row.email.sender || "—";
                 const avColor = AV_COLORS[(sender.charCodeAt(0) || 0) % AV_COLORS.length];
                 const fileLabel = String(row.filename || "").trim();
@@ -432,10 +558,22 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
                   <div
                     key={row.id}
                     role="button"
-                    tabIndex={0}
-                    className={`imail-card ${selectedId === row.id ? "active" : ""} ${status === "failed" ? "is-failed" : ""}`}
-                    onClick={() => setSelectedId(row.id)}
+                    tabIndex={openable ? 0 : -1}
+                    aria-disabled={!openable}
+                    className={`imail-card ${selectedId === row.id ? "active" : ""} ${status === "failed" ? "is-failed" : ""} ${!openable ? "is-locked" : ""}`}
+                    title={
+                      !openable
+                        ? status === "contacts"
+                          ? "Vessels finished — still extracting contacts. Opens when Synced."
+                          : "Still extracting vessels — opens when Synced"
+                        : undefined
+                    }
+                    onClick={() => {
+                      if (!openable) return;
+                      setSelectedId(row.id);
+                    }}
                     onKeyDown={(e) => {
+                      if (!openable) return;
                       if (e.key === "Enter" || e.key === " ") {
                         e.preventDefault();
                         setSelectedId(row.id);
@@ -503,7 +641,7 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
 
         {/* ── Right: detail pane ── */}
         <div className="inbox-detail">
-          {selectedRow ? (
+          {selectedRow && isOpenable(resolveAttStatus(selectedRow)) ? (
             <PreviewPanel
               key={selectedRow.id}
               attachmentId={selectedRow.id}
@@ -526,7 +664,11 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
           ) : (
             <div className="inbox-detail-empty">
               <div className="ide-icon"><Icon name="mail" size={34} /></div>
-              <div>Select a mail on the left to preview its extracted vessels and original message.</div>
+              <div>
+                {fetchBusy || anyJobActive
+                  ? "Mails appear as they arrive. Open a mail only when it shows Synced."
+                  : "Select a mail on the left to preview its extracted vessels and original message."}
+              </div>
             </div>
           )}
         </div>
@@ -620,8 +762,9 @@ function InboxStat({ label, value }) {
 }
 
 function VesselCountBadge({ count, status }) {
-  if (status === "in_progress" || status === "pending") return null;
   const n = count ?? 0;
+  // Hide only while still extracting vessels with no count yet
+  if ((status === "in_progress" || status === "pending") && n === 0) return null;
   return (
     <span className="imail-vcount" title="Vessels extracted from this mail">
       {n} vessel{n !== 1 ? "s" : ""}
@@ -630,7 +773,16 @@ function VesselCountBadge({ count, status }) {
 }
 
 function ConfidenceBadge({ score, tier, label, status, reviewed = false }) {
-  if (status === "in_progress" || status === "pending" || tier === "unknown" || score == null) {
+  if (
+    status === "in_progress"
+    || status === "pending"
+    || status === "contacts"
+    || tier === "unknown"
+    || score == null
+  ) {
+    if (status === "contacts") {
+      return <span className="cell-val is-empty" title="Score available when Synced">—</span>;
+    }
     return <span className="cell-val is-empty" title="Score available after extraction">—</span>;
   }
 
@@ -656,7 +808,8 @@ function ConfidenceBadge({ score, tier, label, status, reviewed = false }) {
 
 function StatusBadge({ status }) {
   const map = {
-    in_progress: { label: "In Progress", cls: "st-proc", spin: true },
+    in_progress: { label: "Extracting vessels", cls: "st-proc", spin: true },
+    contacts:    { label: "Extracting contacts", cls: "st-contacts", spin: true },
     downloaded:  { label: "Synced", cls: "st-auto", spin: false },
     failed:      { label: "Failed", cls: "st-err", spin: false },
     pending:     { label: "Pending", cls: "st-out", spin: false },
