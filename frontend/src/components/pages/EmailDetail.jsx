@@ -91,7 +91,7 @@ export default function EmailDetail({
   const handleVerify = async () => {
     setVerifyBusy(true);
     try {
-      const result = await setAttachmentVerified(attachment.id, !isVerified);
+      const result = await setAttachmentVerified(attachment.id, true);
       setIsVerified(Boolean(result.is_verified));
       onVerifiedChange?.();
     } catch (e) {
@@ -121,7 +121,7 @@ export default function EmailDetail({
           verified={isVerified}
           canVerify={canVerify}
           busy={verifyBusy}
-          onToggle={handleVerify}
+          onVerify={handleVerify}
         />
         <span className={`st-pill ${flagged.length ? "st-rev" : isVerified ? "st-auto" : "st-rev"}`} style={{ marginLeft: 8 }}>
           {isVerified ? "✓ verified" : flagged.length ? `⚠ ${flagged.length} to review` : "pending verify"}

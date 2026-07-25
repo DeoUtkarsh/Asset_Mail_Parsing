@@ -3,7 +3,7 @@ import { MapContainer, TileLayer, Marker, Tooltip, useMap } from "react-leaflet"
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import EditableGrid from "../ValidationView/EditableGrid";
-import { regionToZone, vesselsGroupedByZone } from "../../utils/zoneMapping";
+import { regionToZone } from "../../utils/zoneMapping";
 import { leafletBoundsFromZones } from "../../utils/mapBounds";
 import { getColumnDefinitions } from "../../services/api";
 import { DEFAULT_COLUMNS } from "../../utils/standardColumns";
@@ -150,6 +150,7 @@ function ZoneMap({ zones, onMapReady }) {
 export default function DraftView({ html = "", zones = [], vessels = [], columns = [] }) {
   const [copied, setCopied] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [mapOpen, setMapOpen] = useState(false); // collapsed by default
   const [columnDefs, setColumnDefs] = useState(DEFAULT_COLUMNS);
   const mapWrapperRef = useRef(null);
   const leafletMapRef = useRef(null);
@@ -163,7 +164,16 @@ export default function DraftView({ html = "", zones = [], vessels = [], columns
 
   useEffect(() => { setCopied(false); }, [html, vessels]);
 
-  const gridVessels = useMemo(() => vesselsGroupedByZone(vessels), [vessels]);
+  // Flat list — no region/zone grouping headers.
+  const gridVessels = useMemo(() => {
+    const list = [...(vessels || [])];
+    list.sort((a, b) =>
+      String(a?.dynamic_data?.vessel_name || "").localeCompare(
+        String(b?.dynamic_data?.vessel_name || ""),
+      ),
+    );
+    return list;
+  }, [vessels]);
 
   const gridColumns = useMemo(() => {
     if (!columns?.length) return columnDefs;
@@ -178,8 +188,6 @@ export default function DraftView({ html = "", zones = [], vessels = [], columns
 
   const hasGrid = vessels.length > 0;
   const hasContent = hasGrid || Boolean(html);
-  // When the draft carries many columns the inline table gets too wide to read —
-  // offer a paginated PDF (map + full table) instead.
   const showPdfDownload = gridColumns.length > 9;
 
   const handleCopy = async () => {
@@ -265,44 +273,58 @@ export default function DraftView({ html = "", zones = [], vessels = [], columns
           </p>
         </div>
       ) : hasGrid ? (
-        <>
-          <div className="draft-body">
-            {zones.length > 0 && (
-              <div className="draft-left">
-                <div ref={mapWrapperRef} className="draft-map draft-map-capture">
-                  <ZoneMap zones={zones} onMapReady={onMapReady} />
+        <div className="draft-body draft-body-stack">
+          {zones.length > 0 && (
+            <div className={`draft-map-panel ${mapOpen ? "is-open" : "is-collapsed"}`}>
+              <button
+                type="button"
+                className="draft-map-toggle"
+                onClick={() => setMapOpen((v) => !v)}
+                aria-expanded={mapOpen}
+              >
+                <span>{mapOpen ? "▾" : "▸"} Map</span>
+                <span className="draft-map-toggle-meta">
+                  {zones.length} zone{zones.length !== 1 ? "s" : ""}
+                </span>
+              </button>
+              {mapOpen && (
+                <div className="draft-map-panel-body">
+                  <div ref={mapWrapperRef} className="draft-map draft-map-capture">
+                    <ZoneMap zones={zones} onMapReady={onMapReady} />
+                  </div>
+                  <div className="draft-legend draft-legend-h">
+                    {zones.map((z) => (
+                      <div key={`${z.name}-${z.lat}-${z.lng}`} className="draft-legend-row">
+                        <span
+                          className="draft-legend-dot"
+                          style={{ background: ZONE_COLORS[z.zone || z.name] || "#94a3b8" }}
+                        />
+                        <span>{z.name}</span>
+                        <b>({z.count})</b>
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                <div className="draft-legend">
-                  {zones.map((z) => (
-                    <div key={`${z.name}-${z.lat}-${z.lng}`} className="draft-legend-row">
-                      <span
-                        className="draft-legend-dot"
-                        style={{ background: ZONE_COLORS[z.zone || z.name] || "#94a3b8" }}
-                      />
-                      <span>{z.name}</span>
-                      <b>({z.count})</b>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <div className="draft-right">
-              <EditableGrid
-                data={gridVessels}
-                gridColumns={gridColumns}
-                onCellEdit={() => {}}
-                readOnly
-                showCheckboxes={false}
-                groupHeaderIcon={null}
-              />
-              <p className="draft-note">
-                Copy uses the same columns as this grid.
-                {showPdfDownload ? " Download PDF (10+ columns) exports map + full table in one flow." : ""}
-              </p>
+              )}
             </div>
+          )}
+
+          <div className="draft-right">
+            <EditableGrid
+              data={gridVessels}
+              gridColumns={gridColumns}
+              onCellEdit={() => {}}
+              readOnly
+              showCheckboxes={false}
+              hideGroupHeaders
+              groupHeaderIcon={null}
+            />
+            <p className="draft-note">
+              Copy uses the same columns as this grid.
+              {showPdfDownload ? " Download PDF (10+ columns) exports map + full table in one flow." : ""}
+            </p>
           </div>
-        </>
+        </div>
       ) : (
         <div className="draft-body" style={{ flexDirection: "column" }}>
           <iframe

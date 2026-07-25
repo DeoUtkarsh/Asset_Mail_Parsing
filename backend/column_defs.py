@@ -18,6 +18,7 @@ EMPTY_VALUES = frozenset({
 STANDARD_DYNAMIC_KEYS: list[str] = [
     "company",
     "imo",
+    "imo_type",
     "vessel_name",
     "call_sign",
     "year_built",
@@ -64,28 +65,29 @@ DEFAULT_COLUMN_DEFINITIONS: list[dict[str, Any]] = [
     {"id": "year_built", "header": "YEAR BUILT", "display_order": 3, "read_only": False, "storage": "dynamic_data"},
     {"id": "tank_coating", "header": "TANK COATING", "display_order": 4, "read_only": False, "storage": "dynamic_data"},
     {"id": "imo", "header": "IMO", "display_order": 5, "read_only": False, "storage": "dynamic_data"},
-    {"id": "region", "header": "REGION", "display_order": 6, "read_only": False, "storage": "region"},
-    {"id": "opening_date", "header": "OPENING DATE", "display_order": 7, "read_only": False, "storage": "dynamic_data"},
-    {"id": "open_location", "header": "OPEN LOCATION", "display_order": 8, "read_only": False, "storage": "dynamic_data"},
-    {"id": "direction", "header": "DIRECTION", "display_order": 9, "read_only": False, "storage": "dynamic_data"},
-    {"id": "cbm", "header": "CBM/CUBIC METER", "display_order": 10, "read_only": False, "storage": "dynamic_data"},
-    {"id": "cargo_history_combo", "header": "LAST 3 CARGOES", "display_order": 11, "read_only": False, "storage": "dynamic_data"},
-    {"id": "company", "header": "COMPANY", "display_order": 12, "read_only": False, "storage": "dynamic_data"},
-    {"id": "call_sign", "header": "CALL SIGN", "display_order": 13, "read_only": False, "storage": "dynamic_data"},
-    {"id": "vessel_type", "header": "VESSEL TYPE", "display_order": 14, "read_only": False, "storage": "dynamic_data"},
-    {"id": "cargo_type", "header": "CARGO TYPE", "display_order": 15, "read_only": False, "storage": "dynamic_data"},
-    {"id": "draft", "header": "DRAFT", "display_order": 16, "read_only": False, "storage": "dynamic_data"},
-    {"id": "flag", "header": "FLAG", "display_order": 17, "read_only": False, "storage": "dynamic_data"},
-    {"id": "eta_foc", "header": "ETA FOC", "display_order": 18, "read_only": False, "storage": "dynamic_data"},
-    {"id": "sire_date", "header": "SIRE DATE", "display_order": 19, "read_only": False, "storage": "dynamic_data"},
-    {"id": "sire_location", "header": "SIRE LOCATION", "display_order": 20, "read_only": False, "storage": "dynamic_data"},
-    {"id": "cdi_date", "header": "CDI DATE", "display_order": 21, "read_only": False, "storage": "dynamic_data"},
-    {"id": "cdi_location", "header": "CDI LOCATION", "display_order": 22, "read_only": False, "storage": "dynamic_data"},
-    {"id": "remarks", "header": "REMARKS", "display_order": 23, "read_only": False, "storage": "dynamic_data"},
-    {"id": "other_info", "header": "OTHER INFO", "display_order": 24, "read_only": True, "storage": "dynamic_data"},
-    {"id": "q88", "header": "Q88 AVAILABLE", "display_order": 25, "read_only": False, "storage": "dynamic_data"},
-    {"id": "attachments", "header": "ATTACHMENTS", "display_order": 26, "read_only": True, "storage": "derived"},
-    {"id": "status", "header": "STATUS", "display_order": 27, "read_only": False, "storage": "dynamic_data"},
+    {"id": "imo_type", "header": "IMO TYPE", "display_order": 6, "read_only": False, "storage": "dynamic_data"},
+    {"id": "region", "header": "REGION", "display_order": 7, "read_only": False, "storage": "region"},
+    {"id": "opening_date", "header": "OPENING DATE", "display_order": 8, "read_only": False, "storage": "dynamic_data"},
+    {"id": "open_location", "header": "OPEN LOCATION", "display_order": 9, "read_only": False, "storage": "dynamic_data"},
+    {"id": "direction", "header": "DIRECTION", "display_order": 10, "read_only": False, "storage": "dynamic_data"},
+    {"id": "cbm", "header": "CBM/CUBIC METER", "display_order": 11, "read_only": False, "storage": "dynamic_data"},
+    {"id": "cargo_history_combo", "header": "LAST 3 CARGOES", "display_order": 12, "read_only": False, "storage": "dynamic_data"},
+    {"id": "company", "header": "COMPANY", "display_order": 13, "read_only": False, "storage": "dynamic_data"},
+    {"id": "call_sign", "header": "CALL SIGN", "display_order": 14, "read_only": False, "storage": "dynamic_data"},
+    {"id": "vessel_type", "header": "VESSEL TYPE", "display_order": 15, "read_only": False, "storage": "dynamic_data"},
+    {"id": "cargo_type", "header": "CARGO TYPE", "display_order": 16, "read_only": False, "storage": "dynamic_data"},
+    {"id": "draft", "header": "DRAFT", "display_order": 17, "read_only": False, "storage": "dynamic_data"},
+    {"id": "flag", "header": "FLAG", "display_order": 18, "read_only": False, "storage": "dynamic_data"},
+    {"id": "eta_foc", "header": "ETA FOC", "display_order": 19, "read_only": False, "storage": "dynamic_data"},
+    {"id": "sire_date", "header": "SIRE DATE", "display_order": 20, "read_only": False, "storage": "dynamic_data"},
+    {"id": "sire_location", "header": "SIRE LOCATION", "display_order": 21, "read_only": False, "storage": "dynamic_data"},
+    {"id": "cdi_date", "header": "CDI DATE", "display_order": 22, "read_only": False, "storage": "dynamic_data"},
+    {"id": "cdi_location", "header": "CDI LOCATION", "display_order": 23, "read_only": False, "storage": "dynamic_data"},
+    {"id": "remarks", "header": "REMARKS", "display_order": 24, "read_only": False, "storage": "dynamic_data"},
+    {"id": "other_info", "header": "EXTRA INFO", "display_order": 25, "read_only": True, "storage": "dynamic_data"},
+    {"id": "q88", "header": "Q88 AVAILABLE", "display_order": 26, "read_only": False, "storage": "dynamic_data"},
+    {"id": "attachments", "header": "ATTACHMENTS", "display_order": 27, "read_only": True, "storage": "derived"},
+    {"id": "status", "header": "STATUS", "display_order": 28, "read_only": False, "storage": "dynamic_data"},
 ]
 
 # Default visible columns used for attachment confidence (matches POSITION_LIST_SUMMARY
@@ -96,6 +98,7 @@ CONFIDENCE_DEFAULT_COLUMNS: tuple[str, ...] = (
     "year_built",
     "tank_coating",
     "imo",
+    "imo_type",
     "region",
     "opening_date",
     "open_location",
@@ -134,21 +137,101 @@ _GENERIC_COMPANY_RE = re.compile(
     r"^(?:attachment_\d{3}|vessel\s+open\s+position(?:_\d+)?)$",
     re.I,
 )
+# Desk / department / role lines — never the owner/operator company.
+_DEPT_OR_DESK_RE = re.compile(
+    r"^(?:chartering|operations?|ops|commercial|trading|sales|marketing|tech(?:nical)?"
+    r"|fleet|bunker|agency|accounts?|admin(?:istration)?|management)\s*"
+    r"(?:dept\.?|department|desk|team|office)?$"
+    r"|^(?:best\s+regards|kind\s+regards|thanks|thank\s+you|dear\b.*)$",
+    re.I,
+)
 _COMPANY_LINE_RE = re.compile(
-    r"\b(?:ltd\.?|limited|pte\.?\s*ltd|inc\.?|corp\.?|gmbh|s\.?a\.?|b\.?v\.?)\b",
+    r"\b(?:ltd\.?|limited|pte\.?\s*ltd|inc\.?|corp\.?|corporation|gmbh|s\.?a\.?|b\.?v\.?|llc|llp)\b",
     re.I,
 )
 _COMPANY_HINT_RE = re.compile(
-    r"\b(?:shipping|tankers|maritime|logistics|chartering|brokers?|energy|petroleum|chem(?:ical)?)\b",
+    r"\b(?:shipping|tankers?|maritime|logistics|freight|brokers?|energy|petroleum|"
+    r"chem(?:ical)?s?|carriers?|line|managers?)\b",
+    re.I,
+)
+_PERSON_NAME_RE = re.compile(
+    r"^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3}$",
+)
+_COMPANY_JUNK_RE = re.compile(
+    r"(?:"
+    r"^subject\s*:"
+    r"|^please\s+(?:propose|find|advise|revert)"
+    r"|^dear\b"
+    r"|^good\s+day\b"
+    r"|^specialized\b"
+    r"|^type\s*:"
+    r"|^(?:yard|built|flag|class|imo|dwt|sdwt|cbm|cubic|open|status)\s*/?\s*(?:built|yard)?\s*:"
+    r"|\b(?:position\s+lists?|open\s+tonnage|open\s+positions?|spot\s+position)\b"
+    r"|\bpositions?\b.*\b(?:20\d{2}|\d{1,2}\s*[A-Za-z]{3,9}|\d{1,2}[./-]\d{1,2})"
+    r"|\b(?:dwt|sdwt|blt|built)\b.*\b(?:open|range)\b"
+    r"|^(?:large|small|handy|mr|lr\s?\d?|aframax|suezmax|vlcc)\s+tankers?\b"
+    r"|\bgas\s+carrier\b"
+    r")"
+    ,
+    re.I,
+)
+_CARGO_SLASH_RE = re.compile(
+    r"^[A-Za-z]{2,12}(?:\s*/\s*[A-Za-z]{2,12}){1,6}$",
+)
+_VESSEL_LINE_AS_COMPANY_RE = re.compile(
+    r"^(?:mt|m/t|m\.t\.|mv|m\.v\.)\s+\S+.*\b\d",
     re.I,
 )
 
 
-def is_generic_company_name(name: str) -> bool:
+def _clean_company_candidate(name: str) -> str:
+    """Strip mail prefixes that sometimes leak into company (FM:, Subject:)."""
     s = (name or "").strip()
+    s = re.sub(r"^(?:fm|from|re)\s*:\s*", "", s, flags=re.I).strip()
+    s = re.sub(r"^subject\s*:\s*", "", s, flags=re.I).strip()
+    s = re.sub(r"^[\s\-–—:|]+", "", s).strip()
+    return s
+
+
+def is_generic_company_name(name: str) -> bool:
+    s = _clean_company_candidate(name)
     if not s or len(s) < 3:
         return True
-    return bool(_GENERIC_COMPANY_RE.match(s))
+    if _GENERIC_COMPANY_RE.match(s):
+        return True
+    if _DEPT_OR_DESK_RE.match(s):
+        return True
+    if _COMPANY_JUNK_RE.search(s):
+        return True
+    if _VESSEL_LINE_AS_COMPANY_RE.match(s):
+        return True
+    # Cargo grade lists like NAP/VEG/CHEMS (not a company).
+    if _CARGO_SLASH_RE.match(s) and not _COMPANY_LINE_RE.search(s):
+        return True
+    # Sentences / paragraphs mistakenly used as company.
+    if len(s) > 70:
+        return True
+    if s.endswith((".", "?", "!")) and len(s) > 35:
+        return True
+    if s.count(" ") >= 12:
+        return True
+    # Person-looking names without corporate keywords (e.g. "Rohan Kalantre").
+    if _PERSON_NAME_RE.match(s) and not _COMPANY_LINE_RE.search(s) and not _COMPANY_HINT_RE.search(s):
+        return True
+    return False
+
+
+def strip_parenthetical_extras(text: str | None) -> str:
+    """Remove bracketed notes: 'Hub zone (open-position term)' → 'Hub zone'."""
+    s = str(text or "").strip()
+    if not s:
+        return ""
+    prev = None
+    while prev != s:
+        prev = s
+        s = re.sub(r"\s*\([^)]*\)", "", s).strip()
+        s = re.sub(r"\s*\[[^\]]*\]", "", s).strip()
+    return re.sub(r"\s{2,}", " ", s).strip()
 
 
 def _parse_mail_display_name(header: str) -> str:
@@ -163,30 +246,44 @@ def _parse_mail_display_name(header: str) -> str:
     m = re.match(r"^([^<]+)<", header)
     if m:
         name = m.group(1).strip().strip('"')
-        if name and "@" not in name and not is_generic_company_name(name):
+        if name and "@" not in name:
             return name
     return ""
 
 
-def _company_from_raw_signature(raw_text: str) -> str:
-    """Last company-like line in the email tail (signature block)."""
+def _company_candidates_from_text(raw_text: str) -> list[str]:
+    """Collect likely company lines from letterhead (head) + signature (tail)."""
     lines = [ln.strip() for ln in (raw_text or "").splitlines() if ln.strip()]
     if not lines:
-        return ""
-    tail = lines[-25:]
-    candidates: list[str] = []
-    for ln in tail:
+        return []
+    head = lines[:20]
+    tail = lines[-30:]
+    seen: set[str] = set()
+    out: list[str] = []
+    for ln in head + tail:
         if len(ln) < 4 or len(ln) > 140:
             continue
         if "@" in ln or "http" in ln.lower() or "www." in ln.lower():
             continue
         if re.match(r"^[_\-=•·]+$", ln):
             continue
+        if is_generic_company_name(ln):
+            continue
         if _COMPANY_LINE_RE.search(ln) or _COMPANY_HINT_RE.search(ln):
-            candidates.append(ln)
-    if candidates:
-        return candidates[0]
-    return ""
+            cleaned = _clean_company_candidate(ln)
+            if not cleaned or is_generic_company_name(cleaned):
+                continue
+            key = cleaned.lower()
+            if key not in seen:
+                seen.add(key)
+                out.append(cleaned)
+    return out
+
+
+def _company_from_raw_signature(raw_text: str) -> str:
+    """Best company-like line from letterhead/signature candidates."""
+    cands = _company_candidates_from_text(raw_text)
+    return cands[0] if cands else ""
 
 
 def _match_company_from_vessel_name(vessel_name: str, companies: list[str]) -> str:
@@ -208,41 +305,106 @@ def resolve_vessel_company(
     vessel_name: str = "",
     llm_company: str = "",
     broker_companies: list[str] | None = None,
+    ai_picked_company: str = "",
 ) -> str:
     """Best-effort owner/operator company label for one vessel row.
 
-    NOTE: in the direct-mail (production) pipeline `filename` is the email
-    SUBJECT line — which is NOT the company — so it is only used as an absolute
-    last resort and only if it actually looks like a company name.
+    Prefer AI-picked company (signature + body candidates) when provided.
+    Never keep department desks, person names, subjects, or sentence junk.
     """
-    if _has_value(llm_company) and not is_generic_company_name(llm_company):
-        return str(llm_company).strip()
+    ai_picked = _clean_company_candidate(ai_picked_company)
+    if _has_value(ai_picked) and not is_generic_company_name(ai_picked):
+        return ai_picked
 
     if vessel_name and broker_companies:
         matched = _match_company_from_vessel_name(vessel_name, broker_companies)
-        if matched:
+        matched = _clean_company_candidate(matched)
+        if matched and not is_generic_company_name(matched):
             return matched
 
-    signature = _company_from_raw_signature(raw_text)
-    if signature:
+    signature = _clean_company_candidate(_company_from_raw_signature(raw_text))
+    if signature and not is_generic_company_name(signature):
         return signature
 
-    for hdr in (mail_from, parent_sender):
-        display = _parse_mail_display_name(hdr)
-        if display and not is_generic_company_name(display):
-            return display
+    llm = _clean_company_candidate(llm_company)
+    if _has_value(llm) and not is_generic_company_name(llm):
+        return llm
 
-    # Last resort: only if the source label reads like a real company, never a
-    # position-list subject line ("... Position List", "Open Position", etc.).
-    from_file = company_name_from_filename(filename)
+    for header in (mail_from, parent_sender):
+        display = _clean_company_candidate(_parse_mail_display_name(header))
+        if display and not is_generic_company_name(display):
+            if _COMPANY_LINE_RE.search(display) or _COMPANY_HINT_RE.search(display):
+                return display
+
+    from_file = _clean_company_candidate(company_name_from_filename(filename))
     if (
         from_file
         and not is_generic_company_name(from_file)
         and (_COMPANY_LINE_RE.search(from_file) or _COMPANY_HINT_RE.search(from_file))
-        and not re.search(r"\b(position|positions|open|list|tonnage)\b", from_file, re.I)
     ):
         return from_file
+    return ""
 
+
+async def pick_owner_company_with_ai(
+    raw_text: str,
+    *,
+    llm_company: str = "",
+    mail_from: str = "",
+    parent_sender: str = "",
+) -> str:
+    """Ask Claude to pick the real owner/operator company from candidates + mail context."""
+    candidates = _company_candidates_from_text(raw_text)
+    if llm_company and not is_generic_company_name(llm_company):
+        if llm_company not in candidates:
+            candidates.insert(0, llm_company.strip())
+    for header in (mail_from, parent_sender):
+        display = _parse_mail_display_name(header)
+        if display and not is_generic_company_name(display):
+            if display not in candidates:
+                candidates.append(display)
+
+    lines = [ln.strip() for ln in (raw_text or "").splitlines() if ln.strip()]
+    excerpt_parts = lines[:18] + (["…"] if len(lines) > 40 else []) + lines[-22:]
+    excerpt = "\n".join(excerpt_parts)[:4500]
+    cand_block = "\n".join(f"- {c}" for c in candidates[:12]) or "(none extracted)"
+
+    prompt = (
+        "You pick the OWNER / OPERATOR company for a shipbroking position-list email.\n"
+        "Return ONLY the company name as plain text (no quotes, no JSON).\n"
+        "Rules:\n"
+        "- Prefer real company legal names (…Maritime, …Shipping, LLC, S.A., Pte Ltd, Corp).\n"
+        "- NEVER return a person name (e.g. Rohan Kalantre).\n"
+        "- NEVER return a department/desk (Chartering Dept, Commercial Team, Ops).\n"
+        "- NEVER return a subject line, section header, vessel name line, or sentence\n"
+        "  (e.g. 'Subject: …', 'Please propose…', 'SPECIALIZED – CPP', 'MT SUN FALCON – 3700 DWT…').\n"
+        "- NEVER return cargo grades or vessel-class labels (e.g. 'NAP/VEG/CHEMS', 'Large Tanker',\n"
+        "  'TYPE: GAS CARRIER', 'MR', 'CPP/CHEMS').\n"
+        "- Prefer signature / letterhead company over a desk line above the signature.\n"
+        "- If nothing is a real company, return an empty string.\n\n"
+        f"CANDIDATES:\n{cand_block}\n\n"
+        f"EMAIL EXCERPT (letterhead + signature):\n{excerpt}\n"
+    )
+    try:
+        from config import settings
+        from llm import claude_client
+
+        resp = await claude_client.chat.completions.create(
+            model=settings.CLAUDE_MODEL,
+            messages=[
+                {"role": "system", "content": "Return only a company name or empty."},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0,
+            max_tokens=80,
+        )
+        picked = (resp.choices[0].message.content or "").strip().strip('"').strip("'")
+        picked = re.sub(r"^(company\s*[:=]\s*)", "", picked, flags=re.I).strip()
+        picked = _clean_company_candidate(picked)
+        if picked and not is_generic_company_name(picked):
+            return picked
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("pick_owner_company_with_ai failed: %s", exc)
     return ""
 
 
@@ -297,11 +459,27 @@ def _looks_like_imo_type(val: Any) -> bool:
 
 
 def _resolve_imo_for_grid(dd: dict) -> str:
-    """IMO column: 7-digit number, or IMO type (2, 2/3, IMO II) when no number."""
+    """IMO column: 7-digit number only (never IMO type codes)."""
+    return _resolve_imo_number_only(dd)
+
+
+def _resolve_imo_number_only(dd: dict) -> str:
     num = _extract_imo_number(dd)
-    if num:
+    if num and IMO_NUMBER_RE.match(num):
         return num
-    for k in ("imo", "imo_type", "vessel_type"):
+    # If imo held a type code, do not treat it as a number.
+    if _has_value(dd.get("imo")) and _looks_like_imo_type(dd.get("imo")):
+        return ""
+    if num and not _looks_like_imo_type(num) and re.search(r"\d{7}", num):
+        m = IMO_EMBEDDED_RE.search(num)
+        return m.group(1) if m else ""
+    return ""
+
+
+def _resolve_imo_type(dd: dict) -> str:
+    if _has_value(dd.get("imo_type")) and _looks_like_imo_type(dd.get("imo_type")):
+        return str(dd["imo_type"]).strip()
+    for k in ("imo_type", "imo", "vessel_type"):
         v = dd.get(k)
         if _looks_like_imo_type(v):
             return str(v).strip()
@@ -321,13 +499,32 @@ def _resolve_vessel_type(dd: dict) -> str:
 
 
 def _normalize_imo_and_vessel_type(out: dict[str, str]) -> None:
-    """Keep IMO type codes out of vessel_type (common LLM / legacy mis-map)."""
+    """Split IMO number vs IMO type; keep type codes out of vessel_type."""
     imo = (out.get("imo") or "").strip()
+    imo_type = (out.get("imo_type") or "").strip()
     vt = (out.get("vessel_type") or "").strip()
-    if _looks_like_imo_type(vt) and not _has_value(imo):
-        out["imo"] = vt
+
+    if _looks_like_imo_type(imo):
+        if not imo_type:
+            out["imo_type"] = imo
+        out["imo"] = ""
+        imo = ""
+
+    if IMO_NUMBER_RE.match(imo):
+        out["imo"] = imo
+    elif imo:
+        m = IMO_EMBEDDED_RE.search(imo)
+        out["imo"] = m.group(1) if m else ""
+        if not out["imo"] and _looks_like_imo_type(imo) and not out.get("imo_type"):
+            out["imo_type"] = imo
+
+    if _looks_like_imo_type(vt):
+        if not out.get("imo_type"):
+            out["imo_type"] = vt
         out["vessel_type"] = ""
-    elif _looks_like_imo_type(vt) or (vt and imo and vt.lower() == imo.lower()):
+    elif vt and out.get("imo") and vt.lower() == out["imo"].lower():
+        out["vessel_type"] = ""
+    elif vt and out.get("imo_type") and vt.lower() == out["imo_type"].lower():
         out["vessel_type"] = ""
 
 
@@ -493,21 +690,64 @@ for _i, _name in enumerate(_MONTHS):
 _MONTH_INDEX["sept"] = 8
 
 _SMALL_WORDS = frozenset({"of", "the", "a", "an", "and", "to", "for", "in", "on", "at"})
+_ORDINAL_WORDS = frozenset({"st", "nd", "rd", "th"})
+
+
+def _normalize_date_ordinals(raw: str) -> str:
+    """Lowercase ordinals and glue '23 Rd' → '23rd'."""
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    s = re.sub(r"\b(st|nd|rd|th)\b", lambda m: m.group(0).lower(), s, flags=re.I)
+    s = re.sub(r"(\d)\s+(st|nd|rd|th)\b", r"\1\2", s, flags=re.I)
+    return s
+
+
+def _day_with_ordinal(n) -> str:
+    try:
+        d = int(n)
+    except (TypeError, ValueError):
+        return str(n)
+    mod100 = d % 100
+    mod10 = d % 10
+    suf = "th"
+    if mod100 < 11 or mod100 > 13:
+        if mod10 == 1:
+            suf = "st"
+        elif mod10 == 2:
+            suf = "nd"
+        elif mod10 == 3:
+            suf = "rd"
+    return f"{d}{suf}"
 
 
 def _format_open_position_text(raw: str) -> str:
     parts: list[str] = []
-    for i, word in enumerate(re.split(r"\s+", raw.strip().lower())):
+    for i, word in enumerate(re.split(r"\s+", _normalize_date_ordinals(raw).lower())):
         if not word:
             continue
         bare = re.sub(r"[^a-z]", "", word)
         if bare in _MONTH_INDEX:
             month = _MONTHS[_MONTH_INDEX[bare]]
             parts.append(re.sub(bare, month, word, count=1, flags=re.I))
+        elif bare in _ORDINAL_WORDS:
+            parts.append(word.lower())
         elif i > 0 and bare in _SMALL_WORDS:
             parts.append(word.lower())
         else:
-            parts.append(word[:1].upper() + word[1:] if word else word)
+            # Don't title-case the leading letter of an ordinal glued to a day (23rd).
+            fixed = re.sub(
+                r"(^|[^0-9a-z])([a-z])",
+                lambda m: m.group(1) + m.group(2).upper(),
+                word,
+            )
+            fixed = re.sub(
+                r"(\d)(st|nd|rd|th)\b",
+                lambda m: m.group(1) + m.group(2).lower(),
+                fixed,
+                flags=re.I,
+            )
+            parts.append(fixed)
     return " ".join(parts)
 
 
@@ -560,28 +800,44 @@ def _parse_one_opening_date(fragment: str) -> str | None:
 
 
 def _format_opening_date(raw: str) -> str:
-    s = str(raw or "").strip()
+    s = _normalize_date_ordinals(raw)
     if not s:
         return ""
 
     m = re.match(
-        r"^(\d{1,2})\s*[-/]\s*(\d{1,2})\s+([A-Za-z]+)(?:\s+(\d{2,4}))?$",
+        r"^(\d{1,2})(?:st|nd|rd|th)?\s*[-/–—]\s*(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]+)(?:\s+(\d{2,4}))?$",
         s,
         flags=re.I,
     )
     if m and m.group(3).lower() in _MONTH_INDEX:
         from datetime import datetime
         y = _normalize_year_int(m.group(4) or str(datetime.now().year))
-        return f"{int(m.group(1))}-{int(m.group(2))} {_MONTHS[_MONTH_INDEX[m.group(3).lower()]]} {y}"
+        end = _day_with_ordinal(m.group(2)) if re.search(r"(?:st|nd|rd|th)", s, re.I) else str(int(m.group(2)))
+        return f"{int(m.group(1))}-{end} {_MONTHS[_MONTH_INDEX[m.group(3).lower()]]} {y}"
 
-    m = re.match(r"^(\d{1,2})\s*[-/]\s*(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})$", s)
+    m = re.match(
+        r"^(\d{1,2})(?:st|nd|rd|th)?\s*[-/]\s*(\d{1,2})(?:st|nd|rd|th)?[/.-](\d{1,2})[/.-](\d{2,4})$",
+        s,
+        flags=re.I,
+    )
     if m:
         month = int(m.group(3)) - 1
         y = _normalize_year_int(m.group(4))
         if 0 <= month <= 11 and y:
-            return f"{int(m.group(1))}-{int(m.group(2))} {_MONTHS[month]} {y}"
+            end = _day_with_ordinal(m.group(2)) if re.search(r"(?:st|nd|rd|th)", s, re.I) else str(int(m.group(2)))
+            return f"{int(m.group(1))}-{end} {_MONTHS[month]} {y}"
 
-    one = _parse_one_opening_date(s)
+    m = re.match(
+        r"^(\d{1,2})(?:st|nd|rd|th)\s+([A-Za-z]+)(?:\s+(\d{2,4}))?$",
+        s,
+        flags=re.I,
+    )
+    if m and m.group(2).lower() in _MONTH_INDEX:
+        from datetime import datetime
+        y = _normalize_year_int(m.group(3) or str(datetime.now().year))
+        return f"{_day_with_ordinal(m.group(1))} {_MONTHS[_MONTH_INDEX[m.group(2).lower()]]} {y}"
+
+    one = _parse_one_opening_date(re.sub(r"(\d{1,2})(?:st|nd|rd|th)\b", r"\1", s, flags=re.I))
     if one:
         return one
     return _format_open_position_text(s)
@@ -603,15 +859,42 @@ def _format_rounded_figures(raw: str) -> str:
     return re.sub(r"[\d,]+(?:\.\d+)?", _repl, s)
 
 
-def _format_dwt_sdwt(raw: str) -> tuple[str, bool]:
-    """Round DWT/SDWT; values under 1000 are ×1000 shorthand (49 → 49,000).
+_K_SUFFIX_RE = re.compile(
+    r"(?P<num>[\d,]+(?:\.\d+)?)\s*[kK]\b",
+)
 
-    Returns (formatted, scaled) where scaled is True if any token was multiplied.
-    """
+
+def _expand_k_suffixes(raw: str) -> tuple[str, bool]:
+    """Expand 160k / 107.5k → full tonnes. Returns (text, had_k)."""
     s = str(raw or "").strip()
     if not s:
         return "", False
+    had_k = False
 
+    def _repl(m: re.Match) -> str:
+        nonlocal had_k
+        had_k = True
+        try:
+            n = float(m.group("num").replace(",", ""))
+        except ValueError:
+            return m.group(0)
+        return str(int(round(n * 1000)))
+
+    return _K_SUFFIX_RE.sub(_repl, s), had_k
+
+
+def _format_dwt_sdwt(raw: str) -> tuple[str, bool, bool]:
+    """Round DWT/SDWT; bare values under 1000 are ×1000 shorthand (49 → 49,000).
+
+    Values already written with a ``k`` suffix (160k) are expanded but NOT marked
+    as AI-normalized (they were already in thousands).
+    Returns (formatted, scaled, had_k).
+    """
+    s = str(raw or "").strip()
+    if not s:
+        return "", False, False
+
+    s, had_k = _expand_k_suffixes(s)
     scaled = False
 
     def _repl(match: re.Match) -> str:
@@ -626,7 +909,33 @@ def _format_dwt_sdwt(raw: str) -> tuple[str, bool]:
             scaled = True
         return f"{int(round(n)):,}"
 
-    return re.sub(r"[\d,]+(?:\.\d+)?", _repl, s), scaled
+    formatted = re.sub(r"[\d,]+(?:\.\d+)?", _repl, s)
+    return formatted, scaled, had_k
+
+
+def _format_cbm(raw: str) -> tuple[str, bool, bool]:
+    """CBM/cubic: same ×1000 shorthand as DWT; whole numbers; k-suffix not highlighted."""
+    s = str(raw or "").strip()
+    if not s:
+        return "", False, False
+
+    s, had_k = _expand_k_suffixes(s)
+    scaled = False
+
+    def _repl(match: re.Match) -> str:
+        nonlocal scaled
+        token = match.group(0)
+        try:
+            n = float(token.replace(",", ""))
+        except ValueError:
+            return token
+        if 0 < n < 1000:
+            n *= 1000
+            scaled = True
+        return f"{int(round(n)):,}"
+
+    formatted = re.sub(r"[\d,]+(?:\.\d+)?", _repl, s)
+    return formatted, scaled, had_k
 
 
 def _parse_ai_normalized(raw) -> set[str]:
@@ -640,43 +949,122 @@ def _format_ai_normalized(flags: set[str]) -> str:
     return ",".join(sorted(flags))
 
 
-def _format_year_built(raw: str) -> str:
+def _format_year_built(raw: str) -> tuple[str, bool]:
+    """Normalize year built. Returns (formatted, expanded) when 2-digit → 4-digit."""
     s = str(raw or "").strip()
     if not s:
-        return ""
-    m = re.search(r"\b(\d{4})\b", s) or re.search(r"\b(\d{1,2})\b", s)
-    if not m:
-        return s
-    y = _normalize_year_int(m.group(1))
-    return str(y) if y is not None else s
+        return "", False
+    m4 = re.search(r"\b(\d{4})\b", s)
+    if m4:
+        y = _normalize_year_int(m4.group(1))
+        return (str(y) if y is not None else s), False
+    m2 = re.search(r"\b(\d{1,2})\b", s)
+    if not m2:
+        return s, False
+    y = _normalize_year_int(m2.group(1))
+    if y is None:
+        return s, False
+    return str(y), True
 
 
 def _normalize_standard_formats(out: dict[str, str]) -> None:
     flags = _parse_ai_normalized(out.get("ai_normalized"))
     if _has_value(out.get("opening_date")):
         out["opening_date"] = _format_opening_date(out["opening_date"])
+    if _has_value(out.get("open_location")):
+        out["open_location"] = strip_parenthetical_extras(out["open_location"])
     if _has_value(out.get("dwt_sdwt")):
-        formatted, scaled = _format_dwt_sdwt(out["dwt_sdwt"])
+        formatted, scaled, had_k = _format_dwt_sdwt(out["dwt_sdwt"])
         out["dwt_sdwt"] = formatted
         if scaled:
             flags.add("dwt_sdwt")
-        elif "dwt_sdwt" not in flags:
-            # Backfill flag for values already ×1000'd (e.g. 49 → 49,000) on prior runs.
-            for m in re.finditer(r"[\d,]+(?:\.\d+)?", formatted):
-                try:
-                    n = float(m.group(0).replace(",", ""))
-                except ValueError:
-                    continue
-                if n >= 1000 and float(n).is_integer() and int(n) % 1000 == 0:
-                    q = int(n) // 1000
-                    if 0 < q < 1000:
-                        flags.add("dwt_sdwt")
-                        break
+        elif had_k:
+            # Explicit k-form was already in thousands — never highlight.
+            flags.discard("dwt_sdwt")
+        # else: keep any existing flag (e.g. LLM expanded 49→49,000 before our scaler)
     if _has_value(out.get("cbm")):
-        out["cbm"] = _format_rounded_figures(out["cbm"])
+        formatted, scaled, had_k = _format_cbm(out["cbm"])
+        out["cbm"] = formatted
+        if scaled:
+            flags.add("cbm")
+        elif had_k:
+            flags.discard("cbm")
     if _has_value(out.get("year_built")):
-        out["year_built"] = _format_year_built(out["year_built"])
+        formatted, expanded = _format_year_built(out["year_built"])
+        out["year_built"] = formatted
+        if expanded:
+            flags.add("year_built")
+        # else: keep existing flag (LLM already expanded 17→2017)
     out["ai_normalized"] = _format_ai_normalized(flags)
+
+
+def mark_bare_dwt_ai_flag(dd: dict, raw_text: str) -> None:
+    """Set dwt_sdwt AI-normalized when mail shows bare shorthand but value is already ×1000.
+
+    Covers LLM expanding ``49`` → ``49,000`` before our scaler runs (no blue outline otherwise).
+    Does not change the stored value — only the highlight flag.
+    """
+    flags = _parse_ai_normalized(dd.get("ai_normalized"))
+    if "dwt_sdwt" in flags:
+        return
+    dwt = str(dd.get("dwt_sdwt") or "")
+    m = re.search(r"[\d,]+(?:\.\d+)?", dwt)
+    if not m:
+        return
+    try:
+        full = float(m.group(0).replace(",", ""))
+    except ValueError:
+        return
+    if full < 1000 or abs(full % 1000) > 0.01:
+        return
+    bare = int(round(full / 1000))
+    if bare < 1 or bare >= 1000:
+        return
+    name = str(dd.get("vessel_name") or "").strip()
+    text = raw_text or ""
+    if not name or not text:
+        return
+    name_pat = re.sub(r"\\\s+", r"\\s+", re.escape(name))
+    full_int = int(round(full))
+    for match in re.finditer(name_pat, text, flags=re.I):
+        window = text[match.start() : match.start() + 180]
+        window_digits = window.replace(",", "")
+        if re.search(rf"(?<!\d){full_int}(?!\d)", window_digits):
+            continue
+        if re.search(rf"(?<![\d.]){bare}(?![\d.])", window):
+            flags.add("dwt_sdwt")
+            dd["ai_normalized"] = _format_ai_normalized(flags)
+            return
+
+
+def mark_bare_year_ai_flag(dd: dict, raw_text: str) -> None:
+    """Set year_built AI-normalized when mail shows 2-digit year but value is already 4-digit."""
+    flags = _parse_ai_normalized(dd.get("ai_normalized"))
+    if "year_built" in flags:
+        return
+    year_s = str(dd.get("year_built") or "").strip()
+    m = re.search(r"\b((?:19|20)\d{2})\b", year_s)
+    if not m:
+        return
+    full = int(m.group(1))
+    bare = full % 100
+    bare_str = f"{bare:02d}" if bare < 10 else str(bare)
+    # Also accept unpadded single digit for years like 2005 → "5" (rare in lists).
+    bare_alts = {str(bare), bare_str}
+    name = str(dd.get("vessel_name") or "").strip()
+    text = raw_text or ""
+    if not name or not text:
+        return
+    name_pat = re.sub(r"\\\s+", r"\\s+", re.escape(name))
+    for match in re.finditer(name_pat, text, flags=re.I):
+        window = text[match.start() : match.start() + 180]
+        if re.search(rf"(?<!\d){full}(?!\d)", window):
+            continue
+        for b in bare_alts:
+            if re.search(rf"(?<!\d){re.escape(b)}(?!\d)", window):
+                flags.add("year_built")
+                dd["ai_normalized"] = _format_ai_normalized(flags)
+                return
 
 
 def _broker_region_for_audit(src: dict, region: str | None, existing_raw: str = "") -> str:
@@ -721,9 +1109,11 @@ def map_raw_to_standard(dd: dict | None, region: str | None = None) -> tuple[dic
         return out, derived
 
     loc, date = _resolve_open_fields(src)
+    loc = strip_parenthetical_extras(loc)
     out: dict[str, str] = {
         "company": _first_hit(src, ["company"]),
-        "imo": _resolve_imo_for_grid(src),
+        "imo": _resolve_imo_number_only(src),
+        "imo_type": _resolve_imo_type(src),
         "vessel_name": _first_hit(src, ["vessel_name", "name"]),
         "call_sign": _first_hit(src, ["call_sign"]),
         "year_built": _first_hit(src, ["year_built", "built", "yard_built", "year", "when"]),
@@ -744,12 +1134,35 @@ def map_raw_to_standard(dd: dict | None, region: str | None = None) -> tuple[dic
         "cdi_date": _first_hit(src, ["cdi_date", "cdi"]),
         "cdi_location": _first_hit(src, ["cdi_location"]),
         "remarks": _first_hit(src, ["remarks", "remark", "comments", "comment"]),
-        "other_info": _first_hit(src, ["other_info"]),
+        "other_info": _first_hit(src, ["other_info", "extra_info"]),
         "q88": _first_hit(src, ["q88"]),
         "status": _first_hit(src, ["status", "open_status"]),
         "ai_normalized": str(src.get("ai_normalized") or "").strip(),
         "region_raw": str(src.get("region_raw") or "").strip(),
     }
+
+    # Leftover source keys that are not mapped → Extra Info.
+    known = set(STANDARD_DYNAMIC_KEYS) | {
+        "dwt", "sdwt", "deadweight", "built", "yard_built", "year", "when", "coating", "coat",
+        "last_cargo", "cargo_preference", "grade", "last_3_cargoes", "last_3_cargos",
+        "last_3_cgo", "last_cargo_s", "l3c", "cargo_history", "open_date", "dates",
+        "port_name", "port", "position", "area", "open", "name", "type", "tank_type",
+        "cubic", "cub", "cargo_tank_capacity", "m3", "capacity", "remark", "comments",
+        "comment", "sire", "cdi", "open_status", "imo_number", "sdraft", "sdwt_draft",
+        "region", "Company", "extra_info", "pic", "contact",
+    }
+    leftovers: list[str] = []
+    for k, v in src.items():
+        key = str(k or "").strip().lower().replace(" ", "_")
+        if key in known or key.startswith("_"):
+            continue
+        if not _has_value(v):
+            continue
+        leftovers.append(f"{k}: {str(v).strip()}")
+    if leftovers:
+        extra = out.get("other_info") or ""
+        joined = "; ".join(leftovers)
+        out["other_info"] = f"{extra}; {joined}".strip("; ").strip() if extra else joined
 
     from region_map import derive_vessel_region
     broker_region = _broker_region_for_audit(src, region, out.get("region_raw") or "")
@@ -889,17 +1302,24 @@ def backfill_vessel_company_names(supabase) -> int:
         att = att_by_id.get(att_id, {})
         dd = dict(vessel.get("dynamic_data") or {})
         vessel_name = dd.get("vessel_name") or ""
+        current = (dd.get("company") or "").strip()
         company = resolve_vessel_company(
             att.get("filename") or "",
             mail_from=att.get("mail_from") or "",
             parent_sender=parent_sender.get(att.get("parent_email_id") or "", ""),
             raw_text=att.get("raw_text") or "",
             vessel_name=vessel_name,
+            llm_company=current if not is_generic_company_name(current) else "",
             broker_companies=contacts_by_att.get(att_id, []),
         )
+        # Clear leftover cargo/type mis-maps even when no better company is found.
         if not company:
+            if current and is_generic_company_name(current):
+                dd["company"] = ""
+                supabase.table("vessels").update({"dynamic_data": dd}).eq("id", vessel["id"]).execute()
+                updated += 1
             continue
-        if (dd.get("company") or "").strip() == company:
+        if current == company:
             continue
         dd["company"] = company
         supabase.table("vessels").update({"dynamic_data": dd}).eq("id", vessel["id"]).execute()

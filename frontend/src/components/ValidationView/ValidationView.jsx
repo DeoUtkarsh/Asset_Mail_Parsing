@@ -17,7 +17,7 @@ import {
   isDraftColumnSelectable,
   sortVesselsBySourceOrder,
 } from "../../utils/standardColumns";
-import { formatStandardField, formatDwtSdwt, parseAiNormalized, formatAiNormalized } from "../../utils/fieldFormat";
+import { formatStandardField, formatDwtSdwt, formatCbm, formatYearBuilt, parseAiNormalized, formatAiNormalized } from "../../utils/fieldFormat";
 import CellHighlightLegend from "../CellHighlightLegend";
 
 const RECEIVED_COL = { id: "received", header: "RECEIVED", read_only: true, storage: "derived" };
@@ -126,6 +126,21 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
         if (field !== "dwt_sdwt") dd.dwt_sdwt = stored || value;
         const flags = parseAiNormalized(dd.ai_normalized);
         if (scaled) flags.add("dwt_sdwt");
+        else flags.delete("dwt_sdwt");
+        dd.ai_normalized = formatAiNormalized(flags);
+      } else if (field === "cbm") {
+        const { value: stored, scaled } = formatCbm(value);
+        dd.cbm = stored || value;
+        const flags = parseAiNormalized(dd.ai_normalized);
+        if (scaled) flags.add("cbm");
+        else flags.delete("cbm");
+        dd.ai_normalized = formatAiNormalized(flags);
+      } else if (field === "year_built" || field === "built") {
+        const { value: stored, expanded } = formatYearBuilt(value);
+        dd.year_built = stored || value;
+        const flags = parseAiNormalized(dd.ai_normalized);
+        if (expanded) flags.add("year_built");
+        else flags.delete("year_built");
         dd.ai_normalized = formatAiNormalized(flags);
       } else {
         const stored = formatStandardField(field, value);

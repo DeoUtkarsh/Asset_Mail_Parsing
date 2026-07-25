@@ -63,6 +63,8 @@ def is_attachment_verified(supabase, attachment_id: str) -> bool:
 
 
 def assert_attachment_editable(supabase, vessel_id: str) -> None:
+    """Ensure the vessel exists. Verified attachments may be edited; callers
+    should un-verify after a successful save with real changes (UI flow)."""
     rows = (
         supabase.table("vessels")
         .select("attachment_id")
@@ -72,9 +74,6 @@ def assert_attachment_editable(supabase, vessel_id: str) -> None:
     )
     if not rows.data:
         raise ValueError("Vessel not found.")
-    att_id = rows.data[0]["attachment_id"]
-    if is_attachment_verified(supabase, att_id):
-        raise ValueError("Attachment is verified. Un-verify to edit vessels.")
 
 
 def _eligible_attachment_ids(supabase, parent_email_id: str | None = None) -> list[str]:

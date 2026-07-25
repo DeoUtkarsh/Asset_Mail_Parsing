@@ -1,4 +1,3 @@
-import { vesselsGroupedByZone, ZONE_ORDER } from "./zoneMapping";
 import {
   STANDARD_COLUMNS,
   resolveStandardCellValue,
@@ -14,7 +13,6 @@ const BRAND = "#219495";
 const BRAND_D = "#1a7a7b";
 const INK = "#132740";
 const LINE = "#e5e7ea";
-const MUTED_BG = "#f3f4f6";
 
 const TH_STYLE =
   `background:${BRAND};color:#ffffff;padding:8px 10px;border:1px solid ${BRAND_D};` +
@@ -23,9 +21,6 @@ const TH_STYLE =
 const TD_BASE =
   `padding:8px 10px;border:1px solid ${LINE};font-family:${FONT};font-size:11.5px;` +
   `color:${INK};vertical-align:top;word-wrap:break-word;background:#ffffff;`;
-const GROUP_ROW_STYLE =
-  `background:${MUTED_BG};padding:8px 10px;border:1px solid ${LINE};` +
-  `font-family:${FONT};font-size:11px;font-weight:700;color:${INK};text-transform:uppercase;`;
 const P_STYLE =
   `margin:0 0 8px 0;font-family:${FONT};font-size:13px;color:${INK};line-height:1.55;`;
 
@@ -38,7 +33,7 @@ function escapeHtml(s) {
 }
 
 function pinColumns(allCols) {
-  return ["vessel_name", "imo", "region"].filter((k) => allCols.some((c) => c.id === k));
+  return ["vessel_name", "imo", "imo_type", "region"].filter((k) => allCols.some((c) => c.id === k));
 }
 
 function splitColumnsForEmail(cols) {
@@ -71,7 +66,7 @@ function parseIntroOutroFromDraft(fullHtml) {
   const fallbackIntro = [
     `<p style="${P_STYLE}">Dear Utkarsh,</p>`,
     `<p style="${P_STYLE}">Good day.</p>`,
-    `<p style="${P_STYLE}margin:0 0 14px 0;">Please find below the latest vessel open positions consolidated from our network, grouped by trade zone.</p>`,
+    `<p style="${P_STYLE}margin:0 0 14px 0;">Please find below the latest vessel open positions consolidated from our network.</p>`,
   ].join("");
   const fallbackOutro = [
     `<p style="${P_STYLE}margin:14px 0 8px 0;">Should you require any further details, please do not hesitate to reach out.</p>`,
@@ -93,7 +88,6 @@ function parseIntroOutroFromDraft(fullHtml) {
         continue;
       }
       if (el.tagName !== "P") continue;
-      // Re-style pasted intro/outro so Gmail matches UI (strip old blue sky styles).
       const text = (el.textContent || "").trim();
       if (!text) continue;
       const styled = `<p style="${P_STYLE}${passedTables && outro.length === 0 ? "margin:14px 0 8px 0;" : ""}">${escapeHtml(text)}</p>`;
@@ -126,7 +120,7 @@ function cellStyleForColumn(colId) {
   return TD_BASE;
 }
 
-function buildTableHtml(cols, vessels, zoneLabel, startRowNum) {
+function buildTableHtml(cols, vessels, startRowNum, sectionLabel = null) {
   const colCount = cols.length;
 
   const headerRow = cols
@@ -148,11 +142,15 @@ function buildTableHtml(cols, vessels, zoneLabel, startRowNum) {
     })
     .join("");
 
+  const sectionRow = sectionLabel
+    ? `<tr><td colspan="${colCount}" style="background:#f3f4f6;padding:8px 10px;border:1px solid ${LINE};font-family:${FONT};font-size:11px;font-weight:700;color:${INK};">${escapeHtml(sectionLabel)}</td></tr>`
+    : "";
+
   return {
     html: [
       `<table border="0" cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;margin:0 0 14px 0;font-family:${FONT};border:1px solid ${LINE};table-layout:auto;">`,
       "<tbody>",
-      `<tr><td colspan="${colCount}" style="${GROUP_ROW_STYLE}">${escapeHtml(zoneLabel)}</td></tr>`,
+      sectionRow,
       `<tr>${headerRow}</tr>`,
       bodyRows,
       "</tbody></table>",
@@ -161,38 +159,25 @@ function buildTableHtml(cols, vessels, zoneLabel, startRowNum) {
   };
 }
 
-function buildZoneTables(zoneName, vessels, startRowNum, columns) {
-  const count = vessels.length;
-  const baseLabel = `${zoneName} (${count} vessel${count !== 1 ? "s" : ""})`;
+/** Flat vessel tables for email copy (no zone grouping). */
+export function buildContactListEmailHtml(fullHtml, vessels, columns = STANDARD_COLUMNS) {
+  const { introHtml, outroHtml } = parseIntroOutroFromDraft(fullHtml);
+  const list = [...(vessels || [])].sort((a, b) =>
+    String(a?.dynamic_data?.vessel_name || "").localeCompare(
+      String(b?.dynamic_data?.vessel_name || ""),
+    ),
+  );
   const cols = columns?.length ? columns : STANDARD_COLUMNS;
   const pin = pinColumns(cols);
   const chunks = splitColumnsForEmail(cols);
-
-  const html = chunks
-    .map((chunkCols, idx) => {
-      const label = idx === 0 ? baseLabel : continuedLabel(baseLabel, chunkCols, pin);
-      return buildTableHtml(chunkCols, vessels, label, startRowNum).html;
-    })
-    .join("");
-
-  return { html, nextRowNum: startRowNum + vessels.length };
-}
-
-export function buildContactListEmailHtml(fullHtml, vessels, columns = STANDARD_COLUMNS) {
-  const { introHtml, outroHtml } = parseIntroOutroFromDraft(fullHtml);
-  const grouped = vesselsGroupedByZone(vessels || []);
-
-  const byZone = {};
-  for (const v of grouped) {
-    const z = v.filename || v.attachment_id || "UNSPECIFIED";
-    if (!byZone[z]) byZone[z] = [];
-    byZone[z].push(v);
-  }
+  const count = list.length;
+  const baseLabel = `Open positions (${count} vessel${count !== 1 ? "s" : ""})`;
 
   let rowNum = 1;
-  const tables = ZONE_ORDER.filter((z) => byZone[z]?.length)
-    .map((zone) => {
-      const { html, nextRowNum } = buildZoneTables(zone, byZone[zone], rowNum, columns);
+  const tables = chunks
+    .map((chunkCols, idx) => {
+      const label = idx === 0 ? baseLabel : continuedLabel(baseLabel, chunkCols, pin);
+      const { html, nextRowNum } = buildTableHtml(chunkCols, list, rowNum, label);
       rowNum = nextRowNum;
       return html;
     })

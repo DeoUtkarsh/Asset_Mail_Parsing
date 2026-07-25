@@ -12,34 +12,36 @@ export const DEFAULT_COLUMNS = [
   { id: "year_built", header: "YEAR BUILT", display_order: 3, read_only: false, storage: "dynamic_data" },
   { id: "tank_coating", header: "TANK COATING", display_order: 4, read_only: false, storage: "dynamic_data" },
   { id: "imo", header: "IMO", display_order: 5, read_only: false, storage: "dynamic_data" },
-  { id: "region", header: "REGION", display_order: 6, read_only: false, storage: "region" },
-  { id: "opening_date", header: "OPENING DATE", display_order: 7, read_only: false, storage: "dynamic_data" },
-  { id: "open_location", header: "OPEN LOCATION", display_order: 8, read_only: false, storage: "dynamic_data" },
-  { id: "direction", header: "DIRECTION", display_order: 9, read_only: false, storage: "dynamic_data" },
-  { id: "cbm", header: "CBM/CUBIC METER", display_order: 10, read_only: false, storage: "dynamic_data" },
-  { id: "cargo_history_combo", header: "LAST 3 CARGOES", display_order: 11, read_only: false, storage: "dynamic_data" },
-  { id: "company", header: "COMPANY", display_order: 12, read_only: false, storage: "dynamic_data" },
-  { id: "call_sign", header: "CALL SIGN", display_order: 13, read_only: false, storage: "dynamic_data" },
-  { id: "vessel_type", header: "VESSEL TYPE", display_order: 14, read_only: false, storage: "dynamic_data" },
-  { id: "cargo_type", header: "CARGO TYPE", display_order: 15, read_only: false, storage: "dynamic_data" },
-  { id: "draft", header: "DRAFT", display_order: 16, read_only: false, storage: "dynamic_data" },
-  { id: "flag", header: "FLAG", display_order: 17, read_only: false, storage: "dynamic_data" },
-  { id: "eta_foc", header: "ETA FOC", display_order: 18, read_only: false, storage: "dynamic_data" },
-  { id: "sire_date", header: "SIRE DATE", display_order: 19, read_only: false, storage: "dynamic_data" },
-  { id: "sire_location", header: "SIRE LOCATION", display_order: 20, read_only: false, storage: "dynamic_data" },
-  { id: "cdi_date", header: "CDI DATE", display_order: 21, read_only: false, storage: "dynamic_data" },
-  { id: "cdi_location", header: "CDI LOCATION", display_order: 22, read_only: false, storage: "dynamic_data" },
-  { id: "remarks", header: "REMARKS", display_order: 23, read_only: false, storage: "dynamic_data" },
-  { id: "other_info", header: "OTHER INFO", display_order: 24, read_only: true, storage: "dynamic_data" },
-  { id: "q88", header: "Q88 AVAILABLE", display_order: 25, read_only: false, storage: "dynamic_data" },
-  { id: "attachments", header: "ATTACHMENTS", display_order: 26, read_only: true, storage: "derived" },
-  { id: "status", header: "STATUS", display_order: 27, read_only: false, storage: "dynamic_data" },
+  { id: "imo_type", header: "IMO TYPE", display_order: 6, read_only: false, storage: "dynamic_data" },
+  { id: "region", header: "REGION", display_order: 7, read_only: false, storage: "region" },
+  { id: "opening_date", header: "OPENING DATE", display_order: 8, read_only: false, storage: "dynamic_data" },
+  { id: "open_location", header: "OPEN LOCATION", display_order: 9, read_only: false, storage: "dynamic_data" },
+  { id: "direction", header: "DIRECTION", display_order: 10, read_only: false, storage: "dynamic_data" },
+  { id: "cbm", header: "CBM/CUBIC METER", display_order: 11, read_only: false, storage: "dynamic_data" },
+  { id: "cargo_history_combo", header: "LAST 3 CARGOES", display_order: 12, read_only: false, storage: "dynamic_data" },
+  { id: "company", header: "COMPANY", display_order: 13, read_only: false, storage: "dynamic_data" },
+  { id: "call_sign", header: "CALL SIGN", display_order: 14, read_only: false, storage: "dynamic_data" },
+  { id: "vessel_type", header: "VESSEL TYPE", display_order: 15, read_only: false, storage: "dynamic_data" },
+  { id: "cargo_type", header: "CARGO TYPE", display_order: 16, read_only: false, storage: "dynamic_data" },
+  { id: "draft", header: "DRAFT", display_order: 17, read_only: false, storage: "dynamic_data" },
+  { id: "flag", header: "FLAG", display_order: 18, read_only: false, storage: "dynamic_data" },
+  { id: "eta_foc", header: "ETA FOC", display_order: 19, read_only: false, storage: "dynamic_data" },
+  { id: "sire_date", header: "SIRE DATE", display_order: 20, read_only: false, storage: "dynamic_data" },
+  { id: "sire_location", header: "SIRE LOCATION", display_order: 21, read_only: false, storage: "dynamic_data" },
+  { id: "cdi_date", header: "CDI DATE", display_order: 22, read_only: false, storage: "dynamic_data" },
+  { id: "cdi_location", header: "CDI LOCATION", display_order: 23, read_only: false, storage: "dynamic_data" },
+  { id: "remarks", header: "REMARKS", display_order: 24, read_only: false, storage: "dynamic_data" },
+  { id: "other_info", header: "EXTRA INFO", display_order: 25, read_only: true, storage: "dynamic_data" },
+  { id: "q88", header: "Q88 AVAILABLE", display_order: 26, read_only: false, storage: "dynamic_data" },
+  { id: "attachments", header: "ATTACHMENTS", display_order: 27, read_only: true, storage: "derived" },
+  { id: "status", header: "STATUS", display_order: 28, read_only: false, storage: "dynamic_data" },
 ];
 
 export const COLUMN_WIDTHS = {
   _num: 58,
   received: 150,
   imo: 90,
+  imo_type: 90,
   company: 200,
   vessel_name: 180,
   call_sign: 90,
@@ -62,7 +64,7 @@ export const COLUMN_WIDTHS = {
   cdi_date: 100,
   cdi_location: 110,
   remarks: 160,
-  other_info: 100,
+  other_info: 140,
   q88: 100,
   attachments: 180,
   status: 100,
@@ -87,8 +89,14 @@ export function hasDisplayValue(val) {
   return true;
 }
 
-/** Always visible in compact mode (_num, vessel name, IMO). */
-export const COMPACT_ALWAYS_VISIBLE_COLUMN_IDS = new Set(["_num", "vessel_name", "imo", "company"]);
+/** Always visible in compact mode. */
+export const COMPACT_ALWAYS_VISIBLE_COLUMN_IDS = new Set([
+  "_num",
+  "vessel_name",
+  "imo",
+  "imo_type",
+  "company",
+]);
 
 /** @deprecated use COMPACT_ALWAYS_VISIBLE_COLUMN_IDS */
 export const PREVIEW_ALWAYS_VISIBLE_COLUMN_IDS = COMPACT_ALWAYS_VISIBLE_COLUMN_IDS;
@@ -173,6 +181,7 @@ export const POSITION_LIST_SUMMARY_COLUMN_ORDER = [
   "year_built",
   "tank_coating",
   "imo",
+  "imo_type",
   "region",
   "opening_date",
   "open_location",
@@ -215,7 +224,7 @@ export function filterPositionListGridColumns(columnDefs, showAllColumns) {
 }
 
 /** Always included in draft email tables (no checkbox in grid). */
-export const DRAFT_LOCKED_COLUMN_IDS = new Set(["vessel_name", "region", "imo"]);
+export const DRAFT_LOCKED_COLUMN_IDS = new Set(["vessel_name", "region", "imo", "imo_type"]);
 
 /** Grid-only columns — not sent to draft API. "company" is confidential and must
  *  never appear in an outgoing position-list email. */
@@ -304,26 +313,54 @@ export function looksLikeImoType(val) {
   return false;
 }
 
+/** Strip parenthetical notes: 'Hub zone (open-position term)' → 'Hub zone'. */
+export function stripParentheticalExtras(text) {
+  let s = String(text || "").trim();
+  if (!s) return "";
+  let prev = null;
+  while (prev !== s) {
+    prev = s;
+    s = s.replace(/\s*\([^)]*\)/g, "").trim();
+    s = s.replace(/\s*\[[^\]]*\]/g, "").trim();
+  }
+  return s.replace(/\s{2,}/g, " ").trim();
+}
+
 /** Read cell value directly from DB-shaped vessel row. */
 export function resolveStandardCellValue(vessel, columnId, rowNum = 1) {
   if (columnId === "_num") return String(rowNum);
   if (columnId === "received") return formatReceived(vessel?.date_received);
-  if (columnId === "region") return vessel?.region ?? "";
+  if (columnId === "region") {
+    return stripParentheticalExtras(vessel?.region ?? "");
+  }
   if (columnId === "attachments") {
     return formatAttachmentFiles(vessel?.attachment_files);
   }
   const dd = vessel?.dynamic_data || {};
+  if (columnId === "open_location") {
+    return stripParentheticalExtras(dd.open_location ?? "");
+  }
   if (columnId === "vessel_type") {
     const vt = dd.vessel_type ?? "";
     const imo = dd.imo ?? "";
+    const imoType = dd.imo_type ?? "";
     if (looksLikeImoType(vt) || (vt && imo && String(vt).trim() === String(imo).trim())) {
+      return "";
+    }
+    if (vt && imoType && String(vt).trim() === String(imoType).trim()) {
       return "";
     }
     return vt;
   }
   if (columnId === "imo") {
     const imo = dd.imo ?? "";
-    if (imo) return imo;
+    if (imo && !looksLikeImoType(imo)) return imo;
+    return "";
+  }
+  if (columnId === "imo_type") {
+    const imoType = dd.imo_type ?? "";
+    if (imoType) return imoType;
+    if (looksLikeImoType(dd.imo)) return dd.imo;
     if (looksLikeImoType(dd.vessel_type)) return dd.vessel_type;
     return "";
   }

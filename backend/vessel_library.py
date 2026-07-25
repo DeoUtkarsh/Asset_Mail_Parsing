@@ -96,7 +96,7 @@ def _particulars_from_dynamic(dd: dict) -> dict[str, str]:
     year = _clean(dd.get("year_built"))
     dwt = _clean(dd.get("dwt_sdwt"))
     cbm = _clean(dd.get("cbm"))
-    dwt_fmt, dwt_scaled = _format_dwt_sdwt(dwt) if dwt else ("", False)
+    dwt_fmt, dwt_scaled, _had_k = _format_dwt_sdwt(dwt) if dwt else ("", False, False)
     ai_flags: set[str] = set()
     for p in str(dd.get("ai_normalized") or "").split(","):
         p = p.strip()
@@ -111,7 +111,7 @@ def _particulars_from_dynamic(dd: dict) -> dict[str, str]:
         "imo_no": _imo_number(dd),
         "call_sign": _clean(dd.get("call_sign")),
         "vessel_type": vessel_type,
-        "year_built": _format_year_built(year) if year else "",
+        "year_built": (_format_year_built(year)[0] if year else ""),
         "imo_type": imo_type,
         "dwt": dwt_fmt,
         "cbm": _format_rounded_figures(cbm) if cbm else "",
@@ -184,7 +184,7 @@ def autofill_library(supabase) -> dict[str, int]:
                     patch[f] = incoming
                 elif f in ("year_built", "dwt", "cbm") and current:
                     preferred = incoming or (
-                        _format_year_built(current) if f == "year_built"
+                        _format_year_built(current)[0] if f == "year_built"
                         else (_format_dwt_sdwt(current)[0] if f == "dwt" else _format_rounded_figures(current))
                     )
                     if preferred and preferred != current:
@@ -222,19 +222,23 @@ def normalize_library_formats(supabase) -> int:
     updated = 0
     for row in rows:
         patch: dict[str, Any] = {}
+        flags = {p.strip() for p in _clean(row.get("ai_normalized")).split(",") if p.strip()}
         year = _clean(row.get("year_built"))
         if year:
-            fmt = _format_year_built(year)
+            fmt, expanded = _format_year_built(year)
             if fmt and fmt != year:
                 patch["year_built"] = fmt
+            if expanded:
+                flags.add("year_built")
         dwt = _clean(row.get("dwt"))
         if dwt:
-            fmt, scaled = _format_dwt_sdwt(dwt)
+            fmt, scaled, had_k = _format_dwt_sdwt(dwt)
             if fmt and fmt != dwt:
                 patch["dwt"] = fmt
-            flags = {p.strip() for p in _clean(row.get("ai_normalized")).split(",") if p.strip()}
             if scaled:
                 flags.add("dwt")
+            elif had_k:
+                flags.discard("dwt")
             elif "dwt" not in flags:
                 for m in re.finditer(r"[\d,]+(?:\.\d+)?", fmt or dwt):
                     try:
@@ -246,14 +250,14 @@ def normalize_library_formats(supabase) -> int:
                         if 0 < q < 1000:
                             flags.add("dwt")
                             break
-            new_flags = ",".join(sorted(flags))
-            if new_flags != _clean(row.get("ai_normalized")):
-                patch["ai_normalized"] = new_flags
         cbm = _clean(row.get("cbm"))
         if cbm:
             fmt = _format_rounded_figures(cbm)
             if fmt and fmt != cbm:
                 patch["cbm"] = fmt
+        new_flags = ",".join(sorted(flags))
+        if new_flags != _clean(row.get("ai_normalized")):
+            patch["ai_normalized"] = new_flags
         if patch:
             patch["updated_at"] = datetime.utcnow()
             supabase.table("vessel_library").update(patch).eq("id", row["id"]).execute()

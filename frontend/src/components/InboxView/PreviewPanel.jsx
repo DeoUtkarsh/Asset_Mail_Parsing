@@ -19,6 +19,8 @@ import {
 import {
   formatStandardField,
   formatDwtSdwt,
+  formatCbm,
+  formatYearBuilt,
   parseAiNormalized,
   formatAiNormalized,
 } from "../../utils/fieldFormat";
@@ -233,15 +235,14 @@ export default function PreviewPanel({
     setIsVerified(initialVerified);
   }, [initialVerified]);
 
-  const handleSetVerified = useCallback(async (verified) => {
+  const handleVerify = useCallback(async () => {
     setVerifyBusy(true);
     try {
-      const result = await setAttachmentVerified(attachmentId, verified);
+      const result = await setAttachmentVerified(attachmentId, true);
       setIsVerified(Boolean(result.is_verified));
-      if (result.is_verified) {
-        setEditMode(false);
-        setDirtyIds(new Set());
-      }
+      setEditMode(false);
+      dirtyRef.current = new Set();
+      setDirtyIds(new Set());
       onVerifiedChange?.(Boolean(result.is_verified));
     } catch (e) {
       setError(e.message || "Verify failed.");
@@ -251,7 +252,7 @@ export default function PreviewPanel({
   }, [attachmentId, onVerifiedChange]);
 
   const handleCellEdit = useCallback((rowId, field, value) => {
-    if ((isVerified && showVerify) || !editMode) return;
+    if (!editMode) return;
     if (field === "signature_emails" || field === "signature_phones") return;
     // Update the authoritative ref synchronously so a save fired on the same
     // Enter keystroke sees the latest values (state updates are async).
@@ -264,6 +265,21 @@ export default function PreviewPanel({
         dd.dwt_sdwt = stored || value;
         const flags = parseAiNormalized(dd.ai_normalized);
         if (scaled) flags.add("dwt_sdwt");
+        else flags.delete("dwt_sdwt");
+        dd.ai_normalized = formatAiNormalized(flags);
+      } else if (field === "cbm") {
+        const { value: stored, scaled } = formatCbm(value);
+        dd.cbm = stored || value;
+        const flags = parseAiNormalized(dd.ai_normalized);
+        if (scaled) flags.add("cbm");
+        else flags.delete("cbm");
+        dd.ai_normalized = formatAiNormalized(flags);
+      } else if (field === "year_built" || field === "built") {
+        const { value: stored, expanded } = formatYearBuilt(value);
+        dd.year_built = stored || value;
+        const flags = parseAiNormalized(dd.ai_normalized);
+        if (expanded) flags.add("year_built");
+        else flags.delete("year_built");
         dd.ai_normalized = formatAiNormalized(flags);
       } else {
         const stored = formatStandardField(field, value);
@@ -277,7 +293,7 @@ export default function PreviewPanel({
     nextDirty.add(rowId);
     dirtyRef.current = nextDirty;
     setDirtyIds(nextDirty);
-  }, [isVerified, editMode, showVerify]);
+  }, [editMode]);
 
   const enterEditMode = useCallback(() => {
     editSnapshot.current = vesselsRef.current;
@@ -303,6 +319,7 @@ export default function PreviewPanel({
       setEditMode(false);
       return;
     }
+    const wasVerified = isVerified;
     setSaving(true);
     setError("");
     try {
@@ -317,6 +334,14 @@ export default function PreviewPanel({
       setDirtyIds(new Set());
       setEditMode(false);
       editSnapshot.current = null;
+
+      // Real edits on a verified mail → drop verified status; user must Verify again.
+      if (wasVerified) {
+        const result = await setAttachmentVerified(attachmentId, false);
+        setIsVerified(Boolean(result.is_verified));
+        onVerifiedChange?.(false);
+      }
+
       flashSaved();
       onDataChange?.();
     } catch (e) {
@@ -324,7 +349,7 @@ export default function PreviewPanel({
     } finally {
       setSaving(false);
     }
-  }, [onDataChange]);
+  }, [attachmentId, isVerified, onDataChange, onVerifiedChange]);
 
   const messageViewLabel =
     messageView === "plain"
@@ -346,8 +371,20 @@ export default function PreviewPanel({
       {/* ── Header ── */}
       <div className="ipreview-head">
         <div className="ipreview-head-right">
-          {/* Edit → legends → All columns → Verify (compact, right-aligned) */}
-          {showEdit && !isVerified && (
+          {/* Legends → All columns → Edit → Verified badge / Verify */}
+          <CellHighlightLegend className="ipreview-legends" />
+          {savedMsg && (
+            <span className="ipreview-saved show">✓ Saved</span>
+          )}
+          {vessels.length > 0 && columnDefs.length > 0 && (
+            <AllColumnsToggle
+              enabled={showAllColumns}
+              onChange={toggleShowAllColumns}
+              visibleCount={previewGridColumns.length}
+              totalCount={columnDefs.length}
+            />
+          )}
+          {showEdit && (
             editMode ? (
               <div className="ipreview-editbar">
                 <button
@@ -379,24 +416,12 @@ export default function PreviewPanel({
               </button>
             )
           )}
-          <CellHighlightLegend className="ipreview-legends" />
-          {savedMsg && (
-            <span className="ipreview-saved show">✓ Saved</span>
-          )}
-          {vessels.length > 0 && columnDefs.length > 0 && (
-            <AllColumnsToggle
-              enabled={showAllColumns}
-              onChange={toggleShowAllColumns}
-              visibleCount={previewGridColumns.length}
-              totalCount={columnDefs.length}
-            />
-          )}
           {showVerify && (
             <VerifyButton
               verified={isVerified}
               canVerify={canVerify}
               busy={verifyBusy}
-              onToggle={() => handleSetVerified(!isVerified)}
+              onVerify={handleVerify}
             />
           )}
           {onClose && (
@@ -420,7 +445,7 @@ export default function PreviewPanel({
             gridColumns={previewGridColumns}
             onCellEdit={handleCellEdit}
             onEnterSave={handleSaveChanges}
-            readOnly={!editMode || (showVerify && isVerified)}
+            readOnly={!editMode}
             showCheckboxes={false}
             hideGroupHeaders
             stretchToFill={!showAllColumns}

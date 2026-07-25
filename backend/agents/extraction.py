@@ -14,7 +14,14 @@ from typing import Any
 
 from database import supabase
 from config import settings
-from column_defs import resolve_vessel_company, map_raw_to_standard, normalize_columns_in_email
+from column_defs import (
+    resolve_vessel_company,
+    mark_bare_dwt_ai_flag,
+    mark_bare_year_ai_flag,
+    pick_owner_company_with_ai,
+    map_raw_to_standard,
+    normalize_columns_in_email,
+)
 from sse_manager import sse_manager
 from llm import claude_client, files_to_content_blocks
 from verification import try_auto_verify_attachment
@@ -59,17 +66,23 @@ for the vessel (do NOT invent values). All values must be strings.
 KEYS:
 - "company": the OWNER / OPERATOR company that owns the tonnage — read it from the letterhead, logo,
   title, table header or signature (e.g. "Hafnia Chemicals", "Ardmore Shipping", "Womar Logistics",
-  "Stolt Tankers", "N.E. Shipping Pte Ltd"). This is NOT the person forwarding the mail and NOT the
-  email subject. Use the SAME company for every vessel in this email.
-- "vessel_name": ship name incl. prefix/code (e.g. "M/T OCEAN JUPITER", "PVT Jupiter", "GS/J19").
-- "imo": IMO number (7 digits) if given; else the IMO type (e.g. "2", "2/3", "IMO II").
-  Put IMO values ONLY in this key — never in vessel_type.
+  "Stolt Tankers", "N.E. Shipping Pte Ltd", "Stealth Maritime Corp. S.A.", "Empire Smart Freight LLC",
+  "VietSea Company"). This is NEVER a person name (Rohan Kalantre), NEVER a desk/department
+  ("Chartering Dept", "Commercial Team", "Ops"). Use the SAME company for every vessel in this email.
+- "vessel_name": ship name incl. prefix/code (e.g. "M/T OCEAN JUPITER", "PVT Jupiter", "GS/J19",
+  "SRIWANGI", "SC LIAONING"). NEVER use PIC / contact / person-in-charge columns as vessel_name
+  (e.g. "DANIEL" under a PIC header is a person — skip it and take the real vessel column).
+- "imo": IMO number ONLY when it is a 7-digit IMO number. Do NOT put IMO type here.
+- "imo_type": chemical/tank IMO type codes only (e.g. "1", "2", "2/3", "IMO II"). Never put a
+  7-digit IMO number here.
 - "year_built": year or build date (e.g. "2010", "Feb 2008", "2015").
-- "dwt_sdwt": deadweight DWT, or "DWT / SDWT" when both are given (e.g. "8911", "19,993", "49").
-- "cbm": cubic capacity / M3 (e.g. "9117", "22,186").
+- "dwt_sdwt": deadweight DWT, or "DWT / SDWT" when both are given. Copy the number EXACTLY as
+  written in the source. If the mail says "49", return "49" (NOT "49000" / "49,000"). If it says
+  "160k" or "107.5k", keep the k form (e.g. "160k"). Do not expand or invent scale.
+- "cbm": cubic capacity / M3 / CUBIC. Copy EXACTLY as written (e.g. "16.2", "9117"). Do not expand.
 - "tank_coating": coating / tank material (e.g. "ML", "SS/ML", "EPOXY", "MARINE LINE", "SUS 316L", "Stainless Steel").
-- "vessel_type": physical ship category if stated (e.g. "Chemical", "MR", "Product Tanker").
-  NEVER put IMO numbers or IMO type codes (2, 2/3, IMO II) here — omit vessel_type instead.
+- "vessel_type": physical ship category if stated (e.g. "Chemical", "MR", "Product Tanker", "GAS CARRIER").
+  NEVER put IMO numbers or IMO type codes (2, 2/3, IMO II) here — use imo_type instead.
 - "cargo_type": space / cargo info if stated (e.g. "Full Space", "Part Space").
 - "direction": preferred trading / voyage direction — ONLY if mentioned. Normalize to UPPERCASE, ONE of:
   ANY, NORTHBOUND, SOUTHBOUND, EASTBOUND, WESTBOUND, WCI, AG, WCI/AG, FAR EAST, SEA, WORLDWIDE, WEST INDIA.
@@ -77,19 +90,20 @@ KEYS:
   "NB" → NORTHBOUND, "SB" → SOUTHBOUND, "feast" → FAR EAST, "ww" → WORLDWIDE, "arabian gulf" → AG.
   OMIT if not mentioned.
 - "open_location": the PORT/place where the vessel is open/available (e.g. "SINGAPORE STRAIT", "Yosu",
-  "Haldia, India", "Port Klang", "USG"). Use the OPEN port, not the routing destination.
+  "Haldia, India", "Port Klang", "USG", "ZHOUSHAN", "SIHANOUKVILLE"). Use the OPEN port, not the routing destination.
+  Do NOT put section AREA alone here when a separate PORT NAME column exists — use the port.
 - "opening_date": open date / laycan (e.g. "20-21 Mar 2026", "18 July", "03-05 Aug 2026").
 - "cargo_history_combo": last cargo / last 3 cargoes / cargo remarks (e.g. "Nap/Nap/ULSD", "5KT P/S Dir China", "NOBL").
-- "region": the broad trade ZONE — PREFER the section header the vessel is grouped under (e.g.
+- "region": the broad trade ZONE — PREFER the section header / AREA column the vessel is grouped under (e.g.
   "NORTHEAST ASIA", "SOUTHEAST ASIA", "SEA / ECI", "FAR EAST", "MIDDLE EAST / WCI / EAFR",
-  "NORTH AMERICA", "CONT", "BSEA/MED/WAF"). If there is no section header, use the open port/area.
-  NEVER leave region empty — use "UNSPECIFIED" if truly unknown.
+  "NORTH AMERICA", "CONT", "BSEA/MED/WAF", "STRAITS"). If there is no section header, use the open port/area.
+  Strip parenthetical notes like "(open-position term)". NEVER leave region empty — use "UNSPECIFIED" if truly unknown.
 - "flag": flag state (e.g. "KOREA").
 - "draft": draft in metres (e.g. "7.58").
 - "sire_date", "sire_location": SIRE info if present.
 - "cdi_date", "cdi_location": CDI info if present.
 - "remarks": short status / notes (e.g. "ON SUBS", "PPT", "REVERT", "Subs, In ballast").
-- "other_info": anything important not covered above.
+- "other_info": EXTRA INFO — anything important that does not fit another key (keep short).
 - "q88": "YES" if a Q88 is mentioned/available.
 - "status": e.g. "ON SUBS", "OPEN", "AVAILABLE" if stated.
 
@@ -97,7 +111,7 @@ RULES:
 1. Find EVERY vessel — under "open positions", "available tonnage", "propose cargoes for", grouped tables, images, etc.
 2. When the list is inside an IMAGE, PDF or spreadsheet attachment, READ IT and extract every row.
 3. In grouped/section tables, the section title (region band) applies to ALL rows beneath it until the next title.
-4. Vessel-name codes like "GS/J19", "OT/MR" are the vessel_name.
+4. Vessel-name codes like "GS/J19", "OT/MR" are the vessel_name. Person names under PIC/contact columns are NOT.
 5. If there is genuinely no vessel data (only contacts), return {{"columns_in_email": [], "vessels": []}}.
 6. IGNORE crossed-out / strikethrough text everywhere (body, images, PDFs, spreadsheets). Lines or
    values with a line through them — or wrapped in ~~tildes~~ — are cancelled/obsolete. Do NOT extract
@@ -105,6 +119,7 @@ RULES:
    If a field appears ONLY as crossed-out, OMIT that key for the vessel.
 7. Return vessels in the SAME ORDER they appear in the source (top-to-bottom, first listed = first in
    the vessels array). Do not sort alphabetically.
+8. Put leftover facts that have no matching KEY into "other_info" (Extra Info), not into company/imo/vessel_name.
 
 TEXT TO PARSE:
 {raw_text}
@@ -315,6 +330,19 @@ async def _extract_single_attachment(
         # Replace prior rows so re-extraction keeps a clean ordered list.
         supabase.table("vessels").delete().eq("attachment_id", attachment_id).execute()
 
+        # One AI company pick per mail (signature + letterhead + LLM candidates).
+        llm_companies = []
+        for vessel in vessels_data:
+            c = str(vessel.get("company") or vessel.get("Company") or "").strip()
+            if c:
+                llm_companies.append(c)
+        ai_company = await pick_owner_company_with_ai(
+            raw_text,
+            llm_company=llm_companies[0] if llm_companies else "",
+            mail_from=mail_from,
+            parent_sender=parent_sender,
+        )
+
         # Persist each vessel as a separate row (stored in STANDARD schema).
         for row_order, vessel in enumerate(vessels_data):
             region = vessel.pop("region", None)
@@ -328,11 +356,14 @@ async def _extract_single_attachment(
                 raw_text=raw_text,
                 vessel_name=normalised.get("vessel_name") or "",
                 llm_company=llm_company,
+                ai_picked_company=ai_company,
             )
             # Map raw LLM keys → the fixed standard columns the grid reads, and
             # normalise the direction value. Done at store time so the grid is
             # correct immediately after a fetch (no server restart needed).
             standardized, reg = map_raw_to_standard(normalised, region)
+            mark_bare_dwt_ai_flag(standardized, raw_text)
+            mark_bare_year_ai_flag(standardized, raw_text)
             supabase.table("vessels").insert({
                 "attachment_id": attachment_id,
                 "dynamic_data": standardized,

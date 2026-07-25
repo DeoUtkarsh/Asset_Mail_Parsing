@@ -16,6 +16,30 @@ const MONTH_INDEX = (() => {
 })();
 
 const SMALL_WORDS = new Set(["of", "the", "a", "an", "and", "to", "for", "in", "on", "at"]);
+const ORDINAL_WORDS = new Set(["st", "nd", "rd", "th"]);
+
+/** Lowercase ordinals and glue "23 Rd" → "23rd". */
+function normalizeDateOrdinals(raw) {
+  let s = String(raw || "").trim();
+  if (!s) return "";
+  s = s.replace(/\b(st|nd|rd|th)\b/gi, (m) => m.toLowerCase());
+  s = s.replace(/(\d)\s+(st|nd|rd|th)\b/gi, "$1$2");
+  return s;
+}
+
+function dayWithOrdinal(n) {
+  const d = Number(n);
+  if (!Number.isFinite(d)) return String(n);
+  const mod100 = d % 100;
+  const mod10 = d % 10;
+  let suf = "th";
+  if (mod100 < 11 || mod100 > 13) {
+    if (mod10 === 1) suf = "st";
+    else if (mod10 === 2) suf = "nd";
+    else if (mod10 === 3) suf = "rd";
+  }
+  return `${d}${suf}`;
+}
 
 function expandTwoDigitYear(yy) {
   const n = Number(yy);
@@ -36,9 +60,9 @@ function currentYear() {
   return new Date().getFullYear();
 }
 
-/** Title-case free text; keep small words lowercase mid-phrase. "end of july" → "End of July". */
+/** Title-case free text; keep small words + ordinals lowercase. "end of july" → "End of July". */
 export function formatOpenPositionText(raw) {
-  const s = String(raw || "").trim();
+  const s = normalizeDateOrdinals(raw);
   if (!s) return "";
   return s
     .toLowerCase()
@@ -49,8 +73,12 @@ export function formatOpenPositionText(raw) {
         const m = MONTHS[MONTH_INDEX[bare]];
         return word.replace(new RegExp(bare, "i"), m);
       }
+      if (ORDINAL_WORDS.has(bare)) return word.toLowerCase();
       if (i > 0 && SMALL_WORDS.has(bare)) return word.toLowerCase();
-      return word.replace(/\b[a-z]/, (c) => c.toUpperCase());
+      // Avoid capitalizing the "r" in "23rd" (digit/letter boundary).
+      return word
+        .replace(/(^|[^0-9a-z])([a-z])/g, (_, pre, ch) => pre + ch.toUpperCase())
+        .replace(/(\d)(st|nd|rd|th)\b/gi, (_, d, suf) => d + suf.toLowerCase());
     })
     .join(" ");
 }
@@ -105,31 +133,41 @@ function parseOneDate(fragment) {
  * - Concrete dates → "19 July 2026"
  * - Day ranges → "20-21 March 2026"
  * - Free text (e.g. "end of july") → "End of July"
+ * Ordinal suffixes stay lowercase (23rd, not 23Rd).
  */
 export function formatOpeningDate(raw) {
-  const s = String(raw || "").trim();
+  const s = normalizeDateOrdinals(raw);
   if (!s) return "";
 
-  // 20-21 Mar 2026 | 20/21 March 2026
+  // 20-21 Mar 2026 | 20/21 March 2026 | 22-23rd July 2026
   let m = s.match(
-    /^(\d{1,2})\s*[-/]\s*(\d{1,2})\s+([A-Za-z]+)(?:\s+(\d{2,4}))?$/i
+    /^(\d{1,2})(?:st|nd|rd|th)?\s*[-/–—]\s*(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]+)(?:\s+(\d{2,4}))?$/i
   );
   if (m && MONTH_INDEX[m[3].toLowerCase()] != null) {
     const y = normalizeYear(m[4] || currentYear());
-    return `${Number(m[1])}-${Number(m[2])} ${MONTHS[MONTH_INDEX[m[3].toLowerCase()]]} ${y}`;
+    const end = /(?:st|nd|rd|th)/i.test(s) ? dayWithOrdinal(m[2]) : String(Number(m[2]));
+    return `${Number(m[1])}-${end} ${MONTHS[MONTH_INDEX[m[3].toLowerCase()]]} ${y}`;
   }
 
   // 20-21/03/26
-  m = s.match(/^(\d{1,2})\s*[-/]\s*(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})$/);
+  m = s.match(/^(\d{1,2})(?:st|nd|rd|th)?\s*[-/]\s*(\d{1,2})(?:st|nd|rd|th)?[/.-](\d{1,2})[/.-](\d{2,4})$/i);
   if (m) {
     const month = Number(m[3]) - 1;
     const y = normalizeYear(m[4]);
     if (month >= 0 && month <= 11 && y) {
-      return `${Number(m[1])}-${Number(m[2])} ${MONTHS[month]} ${y}`;
+      const end = /(?:st|nd|rd|th)/i.test(s) ? dayWithOrdinal(m[2]) : String(Number(m[2]));
+      return `${Number(m[1])}-${end} ${MONTHS[month]} ${y}`;
     }
   }
 
-  const one = parseOneDate(s);
+  // Single day with ordinal: 23rd July 2026
+  m = s.match(/^(\d{1,2})(?:st|nd|rd|th)\s+([A-Za-z]+)(?:\s+(\d{2,4}))?$/i);
+  if (m && MONTH_INDEX[m[2].toLowerCase()] != null) {
+    const y = normalizeYear(m[3] || currentYear());
+    return `${dayWithOrdinal(m[1])} ${MONTHS[MONTH_INDEX[m[2].toLowerCase()]]} ${y}`;
+  }
+
+  const one = parseOneDate(s.replace(/(\d{1,2})(?:st|nd|rd|th)\b/gi, "$1"));
   if (one) return one;
 
   // Looks like it has a digit date attempt but failed — still title-case
@@ -148,13 +186,20 @@ export function formatRoundedFigures(raw) {
 }
 
 /**
- * DWT/SDWT: values under 1000 are treated as ×1000 shorthand (49 → 49,000),
- * then rounded with thousand separators.
+ * DWT/SDWT: expand k-suffix (160k → 160000) without flagging as AI-scaled;
+ * bare values under 1000 are ×1000 shorthand (49 → 49,000) and marked scaled.
  * Returns { value, scaled }.
  */
 export function formatDwtSdwt(raw) {
-  const s = String(raw || "").trim();
-  if (!s) return { value: "", scaled: false };
+  const s0 = String(raw || "").trim();
+  if (!s0) return { value: "", scaled: false };
+  let hadK = false;
+  const s = s0.replace(/([\d,]+(?:\.\d+)?)\s*[kK]\b/g, (_, num) => {
+    hadK = true;
+    const n = Number(String(num).replace(/,/g, ""));
+    if (!Number.isFinite(n)) return _;
+    return String(Math.round(n * 1000));
+  });
   let scaled = false;
   const value = s.replace(/[\d,]+(?:\.\d+)?/g, (token) => {
     let n = Number(String(token).replace(/,/g, ""));
@@ -165,19 +210,28 @@ export function formatDwtSdwt(raw) {
     }
     return Math.round(n).toLocaleString("en-US");
   });
-  return { value, scaled };
+  return { value, scaled: hadK && !scaled ? false : scaled };
+}
+
+/** CBM/cubic: same ×1000 shorthand as DWT; whole numbers. */
+export function formatCbm(raw) {
+  return formatDwtSdwt(raw);
 }
 
 /** Year built: 96 → 1996, 16 → 2016, already-4-digit left as-is. */
 export function formatYearBuilt(raw) {
   const s = String(raw || "").trim();
-  if (!s) return "";
-  // Prefer a clear year token
-  const m = s.match(/\b(\d{4})\b/) || s.match(/\b(\d{1,2})\b/);
-  if (!m) return s;
-  const y = normalizeYear(m[1]);
-  if (y == null) return s;
-  return String(y);
+  if (!s) return { value: "", expanded: false };
+  const m4 = s.match(/\b(\d{4})\b/);
+  if (m4) {
+    const y = normalizeYear(m4[1]);
+    return { value: y == null ? s : String(y), expanded: false };
+  }
+  const m2 = s.match(/\b(\d{1,2})\b/);
+  if (!m2) return { value: s, expanded: false };
+  const y = normalizeYear(m2[1]);
+  if (y == null) return { value: s, expanded: false };
+  return { value: String(y), expanded: true };
 }
 
 export function parseAiNormalized(raw) {
@@ -196,8 +250,8 @@ export function formatStandardField(key, value) {
   if (!v.trim()) return "";
   if (key === "opening_date" || key === "open_date") return formatOpeningDate(v);
   if (key === "dwt_sdwt" || key === "dwt" || key === "sdwt") return formatDwtSdwt(v).value;
-  if (key === "cbm") return formatRoundedFigures(v);
-  if (key === "year_built" || key === "built") return formatYearBuilt(v);
+  if (key === "cbm") return formatCbm(v).value;
+  if (key === "year_built" || key === "built") return formatYearBuilt(v).value;
   return v;
 }
 

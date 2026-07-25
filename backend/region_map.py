@@ -118,17 +118,27 @@ def is_standard_region(value: str | None) -> bool:
 
 
 def region_code_to_name(code: str | None) -> str:
-    """Display name for a region code (from trade_regions.name)."""
+    """Display name for a region code (from trade_regions.name).
+
+    Parenthetical notes in seed names are stripped for vessel storage/UI
+    (e.g. 'Continent (ARA range)' → 'Continent').
+    """
     c = str(code or "").strip()
     if not c or c.upper() == UNSPECIFIED:
         return UNSPECIFIED
     names: dict[str, str] = _load_map().get("region_codes") or {}
+    raw_name = ""
     if c in names:
-        return names[c]
-    for k, name in names.items():
-        if _norm(k) == _norm(c):
-            return name
-    return c
+        raw_name = names[c]
+    else:
+        for k, name in names.items():
+            if _norm(k) == _norm(c):
+                raw_name = name
+                break
+    if not raw_name:
+        raw_name = c
+    cleaned = _strip_parenthetical_extras(raw_name)
+    return cleaned or raw_name or UNSPECIFIED
 
 
 def region_label_to_code(label: str | None) -> str | None:
@@ -266,14 +276,47 @@ def resolve_region_from_open_location(open_location: str | None) -> str:
     return UNSPECIFIED
 
 
+def _strip_parenthetical_extras(text: str | None) -> str:
+    s = str(text or "").strip()
+    if not s:
+        return ""
+    prev = None
+    while prev != s:
+        prev = s
+        s = re.sub(r"\s*\([^)]*\)", "", s).strip()
+        s = re.sub(r"\s*\[[^\]]*\]", "", s).strip()
+    return re.sub(r"\s{2,}", " ", s).strip()
+
+
 def derive_vessel_region(
     open_location: str | None,
     broker_region: str | None = None,
 ) -> tuple[str, str]:
-    """Return (display_region_name, region_raw)."""
-    raw = str(broker_region or "").strip()
-    code = resolve_region_from_open_location(open_location)
-    return region_code_to_name(code), raw
+    """Return (display_region_name, region_raw).
+
+    Prefer open_location → DB/alias map. If that yields UNSPECIFIED, fall back to
+    region phrases from the mail (broker_region / AREA text), then UNSPECIFIED.
+    Bracketed notes are stripped from both open location and broker region text.
+    """
+    loc = _strip_parenthetical_extras(open_location)
+    raw_full = str(broker_region or "").strip()
+    raw = _strip_parenthetical_extras(raw_full)
+
+    code = resolve_region_from_open_location(loc)
+    if code == UNSPECIFIED and raw:
+        mapped = region_label_to_code(raw)
+        if mapped and mapped != UNSPECIFIED:
+            code = mapped
+        else:
+            fallback = resolve_region_from_open_location(raw)
+            if fallback != UNSPECIFIED:
+                code = fallback
+
+    region_raw = raw or raw_full
+    display = region_code_to_name(code)
+    # Belt-and-suspenders: never persist bracketed notes on vessels.region.
+    display = _strip_parenthetical_extras(display) or display
+    return display, region_raw
 
 
 def region_code_to_zone(region: str | None) -> str:
