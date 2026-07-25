@@ -9,7 +9,6 @@ import asyncio
 import json
 import re
 import logging
-from pathlib import Path
 from typing import Any
 
 from database import supabase
@@ -26,6 +25,7 @@ from sse_manager import sse_manager
 from llm import claude_client, files_to_content_blocks
 from verification import try_auto_verify_attachment
 from email_text import prepare_extraction_text
+from file_storage import read_bytes
 
 # ── NVIDIA NIM (legacy — kept for reference, no longer used) ──────────────────
 # from openai import AsyncOpenAI
@@ -35,9 +35,6 @@ from email_text import prepare_extraction_text
 # )
 
 logger = logging.getLogger(__name__)
-
-# Where ingestion stored the email's file attachments on disk.
-FILES_DIR = Path(__file__).resolve().parent.parent / "attachment_files"
 
 EXTRACTION_PROMPT = """\
 You are an expert shipbroking data extractor. Extract ALL vessel/ship position data from this email.
@@ -225,21 +222,19 @@ def _extract_json_array_legacy(text: str) -> list[dict]:
 
 
 def _load_file_blocks(attachment_id: str, files_meta: list[dict] | None) -> list[dict]:
-    """Read the email's stored file attachments from disk and convert them into
+    """Read the email's stored file attachments and convert them into
     Claude content blocks (images/PDF natively, spreadsheets/Word as text)."""
     if not files_meta:
         return []
-    dest = FILES_DIR / attachment_id
     file_dicts: list[dict] = []
     for meta in files_meta:
         stored = meta.get("stored")
         if not stored:
             continue
-        path = dest / stored
         try:
-            content = path.read_bytes()
+            content = read_bytes(attachment_id, stored)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Could not read attachment file %s: %s", path, exc)
+            logger.warning("Could not read attachment file %s/%s: %s", attachment_id, stored, exc)
             continue
         file_dicts.append({
             "filename": meta.get("name") or stored,

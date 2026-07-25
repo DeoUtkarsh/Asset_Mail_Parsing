@@ -10,8 +10,12 @@ python-dotenv==1.0.1
 # ── Database (local PostgreSQL) ───────────────────────────────────
 psycopg2-binary==2.9.9
 
+# ── Attachment storage (S3 on AWS; local disk when bucket unset) ──
+boto3==1.35.36
+
 # ── LLM / agent framework ─────────────────────────────────────────
 anthropic==0.39.0
+httpx==0.27.2
 langgraph==0.2.35
 # openai==1.51.0   # legacy NVIDIA NIM client — no longer used
 

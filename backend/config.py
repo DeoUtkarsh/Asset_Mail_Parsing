@@ -43,6 +43,12 @@ class Settings(BaseSettings):
     # (unseen Message-IDs) are ever processed regardless of this cap.
     MAX_ATTACHMENTS: int = 0
 
+    # Attachment files: leave ATTACHMENTS_S3_BUCKET empty → local attachment_files/
+    # On AWS ECS set the bucket name; credentials come from the task IAM role.
+    ATTACHMENTS_S3_BUCKET: str = ""
+    ATTACHMENTS_S3_PREFIX: str = "attachment_files"
+    AWS_REGION: str = "ap-southeast-1"
+
     # LLM extraction tuning (used by contact/vessel extraction retry logic)
     EXTRACTION_MAX_ATTEMPTS: int = 3
     EXTRACTION_RATE_LIMIT_BASE_SEC: float = 5.0

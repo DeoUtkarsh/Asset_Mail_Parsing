@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import asyncio
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
@@ -748,7 +749,12 @@ async def summarize_home() -> dict[str, Any]:
         "zones": zone_count,
         "readiness_pct": readiness_pct,
     }
-    narrative = await _generate_narrative(brief, "home")
+    # Keep Home refresh snappy: don't hang the whole dashboard on a slow LLM.
+    try:
+        narrative = await asyncio.wait_for(_generate_narrative(brief, "home"), timeout=4.0)
+    except asyncio.TimeoutError:
+        logger.warning("[Summary] home narrative timed out — using fallback")
+        narrative = _fallback_narrative(brief, "home")
     return _pack("home", narrative, facts)
 
 

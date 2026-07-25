@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
-    allowedHosts: [".ngrok-free.app", ".ngrok.io"],
+    allowedHosts: [".ngrok-free.app", ".ngrok-free.dev", ".ngrok.io"],
     proxy: {
       // Proxy API calls to the FastAPI backend
       "/api": {

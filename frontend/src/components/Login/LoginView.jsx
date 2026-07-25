@@ -26,10 +26,8 @@ export default function LoginView({ onLogin }) {
 
       <form className="login-card" onSubmit={submit}>
         <div className="login-brand">
-          <img className="login-mark" src="/logo.png?v=2" alt="Broker Sense" />
-          <div className="login-wm">
-            <span className="l1">BROKER</span> <span className="l2">SENSE</span>
-          </div>
+          <img className="login-mark" src="/logo-mark.png?v=3" alt="" aria-hidden="true" />
+          <img className="login-brand-logo" src="/logo.png?v=6" alt="Broker Sense" />
         </div>
 
         <h1 className="login-title">Welcome back</h1>

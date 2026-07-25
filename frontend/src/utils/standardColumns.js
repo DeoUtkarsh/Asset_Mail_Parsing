@@ -41,31 +41,31 @@ export const COLUMN_WIDTHS = {
   _num: 58,
   received: 150,
   imo: 90,
-  imo_type: 90,
+  imo_type: 100,
   company: 200,
   vessel_name: 180,
-  call_sign: 90,
-  year_built: 100,
-  vessel_type: 110,
+  call_sign: 110,
+  year_built: 110,
+  vessel_type: 120,
   cargo_type: 120,
   direction: 110,
   dwt_sdwt: 112,
-  cbm: 130,
+  cbm: 160,
   draft: 80,
   flag: 80,
   eta_foc: 120,
   region: 160,
-  open_location: 130,
+  open_location: 150,
   opening_date: 140,
   cargo_history_combo: 260,
-  tank_coating: 130,
-  sire_date: 100,
-  sire_location: 110,
-  cdi_date: 100,
-  cdi_location: 110,
+  tank_coating: 140,
+  sire_date: 110,
+  sire_location: 130,
+  cdi_date: 110,
+  cdi_location: 130,
   remarks: 160,
   other_info: 140,
-  q88: 100,
+  q88: 130,
   attachments: 180,
   status: 100,
 };
@@ -399,13 +399,14 @@ export function sortVesselsBySourceOrder(vessels) {
   });
 }
 
-/** Minimum px width so a grid header label is not clipped (uppercase 10.5px headers). */
+/** Minimum px width so a grid header label shows in full (no … truncation). */
 export function minColumnWidthForHeader(header, floor = 48) {
   const text = String(header ?? "").trim();
   if (!text) return floor;
-  // Short slash labels (e.g. DWT/SDWT) should stay on one header line.
-  const charW = text.length <= 14 && text.includes("/") ? 7.5 : 7;
-  return Math.max(floor, Math.ceil(text.length * charW) + 24);
+  // Poppins bold uppercase ≈ 8px/char at ~12px; + draft checkbox + padding.
+  const charW = 8.2;
+  const checkboxPad = 22;
+  return Math.max(floor, Math.ceil(text.length * charW) + 28 + checkboxPad);
 }
 
 /** Grid columns that stay single-line with ellipsis (short numbers/codes only). */

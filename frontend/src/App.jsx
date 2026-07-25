@@ -179,19 +179,24 @@ function MainApp({ onLogout }) {
   );
 
   // Home summary is cached in App so switching tabs doesn't re-fetch.
-  // It reloads only when homeRefreshKey changes (real data change) or via manual refresh.
+  // Reloads when homeRefreshKey changes or via the manual Refresh button.
+  const homeReqId = useRef(0);
   const loadHome = useCallback(async () => {
+    const reqId = ++homeReqId.current;
+    const keyAtStart = homeRefreshKey;
     setHomeLoading(true);
     setHomeError("");
-    const keyAtStart = homeRefreshKey;
     try {
       const res = await getHomeSummary();
+      // Ignore outdated responses if a newer refresh started meanwhile
+      if (reqId !== homeReqId.current) return;
       setHomeSummary(res);
       homeLoadedKey.current = keyAtStart;
     } catch (e) {
+      if (reqId !== homeReqId.current) return;
       setHomeError(e.message || "Failed to load summary.");
     } finally {
-      setHomeLoading(false);
+      if (reqId === homeReqId.current) setHomeLoading(false);
     }
   }, [homeRefreshKey]);
 
@@ -276,8 +281,8 @@ function MainApp({ onLogout }) {
       {/* ── Top header ── */}
       <header className="topbar">
         <div className="logo">
-          <img className="mark" src="/logo.png?v=2" alt="Broker Sense" />
-          <div className="wm"><span className="l1">BROKER</span><span className="l2">SENSE</span></div>
+          <img className="mark" src="/logo-mark.png?v=3" alt="" aria-hidden="true" />
+          <img className="brand-logo" src="/logo.png?v=6" alt="Broker Sense" />
         </div>
         <div className="tb-right">
           <button type="button" className="tb-logout" onClick={onLogout}>

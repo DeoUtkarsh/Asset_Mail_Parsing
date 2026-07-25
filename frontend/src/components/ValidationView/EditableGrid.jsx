@@ -23,8 +23,6 @@ import { isAiNormalizedField } from "../../utils/fieldFormat";
 
 const helper = createColumnHelper();
 
-const GRID_BORDER = "1px solid var(--line)";
-
 /** Checkbox (if shown), SR. NO, RECEIVED, and leading identity cols stay fixed when scrolling. */
 function buildPinnedOrder(showCheckboxes) {
   const cols = ["_num", "received", "vessel_name", "imo", "region"];
@@ -438,8 +436,6 @@ export default function EditableGrid({
   const colCount = leafColumns.length;
 
   const pinnedLeafColumns = leafColumns.filter((col) => pinnedColIds.has(col.id));
-  const firstPinnedId = pinnedLeafColumns[0]?.id;
-  const lastPinnedId = pinnedLeafColumns.at(-1)?.id;
   const pinnedColCount = pinnedLeafColumns.length;
   const scrollColCount = colCount - pinnedColCount;
 
@@ -521,77 +517,52 @@ export default function EditableGrid({
 
     return (
       <div className={`col-hdr ${searchable ? "col-hdr-stack" : ""}`}>
-        {draftSelectable ? (
-          <>
-            <div className="col-hdr-top">
-              <input
-                type="checkbox"
-                className="draft-col-check"
-                checked={selectedColumnIds.has(colId)}
-                onChange={() => onToggleColumnSelect?.(colId)}
-                title="Include in draft email"
-              />
-              <span className="col-hdr-label" title={label}>{label}</span>
-            </div>
-            {searchable && (
-              <ColumnHeaderSearch
-                label={label}
-                value={columnSearchInput[colId] ?? ""}
-                onChange={(v) => setColumnSearchValue(colId, v)}
-                onClear={() => clearColumnSearchValue(colId)}
-              />
-            )}
-          </>
-        ) : draftLockedOn ? (
-          <>
-            <div className="col-hdr-top">
-              <input
-                type="checkbox"
-                className="draft-col-check"
-                checked
-                readOnly
-                onClick={(e) => e.preventDefault()}
-                title="Always included in draft email"
-              />
-              <span className="col-hdr-label" title={label}>{label}</span>
-            </div>
-            {searchable && (
-              <ColumnHeaderSearch
-                label={label}
-                value={columnSearchInput[colId] ?? ""}
-                onChange={(v) => setColumnSearchValue(colId, v)}
-                onClear={() => clearColumnSearchValue(colId)}
-              />
-            )}
-          </>
-        ) : (
-          <>
-            <span className="col-hdr-label" title={label}>{label}</span>
-            {searchable && (
-              <ColumnHeaderSearch
-                label={label}
-                value={columnSearchInput[colId] ?? ""}
-                onChange={(v) => setColumnSearchValue(colId, v)}
-                onClear={() => clearColumnSearchValue(colId)}
-              />
-            )}
-          </>
+        <div className="col-hdr-top">
+          {draftSelectable ? (
+            <input
+              type="checkbox"
+              className="draft-col-check"
+              checked={selectedColumnIds.has(colId)}
+              onChange={() => onToggleColumnSelect?.(colId)}
+              title="Include in draft email"
+            />
+          ) : draftLockedOn ? (
+            <input
+              type="checkbox"
+              className="draft-col-check"
+              checked
+              readOnly
+              onClick={(e) => e.preventDefault()}
+              title="Always included in draft email"
+            />
+          ) : null}
+          <span className="col-hdr-label" title={label}>{label}</span>
+        </div>
+        {searchable && (
+          <ColumnHeaderSearch
+            label={label}
+            value={columnSearchInput[colId] ?? ""}
+            onChange={(v) => setColumnSearchValue(colId, v)}
+            onClear={() => clearColumnSearchValue(colId)}
+          />
         )}
       </div>
     );
   };
 
-  // No outer box-shadow on sticky edges — it paints into the next column and looks like an “extra block”
-  const pinnedEdgeStyle = (columnId) => {
-    if (columnId !== lastPinnedId) return {};
-    return { borderRight: "1px solid var(--line)" };
-  };
+  const hasDraftCheck = (columnId) =>
+    showColumnSelect
+    && (
+      DRAFT_LOCKED_COLUMN_IDS.has(columnId)
+      || isDraftColumnSelectable(columnId)
+    );
 
   const headerCellClass = (columnId) => {
     const parts = [];
     if (columnId === "_select") parts.push("col-select");
     if (columnId === "_num") parts.push("col-num");
     if (SINGLE_LINE_COLUMN_IDS.has(columnId)) parts.push("col-compact");
+    if (hasDraftCheck(columnId)) parts.push("has-draft-check");
     if (
       showColumnSelect
       && (
@@ -605,22 +576,19 @@ export default function EditableGrid({
   };
 
   const bodyCellClass = (columnId) => {
-    if (columnId === "_select") return "cell-select";
-    if (columnId === "_num") return "cell-num";
-    if (columnId === "vessel_name") return "cell-vname";
-    if (columnId === "region") return "cell-region";
-    if (SINGLE_LINE_COLUMN_IDS.has(columnId)) return "cell-compact";
-    return "";
+    const parts = [];
+    if (columnId === "_select") parts.push("cell-select");
+    else if (columnId === "_num") parts.push("cell-num");
+    else if (columnId === "vessel_name") parts.push("cell-vname");
+    else if (columnId === "region") parts.push("cell-region");
+    if (SINGLE_LINE_COLUMN_IDS.has(columnId)) parts.push("cell-compact");
+    if (hasDraftCheck(columnId)) parts.push("has-draft-check");
+    return parts.join(" ");
   };
 
   const thStyle = (columnId) => {
     const w = effectiveColWidth(columnId);
     const pinned = pinnedLeftById[columnId];
-    const isDraftOn = showColumnSelect && (
-      DRAFT_LOCKED_COLUMN_IDS.has(columnId)
-      || (isDraftColumnSelectable(columnId) && selectedColumnIds.has(columnId))
-    );
-    const headerBg = isDraftOn ? "var(--brand-d)" : "var(--brand)";
     return {
       width: w,
       minWidth: w,
@@ -628,10 +596,8 @@ export default function EditableGrid({
       position: "sticky",
       top: 0,
       zIndex: pinned != null ? 55 : 40,
-      background: headerBg,
+      background: "#f3f6f8",
       ...(pinned != null ? { left: pinned } : {}),
-      ...(columnId === firstPinnedId ? { borderLeft: GRID_BORDER } : {}),
-      ...(pinned != null ? pinnedEdgeStyle(columnId) : {}),
     };
   };
 
@@ -639,7 +605,6 @@ export default function EditableGrid({
     const w = effectiveColWidth(columnId);
     const pinned = pinnedLeftById[columnId];
     const bg = missing ? "#fffef8" : aiNormalized ? "#f0f7fb" : "#fff";
-    const edge = pinned != null ? pinnedEdgeStyle(columnId) : {};
     const ring = missing
       ? "inset 0 0 0 2px #F8F4D9"
       : aiNormalized
@@ -651,13 +616,11 @@ export default function EditableGrid({
       maxWidth: w,
       ...((missing || aiNormalized) ? { background: bg, borderRadius: 0 } : {}),
       ...(ring ? { boxShadow: ring } : {}),
-      ...(edge.borderRight ? { borderRight: edge.borderRight } : {}),
       ...(pinned != null
         ? {
             position: "sticky",
             left: pinned,
             zIndex: columnId === "_select" ? 26 : 25,
-            ...(columnId === firstPinnedId ? { borderLeft: GRID_BORDER } : {}),
             background: bg,
           }
         : {}),
@@ -737,8 +700,6 @@ export default function EditableGrid({
                           minWidth: pinnedTotalWidth,
                           maxWidth: pinnedTotalWidth,
                           overflow: "hidden",
-                          borderLeft: GRID_BORDER,
-                          borderRight: pinnedColCount > 0 ? "1px solid var(--line)" : undefined,
                         }}
                       >
                         <span

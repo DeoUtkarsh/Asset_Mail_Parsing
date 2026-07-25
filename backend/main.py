@@ -21,18 +21,16 @@ import json
 import logging
 import logging.config
 import uuid
-from pathlib import Path
 from typing import Any
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from sse_starlette.sse import EventSourceResponse
-
-FILES_DIR = Path(__file__).resolve().parent / "attachment_files"
 
 from config import settings
 from database import supabase, get_supabase
+from file_storage import read_bytes, uses_s3
 from models import (
     GenerateDraftRequest,
     SummaryScopeRequest,
@@ -130,6 +128,14 @@ async def startup_event():
                 settings.PG_HOST, settings.PG_PORT, settings.PG_DATABASE)
     logger.info("  MAX_EMAILS/FETCH : %s",
                 settings.MAX_ATTACHMENTS if settings.MAX_ATTACHMENTS > 0 else "ALL")
+    if uses_s3():
+        logger.info(
+            "  FILE STORAGE     : S3 s3://%s/%s/",
+            settings.ATTACHMENTS_S3_BUCKET,
+            (settings.ATTACHMENTS_S3_PREFIX or "attachment_files").strip("/"),
+        )
+    else:
+        logger.info("  FILE STORAGE     : local attachment_files/")
     logger.info("=" * 60)
 
     # Verify PostgreSQL is reachable at startup
@@ -395,15 +401,16 @@ async def get_attachment_file(att_id: str, idx: int):
         entry = next((f for f in files if f.get("idx") == idx), None)
         if not entry:
             raise HTTPException(status_code=404, detail="File not found.")
-        path = FILES_DIR / att_id / entry.get("stored", "")
-        if not path.is_file():
-            raise HTTPException(status_code=404, detail="File missing on disk.")
-        return FileResponse(
-            path,
-            media_type=entry.get("content_type") or "application/octet-stream",
-            filename=entry.get("name") or path.name,
-            content_disposition_type="inline",
-        )
+        stored = entry.get("stored") or ""
+        try:
+            content = read_bytes(att_id, stored)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="File missing in storage.")
+        filename = entry.get("name") or stored or "file"
+        media = entry.get("content_type") or "application/octet-stream"
+        # inline so images/PDFs open in the preview pane
+        headers = {"Content-Disposition": f'inline; filename="{filename}"'}
+        return Response(content=content, media_type=media, headers=headers)
     except HTTPException:
         raise
     except Exception as exc:
@@ -616,9 +623,6 @@ async def summary_vessels(body: SummaryScopeRequest | None = None):
         return await summarize_vessels(ids)
     except Exception as exc:
         logger.error("[API] summary_vessels failed: %s", exc)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 

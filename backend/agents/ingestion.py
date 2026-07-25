@@ -11,7 +11,6 @@ import logging
 import re
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from pathlib import Path
 from typing import Any
 
 from config import settings
@@ -19,25 +18,21 @@ from database import supabase
 from imap_client import fetch_broker_emails
 from sse_manager import sse_manager
 from agents.contact_extract import clean_subject
+from file_storage import save_bytes
 
 logger = logging.getLogger(__name__)
 
-# Where .eml file attachments (Q88 PDFs, images, xlsx, …) are stored on disk
-FILES_DIR = Path(__file__).resolve().parent.parent / "attachment_files"
-
 
 def _save_files(att_id: str, files: list[dict]) -> list[dict]:
-    """Write each file to disk under attachment_files/<att_id>/ and return JSON metadata."""
+    """Persist each file (local disk or S3) and return JSON metadata."""
     if not files:
         return []
-    dest = FILES_DIR / att_id
-    dest.mkdir(parents=True, exist_ok=True)
     meta: list[dict] = []
     for idx, f in enumerate(files):
         safe = (re.sub(r"[^A-Za-z0-9._-]", "_", f.get("filename", "")) or f"file_{idx}")[:120]
         stored = f"{idx}_{safe}"
         try:
-            (dest / stored).write_bytes(f["content"])
+            save_bytes(att_id, stored, f["content"])
             meta.append({
                 "idx": idx,
                 "name": f.get("filename", stored),

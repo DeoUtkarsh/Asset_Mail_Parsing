@@ -8,3 +8,5 @@ __pycache__
 *.log
 .venv
 venv
+attachment_files
+attachment_files/**

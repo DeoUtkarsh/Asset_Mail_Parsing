@@ -16,6 +16,9 @@ export default function HomeView({ data, loading = false, error = "", onNavigate
   const positionsReady = f.positions_ready ?? 0;
   const positionsParsed = f.positions_parsed ?? 0;
   const zones = f.zones ?? 0;
+  // Only blank the page on the first load — Refresh must keep showing current numbers
+  // until the new summary arrives (avoids half-updated "Loading…" + stale KPIs).
+  const showBootLoading = loading && !data;
 
   const todayLabel = new Date().toLocaleDateString("en-GB", {
     weekday: "short",
@@ -49,7 +52,7 @@ export default function HomeView({ data, loading = false, error = "", onNavigate
         <div className="home-error">{error}</div>
       ) : (
         <>
-          <div className="home-card home-overview">
+          <div className="home-overview">
             <div className="home-head">
               <div className="home-head-center">
                 <span className="home-head-pill"><Icon name="anchor" size={15} /> AI Summary</span>
@@ -60,16 +63,34 @@ export default function HomeView({ data, loading = false, error = "", onNavigate
               </button>
             </div>
 
+            <div className="home-kpis">
+              <div className="home-kpi">
+                <Icon name="mail" size={15} className="home-kpi-ic" />
+                <span className="home-kpi-label">Emails received</span>
+                <b className="home-kpi-val">{showBootLoading ? "—" : (f.emails_received ?? 0)}</b>
+              </div>
+              <div className="home-kpi">
+                <Icon name="anchor" size={15} className="home-kpi-ic" />
+                <span className="home-kpi-label">Positions parsed</span>
+                <b className="home-kpi-val">{showBootLoading ? "—" : positionsParsed}</b>
+              </div>
+              <div className="home-kpi">
+                <Icon name="grid" size={15} className="home-kpi-ic" />
+                <span className="home-kpi-label">Ready</span>
+                <b className="home-kpi-val">{showBootLoading ? "—" : `${readiness}%`}</b>
+              </div>
+            </div>
+
             <div className="home-summary">
-              <div className="home-ring" style={{ "--pct": `${readiness}%` }}>
+              <div className="home-ring" style={{ "--pct": `${showBootLoading ? 0 : readiness}%` }}>
                 <div className="home-ring-inner">
-                  <b>{readiness}%</b>
+                  <b>{showBootLoading ? "…" : `${readiness}%`}</b>
                   <span>READY</span>
                 </div>
               </div>
               <div className="home-summary-text">
-                <h2>{loading ? "Loading…" : headline}</h2>
-                <p>{loading ? "Crunching the latest numbers…" : (data?.narrative || "")}</p>
+                <h2>{showBootLoading ? "Loading…" : headline}</h2>
+                <p>{showBootLoading ? "Crunching the latest numbers…" : (data?.narrative || "")}</p>
               </div>
             </div>
 
@@ -95,6 +116,7 @@ export default function HomeView({ data, loading = false, error = "", onNavigate
             </div>
           </div>
 
+          {/* Data cards only — review / positions lists */}
           <div className="home-actions">
             <button
               type="button"
@@ -124,11 +146,11 @@ export default function HomeView({ data, loading = false, error = "", onNavigate
           </div>
 
           <div className="home-agents">
-            <div className="home-agent live">
+            <button type="button" className="home-agent live" onClick={() => onNavigate?.("today")}>
               <div className="home-agent-ic"><Icon name="anchor" size={18} /></div>
               <div className="home-agent-name">Vessel Position Agent</div>
               <div className="home-agent-chip">Open Positions {positionsReady}</div>
-            </div>
+            </button>
 
             <div className="home-agent disabled">
               <div className="home-agent-ic"><Icon name="navigation" size={18} /></div>
