@@ -1,6 +1,6 @@
 # Phase 2 — VPC, subnets, security groups
 
-**Goal:** ALB public; ECS reaches internet (IMAP, NVIDIA); RDS only from ECS.
+**Goal:** ALB public; ECS reaches internet (IMAP, Anthropic); RDS only from ECS.
 
 **Status:** ✅ Done (dev)
 
@@ -26,12 +26,13 @@
 ## Layout (dev)
 
 ```text
-Internet → ALB (public subnets, alb-sg :80/:443)
+Internet → ALB (public subnets, alb-sg :80/:443 from 0.0.0.0/0)
               → ECS Fargate (public subnets, public IP ON, ecs-sg :8000)
-              → RDS (rds-sg :5432 from ecs-sg only)
+              → RDS (rds-sg :5432 from ecs-sg; optional My IP for pgAdmin)
+              → S3 / Anthropic / Gmail IMAP (ECS outbound)
 ```
 
-ECS **public IP = on** so tasks reach Gmail + NVIDIA without NAT.
+ECS **public IP = on** so tasks reach Gmail + Anthropic without NAT.
 
 ---
 
@@ -41,16 +42,16 @@ ECS **public IP = on** so tasks reach Gmail + NVIDIA without NAT.
 
 | Direction | Port | Source |
 |-----------|------|--------|
-| Inbound | **80** | `0.0.0.0/0` (HTTP listener) |
-| Inbound | **443** | `0.0.0.0/0` (future HTTPS) |
-| Outbound | All | default |
+| Inbound | **80**, **443** | **`0.0.0.0/0`** (CloudFront edge IPs need this — My IP alone → CloudFront **504**) |
+
+Do not add PostgreSQL here.
 
 ### `email-parser-ecs-sg`
 
 | Direction | Port | Source |
 |-----------|------|--------|
-| Inbound | **8000** | SG **`email-parser-alb-sg`** |
-| Outbound | All | `0.0.0.0/0` |
+| Inbound | **8000** | `email-parser-alb-sg` |
+| Outbound | All | `0.0.0.0/0` (IMAP, Anthropic, S3, ECR) |
 
 > Do **not** use the VPC **default** SG on ECS tasks.
 
@@ -58,15 +59,16 @@ ECS **public IP = on** so tasks reach Gmail + NVIDIA without NAT.
 
 | Direction | Port | Source |
 |-----------|------|--------|
-| Inbound | **5432** | SG **`email-parser-ecs-sg`** |
-| Inbound | **5432** | **Your IP** (optional, pgAdmin only — **remove for prod**) |
-| Outbound | default | |
+| Inbound | **5432** | SG **`email-parser-ecs-sg`** (required) |
+| Inbound | **5432** | My IP (optional pgAdmin — remove for prod) |
+
+If ECS logs show RDS **connection timed out**, the ecs-sg rule is missing.
 
 ---
 
 ## Prod recommendations
 
-- New VPC with **private subnets** for ECS + RDS, **public** subnets for ALB only, **NAT** for ECS outbound — or keep default VPC pattern only for dev cost savings.
+- New VPC with **private** subnets for ECS + RDS, **public** for ALB, **NAT** for outbound — or keep default VPC only for low-cost dev.
 - Never `0.0.0.0/0` on RDS; no laptop IP in prod.
 
 ---

@@ -28,9 +28,10 @@
 - [ ] Remove pgAdmin **My IP** from `email-parser-rds-sg`
 - [ ] RDS **public access = No** (prod)
 - [ ] WAF: tuned rules (not only monitor mode)
-- [ ] Secrets rotation plan (Gmail, NVIDIA, RDS)
+- [ ] Secrets rotation plan (Gmail, Anthropic, RDS)
 - [ ] No secrets in git / Docker image
 - [ ] Auth or IP allowlist before public launch
+- [ ] Attachments bucket + task role verified ([08-attachments-s3.md](./08-attachments-s3.md))
 
 ### CloudFront / API
 - [ ] Re-add **404 → index.html (200)** only (not 403)
@@ -61,16 +62,22 @@ allow_origins=[
 
 | Symptom | Fix |
 |---------|-----|
-| Task stops, `AccessDenied` secret | IAM `emaildev-*` on execution role |
+| Task stops, `AccessDenied` secret | IAM `emaildev-*` on **execution** role |
 | Task stops, `ResourceNotFound` | Fix secret ARN suffix in task def |
+| Task stops, RDS **connection timed out** | `email-parser-rds-sg`: allow **5432** from **`email-parser-ecs-sg`** |
+| Task stops, `proxies` TypeError | Rebuild image with `httpx==0.27.2` |
 | 0/1 running | CloudWatch logs; stopped reason |
+| Old emails after DB cutover | Confirm secret `PG_DATABASE=email_parser` + force new deployment |
+| S3 AccessDenied on attachments | Set **task role** `ecsTaskRole-email-parser` (not only execution role) |
 
 ### CloudFront / UI
 
 | Symptom | Fix |
 |---------|-----|
 | `/` Access Denied XML | S3 OAC bucket policy |
-| Blank UI, 404 on assets | Upload `assets/` folder under `assets/` prefix |
+| Blank UI, 404 on assets | Upload `assets/` under `assets/` prefix |
+| `/api/health` **504**, ALB OK | `email-parser-alb-sg`: 80/443 from `0.0.0.0/0` |
+| `/api/home/summary` **404** flicker | Old API image — push latest + force deploy |
 | Draft: `Unexpected token '<'` | API returned HTML — error pages or POST to S3 |
 | Draft: HTTP 403 | WAF monitor mode or allow POST |
 | `generate-draft` Server AmazonS3 | `/api/*` not ALB; allow POST; CachingDisabled |
@@ -134,7 +141,7 @@ Use **new** resources in `emailparsing-prod` — do not copy dev secrets.
 [ ] New RDS (private, backups on)
 [ ] New ECR tags (:v1.0.0 not only :latest)
 [ ] New ECS cluster / service
-[ ] New S3 bucket + CloudFront distribution
+[ ] New S3 UI bucket + attachments bucket + CloudFront distribution
 [ ] ACM certificate (us-east-1) + custom domain
 [ ] WAF reviewed with security team
 [ ] Remove all dev temporary SG rules

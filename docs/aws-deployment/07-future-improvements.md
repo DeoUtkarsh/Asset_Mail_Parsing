@@ -53,8 +53,8 @@ Dev uses **monitor mode** because core rules blocked `POST /api/generate-draft`.
 ## Network (prod)
 
 - [ ] Dedicated VPC: private ECS + RDS, public ALB only
-- [ ] NAT Gateway for outbound IMAP/NVIDIA (no public IP on tasks)
-- [ ] VPC endpoints for ECR/Secrets/CloudWatch (optional cost tradeoff)
+- [ ] NAT Gateway for outbound IMAP/Anthropic/S3 (no public IP on tasks)
+- [ ] VPC endpoints for ECR/Secrets/CloudWatch/S3 (optional cost tradeoff)
 
 ---
 
@@ -62,7 +62,7 @@ Dev uses **monitor mode** because core rules blocked `POST /api/generate-draft`.
 
 - [ ] RDS backups + restore drill
 - [ ] Alarms: ECS CPU/memory, ALB 5xx, RDS storage, CloudFront 5xx
-- [ ] Secret rotation runbook (Gmail app password, NVIDIA key, RDS)
+- [ ] Secret rotation runbook (Gmail app password, Anthropic key, RDS)
 - [ ] ALB idle timeout 300–600 s if Fetch timeouts reported
 
 ---

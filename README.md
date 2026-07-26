@@ -1,9 +1,12 @@
-# AI-Powered Shipbroking Email Parser
+# AI-Powered Shipbroking Email Parser (Broker Sense)
 
-An agentic system that fetches owner **position-list emails** from Gmail, extracts vessel
-data with NVIDIA NIM LLMs, lets you review/verify it in an Outlook-style workspace, keeps a
-deduplicated **vessel library**, and generates a polished, zone-grouped position-list email
-draft — all running **locally** against a PostgreSQL database.
+An agentic system that fetches owner **position-list emails** from Gmail (IMAP), extracts
+vessel data with **Anthropic Claude** (text + vision + PDF), lets you review/verify it in an
+Outlook-style workspace, keeps a deduplicated **vessel library**, and generates a polished,
+zone-grouped position-list email draft.
+
+Runs **locally** against PostgreSQL, or on **AWS** (ECS + RDS + S3 + CloudFront) using the
+same Docker image and schema.
 
 ---
 
@@ -13,15 +16,16 @@ draft — all running **locally** against a PostgreSQL database.
 |---|---|
 | Backend | Python 3.11+, FastAPI, uvicorn |
 | Agent framework | LangGraph (Phase 1 + Phase 2 graphs) |
-| LLM | NVIDIA NIM (extraction, drafting, summaries) |
-| Database | **Local PostgreSQL** (via `psycopg2`, managed in pgAdmin) |
-| Real-time | Server-Sent Events (`sse-starlette`) |
+| LLM | **Anthropic Claude** (`ANTHROPIC_API_KEY` / `CLAUDE_MODEL`) |
+| Database | PostgreSQL (`psycopg2`; local pgAdmin or AWS RDS) |
+| Attachment files | Local `attachment_files/` **or** **S3** when `ATTACHMENTS_S3_BUCKET` is set |
+| Real-time | Server-Sent Events (`sse-starlette`) — **1 process / 1 ECS task** |
 | Frontend | React 18 + Vite + TailwindCSS |
 | Data grid | TanStack Table v8 |
 | Map / PDF | Leaflet, jsPDF + autotable, html2canvas |
 
-> The DB layer exposes a Supabase-style client (`pg_db.py`) so all agents use the same
-> `supabase.table(...)` API, but everything is backed by your **local Postgres** — no cloud.
+> The DB layer exposes a Supabase-style client (`pg_db.py`) so agents use
+> `supabase.table(...)`, but storage is always **your Postgres** — no Supabase cloud.
 
 ---
 
@@ -29,61 +33,52 @@ draft — all running **locally** against a PostgreSQL database.
 
 ```
 Gmail (IMAP)
-   │  ⬇ Sync
+   │  ⬇ Fetch Emails (new Message-IDs only; MAX_ATTACHMENTS=0 → all new)
    ▼
-[Phase 1 — LangGraph]  ingestion → extraction (parallel NVIDIA calls) → normalization
-   │                    then: signature extraction + contact extraction
+[Phase 1 — LangGraph]  ingestion → Claude extraction (parallel) → normalization
+   │                    then: signature + contact extraction
+   │                    files → local disk or S3
    ▼
-PostgreSQL  (parent_emails · attachments · vessels · broker_contacts · vessel_library)
+PostgreSQL  (parent_emails · attachments · vessels · broker_contacts · vessel_library · …)
    │
    ▼
-React workspace (6 tabs)
-   │  select + verify vessels
+React workspace (Broker Sense)
+   │  review / verify / position list
    ▼
 [Phase 2 — LangGraph]  drafter → zone-grouped HTML/grid draft → copy / PDF
 ```
 
-### The workspace tabs
+### Workspace tabs
 
-1. **Home** — AI dashboard: pipeline stepper (Received → Parsed → Compiled → Review),
-   readiness ring, "need to review" / positions counts, and agent cards.
-2. **Vessel Extracted Data** — Outlook-style two-pane inbox. Left: one card per attachment
-   (sender, subject, date, status, confidence, verified). Right: inline editable vessel grid
-   + original email body, with **Edit / Save / Verify** and an **All columns** toggle.
-3. **Need to Review** — same layout as above, filtered to attachments with **medium/low
-   confidence** or **failed extraction**.
-4. **Vessel Position List** — the consolidated grid of **verified** vessels across all emails.
-   Supports inline edit, column selection, **Add position** (manual entry with all columns),
-   and **Draft Email** generation (map + zone-grouped draft, copy / PDF).
-5. **Contact List** — structured broker contacts parsed from signatures (editable, CSV export).
-6. **Vessel Libraries List** — deduplicated master list of vessels (name, DWT, year built,
-   tank coating, IMO type, IMO no., vessel type). Auto-filled from the DB; add/edit/delete
-   vessels manually; review **🆕 newly detected** vessels before adding them to the library.
+1. **Home** — AI dashboard: pipeline stepper, readiness, review / positions counts, agent cards.
+2. **Vessel Extracted Data** — Outlook-style inbox + editable vessel grid + original message.
+3. **Need to Review** — medium/low confidence or failed extractions.
+4. **Vessel Position List** — verified vessels; column select; draft email (map + zones).
+5. **Contact List** — broker contacts from signatures.
+6. **Vessel Libraries List** — deduplicated vessel master + “newly detected” review.
 
 ---
 
-## One-Time Setup
+## One-Time Setup (local)
 
 ### 1. PostgreSQL (pgAdmin)
 
 1. Install PostgreSQL + pgAdmin and start the server.
-2. Create a database named **`email_parser`** (or set your own via `PG_DATABASE`).
-3. Schema is created **automatically** by the backend on startup (idempotent DDL in
-   `backend/pg_db.py`). To provision manually instead, run `schema.sql` in the pgAdmin Query Tool.
+2. Create a database (e.g. **`email_parser_dev`** — see `backend/.env.example`).
+3. Schema is created **automatically** on backend startup (`backend/pg_db.py`).  
+   Optional manual DDL: run root `schema.sql` in the Query Tool.
 
 ### 2. Backend
 
 ```powershell
 cd backend
 
-# Copy the example env file and fill in your credentials
 copy .env.example .env
-# Edit .env: Gmail (EMAIL_*), NVIDIA (NVIDIA_*), and PostgreSQL (PG_*)
+# Edit .env: EMAIL_*, ANTHROPIC_*, PG_*
+# Leave ATTACHMENTS_S3_BUCKET empty for local disk storage
 
-# Create + activate a virtualenv
 python -m venv ..\venv
 ..\venv\Scripts\Activate.ps1
-
 pip install -r requirements.txt
 ```
 
@@ -96,9 +91,7 @@ npm install
 
 ---
 
-## Running the App
-
-Open **two terminals**.
+## Running locally
 
 **Terminal 1 — Backend**
 ```powershell
@@ -113,50 +106,45 @@ API: `http://localhost:8000` · Docs: `http://localhost:8000/docs`
 cd frontend
 npm run dev
 ```
-App: `http://localhost:5173` (Vite proxies `/api` → `localhost:8000`).
+App: `http://localhost:5173` (Vite proxies `/api` → `:8000`).
 
 ---
 
 ## Usage Flow
 
-1. **Sync** — pulls owner emails via IMAP, saves attachments, and runs Phase 1 extraction
-   (parallel NVIDIA calls) plus signature/contact extraction. Live progress streams via SSE.
-2. **Review** — open **Vessel Extracted Data** (or **Need to Review**), click an attachment,
-   check the extracted grid against the original email, fix any amber-highlighted cells,
-   then **Verify**. Verified vessels flow into the **Vessel Position List**.
-3. **Compile & Draft** — on **Vessel Position List**, select vessels + columns and click
-   **Draft Email**. Review the zone map and generated draft, then **Copy** or **Download PDF**.
-4. **Maintain the library** — **Vessel Libraries List** stays in sync: add vessels manually,
-   or promote newly detected vessels from the review panel.
+1. **Fetch Emails** — IMAP pull of **new** broker mail; Phase 1 extraction + contacts; SSE progress.
+2. **Review** — fix amber (missing) / blue (AI-normalized) cells; **Verify**.
+3. **Draft** — on Vessel Position List, select rows/columns → **Draft Email** → copy / PDF.
+4. **Library** — maintain Vessel Libraries List; promote newly detected vessels.
 
----
-
-## Utility Scripts
+### Clear data (keep tables + column headers)
 
 ```powershell
-# From backend/ — (re)populate the vessel library from vessels already in the DB.
-# Idempotent: only inserts vessels not already present (matched by IMO, else name).
-python -m scripts.autofill_vessel_library
+cd backend
+..\venv\Scripts\Activate.ps1
+python -m scripts.reset_data --yes
+# also clear vessel_library:
+python -m scripts.reset_data --library --yes
 ```
-(The same auto-fill runs automatically on first startup when the library is empty, and is
-also exposed at `POST /api/vessel-library/autofill`.)
 
 ---
 
 ## AWS Deployment
 
-Full step-by-step runbook: **[docs/aws-deployment/README.md](docs/aws-deployment/README.md)**
-(Phases 0–7: Docker, ECR + secrets, VPC, RDS, ECS + ALB, S3 + CloudFront, hardening,
-future improvements — plus troubleshooting and a prod cutover checklist).
+Live **dev** app: **https://d2bt5vx8sl8jq9.cloudfront.net**
 
-The backend ships with a container image (`backend/Dockerfile` + `backend/.dockerignore`) —
-the **same image runs locally under Docker and on AWS ECS**:
+Full runbook: **[docs/aws-deployment/README.md](docs/aws-deployment/README.md)**  
+Phases 0–8: Docker → ECR + secrets → VPC → RDS → ECS/ALB → UI (S3/CloudFront) → harden → **attachment S3**.
+
+Same image locally and on ECS:
 
 ```powershell
 cd backend
-docker build -t email-parser-backend .
-docker run --env-file .env -p 8000:8000 email-parser-backend
+docker build -t email-parser-api:local .
+docker run --rm -p 8000:8000 --env-file .env -e PG_HOST=host.docker.internal email-parser-api:local
 ```
+
+`.dockerignore` excludes `.env` and local `attachment_files/` (files are not baked into the image).
 
 ---
 
@@ -164,53 +152,30 @@ docker run --env-file .env -p 8000:8000 email-parser-backend
 
 ```
 Email_Parser_Two/
-├── schema.sql                     ← Reference DDL (auto-applied by the backend on startup)
+├── schema.sql                     ← Reference DDL (also applied by backend on startup)
 ├── README.md
-├── .gitignore
+├── docs/aws-deployment/           ← AWS runbook (source of truth for deploy)
 ├── backend/
-│   ├── .env.example               ← Copy to .env and fill in secrets
-│   ├── requirements.txt
-│   ├── main.py                    ← FastAPI app + all routes
-│   ├── config.py                  ← Pydantic settings (reads .env)
-│   ├── database.py                ← DB client singleton (PostgreSQL)
-│   ├── pg_db.py                   ← Supabase-style client + schema DDL (source of truth)
-│   ├── models.py                  ← Pydantic request/response models
-│   ├── column_defs.py             ← Standard columns + legacy→standard mapping
-│   ├── verification.py            ← Attachment verify / send-to-position-list logic
-│   ├── vessel_library.py          ← Vessel library: autofill / list / detect-new / CRUD
-│   ├── imap_client.py             ← Gmail IMAP + .eml text extraction
-│   ├── sse_manager.py             ← SSE event broadcaster
-│   ├── workflow.py                ← LangGraph Phase 1 + Phase 2 graphs
+│   ├── .env.example
+│   ├── Dockerfile / .dockerignore
+│   ├── requirements.txt           ← includes anthropic, boto3, httpx==0.27.2
+│   ├── main.py                    ← FastAPI routes
+│   ├── config.py                  ← Pydantic settings
+│   ├── file_storage.py            ← Local disk or S3 for attachment binaries
+│   ├── database.py / pg_db.py
+│   ├── column_defs.py / verification.py / vessel_library.py
+│   ├── imap_client.py / sse_manager.py / workflow.py / llm.py
 │   ├── scripts/
+│   │   ├── reset_data.py
 │   │   └── autofill_vessel_library.py
 │   └── agents/
-│       ├── ingestion.py           ← Fetch & save emails/attachments
-│       ├── extraction.py          ← Parallel NVIDIA extraction
-│       ├── normalization.py       ← Superset column builder
-│       ├── drafter.py             ← Zone-grouped draft generator
-│       ├── signature_extract.py   ← Signature emails/phones
-│       ├── contact_extract.py     ← Structured broker contacts
-│       ├── confidence_score.py    ← Per-attachment confidence tiers
-│       └── summary.py             ← AI summaries (home / inbox / vessels / contacts)
+│       ├── ingestion.py / extraction.py / normalization.py
+│       ├── drafter.py / signature_extract.py / contact_extract.py
+│       ├── confidence_score.py / summary.py
+│       └── …
 └── frontend/
-    ├── package.json
-    ├── vite.config.js             ← Proxy /api → localhost:8000
-    └── src/
-        ├── App.jsx                ← Shell, rail nav, routing, global state
-        ├── services/api.js        ← All fetch() calls to the backend
-        ├── hooks/useSSE.js        ← EventSource hook
-        ├── lib/positions.js       ← Position helpers (confidence, grouping)
-        ├── utils/                 ← columns, CSV/PDF export, map bounds, previews
-        └── components/
-            ├── HomeView/          ← Home dashboard
-            ├── InboxView/         ← Vessel Extracted Data + Need to Review (PreviewPanel)
-            ├── ValidationView/    ← Vessel Position List (EditableGrid, DraftModal)
-            ├── DraftView/         ← Map + generated draft
-            ├── ContactListView/   ← Contact List
-            ├── VesselLibraryView/ ← Vessel Libraries List
-            ├── AiSummary/         ← Shared AI summary button + modal
-            ├── pages/             ← Settings, EmailDetail
-            └── icons.jsx
+    ├── vite.config.js             ← Proxy /api; allowedHosts for ngrok
+    └── src/                       ← App shell, views, grid, draft, library
 ```
 
 ---
@@ -219,27 +184,24 @@ Email_Parser_Two/
 
 | Variable | Description |
 |---|---|
-| `EMAIL_USER` | Your Gmail address |
-| `EMAIL_PASSWORD` | Gmail **App Password** (16 chars, not your login password) |
-| `IMAP_SERVER` / `IMAP_PORT` | `imap.gmail.com` / `993` |
-| `FILTER_SENDER` | Only fetch emails from this address |
-| `TARGET_SUBJECT` | Subject substring to match |
-| `NVIDIA_API_KEY` | Your NVIDIA NIM API key |
-| `NVIDIA_API_BASE_URL` | NVIDIA base URL (default `https://integrate.api.nvidia.com/v1`) |
-| `NVIDIA_LLM_MODEL` | Model for extraction / drafting / summaries |
-| `NVIDIA_PARSE_MODEL` | Model for document parsing |
-| `PG_HOST` / `PG_PORT` | PostgreSQL host / port (default `localhost` / `5432`) |
-| `PG_DATABASE` | Database name (default `email_parser`) |
-| `PG_USER` / `PG_PASSWORD` | PostgreSQL credentials |
-| `MAX_ATTACHMENTS` | Cap attachments processed per run (`0` = all) |
+| `EMAIL_USER` / `EMAIL_PASSWORD` | Mailbox + Gmail **App Password** |
+| `IMAP_SERVER` / `IMAP_PORT` | Default `imap.gmail.com` / `993` |
+| `BLOCKED_SENDER_PATTERNS` | Comma-separated From substrings to skip (noreply, etc.) |
+| `ANTHROPIC_API_KEY` | Anthropic API key (**required**) |
+| `CLAUDE_MODEL` | e.g. `claude-haiku-4-5` |
+| `PG_HOST` / `PG_PORT` / `PG_DATABASE` / `PG_USER` / `PG_PASSWORD` | Postgres |
+| `MAX_ATTACHMENTS` | Cap new emails per fetch (`0` = all new) |
+| `ATTACHMENTS_S3_BUCKET` | Empty = local `attachment_files/`; set on AWS for durable storage |
+| `ATTACHMENTS_S3_PREFIX` | Default `attachment_files` |
+| `AWS_REGION` | e.g. `ap-southeast-1` (used by boto3 when S3 is enabled) |
+
+Legacy / unused by current code (safe to leave in old secrets): `FILTER_SENDER`, `TARGET_SUBJECT`, `NVIDIA_*`.
 
 ---
 
 ## Gmail App Password
 
-Standard Gmail passwords don't work with IMAP. Create a **16-character App Password**:
-
-1. Go to [myaccount.google.com/security](https://myaccount.google.com/security).
-2. Enable **2-Step Verification**.
-3. Under **App Passwords**, create one for "Mail".
-4. Paste the 16-character code (no spaces) as `EMAIL_PASSWORD` in `.env`.
+1. [Google Account → Security](https://myaccount.google.com/security)  
+2. Enable **2-Step Verification**  
+3. Create an **App Password** for Mail  
+4. Paste the 16-character code as `EMAIL_PASSWORD` (no spaces)

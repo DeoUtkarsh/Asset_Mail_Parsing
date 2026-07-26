@@ -1,6 +1,7 @@
-# Phase 3 — RDS PostgreSQL + schema + migration
+# Phase 3 — RDS PostgreSQL + schema
 
-**Goal:** PostgreSQL on RDS; app uses `PG_*` from Secrets Manager.
+**Goal:** PostgreSQL on RDS; app uses `PG_*` from Secrets Manager. Tables are created by the
+backend on startup (`pg_db.py`) when it can connect.
 
 **Status:** ✅ Done (dev)
 
@@ -14,77 +15,97 @@
 | Engine | PostgreSQL |
 | Class | `db.t3.micro` (dev) |
 | Endpoint | `email-parser-db.cnc8ykk0yjwb.ap-southeast-1.rds.amazonaws.com` |
-| Database name | **`email_parser_import`** |
+| **Active app database** | **`email_parser`** (underscore) |
+| Legacy / backup database | `email_parser_import` (old import data — app no longer points here) |
 | Master user | `postgres` |
-| Public access | **Was enabled** for pgAdmin during setup — **disable for prod** |
+| Public access | Often **Yes** temporarily for pgAdmin — prefer **No** for prod |
+| Security group | `email-parser-rds-sg` |
 
 ---
 
 ## Checklist
 
-- [x] RDS created in default VPC subnet group
-- [x] `schema.sql` applied / data restored
-- [x] **`emaildev`** updated: `PG_HOST`, `PG_DATABASE=email_parser_import`, `PG_PASSWORD`
-- [x] ECS health: `"db":"ok"` via ALB and CloudFront
+- [x] RDS in default VPC subnet group
+- [x] Database **`email_parser`** created (`CREATE DATABASE email_parser;`)
+- [x] `emaildev`: `PG_HOST`, `PG_DATABASE=email_parser`, `PG_PASSWORD`
+- [x] `email-parser-rds-sg` allows **5432** from **`email-parser-ecs-sg`**
+- [x] ECS health `"db":"ok"`; startup creates tables automatically
 
 ---
 
-## Step 3.1 — Create RDS
+## Step 3.1 — Create RDS (already done in this account)
 
 | Setting | Dev |
 |---------|-----|
 | Identifier | `email-parser-db` |
 | VPC | `vpc-03daed954804ba2d9` |
-| Public access | Yes (dev admin only) → **No for prod** |
 | Security group | `email-parser-rds-sg` |
 
 ---
 
-## Step 3.2 — Schema and data
+## Step 3.2 — Create / refresh the app database
 
-```powershell
-# Fresh schema
-psql -h <RDS_ENDPOINT> -U postgres -d postgres -f schema.sql
+Connect with pgAdmin (SSL **Require**) to maintenance DB `postgres`, then:
 
-# Or restore to separate DB (dev used email_parser_import)
-pg_restore -h <RDS_ENDPOINT> -U postgres -d email_parser_import --no-owner backup.dump
+```sql
+CREATE DATABASE email_parser;
 ```
 
-**pgAdmin:** SSL **Require**; user `postgres`; not `rdsadmin`.
+You normally **do not** need to run `schema.sql` by hand. When ECS starts with
+`PG_DATABASE=email_parser`, the API runs idempotent DDL and seeds column definitions.
 
-**Restore note:** If tables already exist from `schema.sql`, use `--data-only` or restore into empty DB.
+Optional manual apply:
+
+```powershell
+psql -h email-parser-db.cnc8ykk0yjwb.ap-southeast-1.rds.amazonaws.com -U postgres -d email_parser -f schema.sql
+```
 
 ---
 
-## Step 3.3 — Update secret `emaildev`
+## Step 3.3 — Security group (critical)
+
+**`email-parser-rds-sg` inbound must include:**
+
+| Type | Port | Source |
+|------|------|--------|
+| PostgreSQL | 5432 | Security group **`email-parser-ecs-sg`** (`sg-…`) |
+| PostgreSQL | 5432 | My IP (optional, for pgAdmin only) |
+
+If ECS logs show **`connection timed out`** to RDS, the ECS→RDS rule is missing.
+My IP alone is enough for pgAdmin but **not** for Fargate tasks.
+
+---
+
+## Step 3.4 — Update secret `emaildev`
 
 ```text
 PG_HOST=email-parser-db.cnc8ykk0yjwb.ap-southeast-1.rds.amazonaws.com
 PG_PORT=5432
-PG_DATABASE=email_parser_import
+PG_DATABASE=email_parser
 PG_USER=postgres
 PG_PASSWORD=<rds-master-password>
 ```
 
-Force new ECS deployment after secret change.
+> Use **`email_parser`** (underscore). A hyphenated name like `email-parser` is a **different** database.
+
+Force a new ECS deployment after changing the secret.
 
 ---
 
-## Step 3.4 — Admin access (dev)
+## Step 3.5 — Admin access (dev)
 
 | Method | Notes |
 |--------|--------|
-| Public access + My IP on `rds-sg` | Used for pgAdmin — remove IP rule when done |
-| ECS port-forward / bastion | Preferred for prod |
+| Public access + My IP on `rds-sg` | Convenient for pgAdmin — remove when done |
+| ECS only (private) | Preferred for prod |
 
 ---
 
 ## Prod checklist
 
 - [ ] `Public access = No`
-- [ ] Private subnets in DB subnet group
-- [ ] Automated backups + retention
-- [ ] Strong password in prod-only secret
-- [ ] No pgAdmin from internet
+- [ ] Private subnets; no laptop IP on `rds-sg`
+- [ ] Automated backups
+- [ ] Separate prod secret / password
 
 **Next:** [04-backend-ecs-alb.md](./04-backend-ecs-alb.md)

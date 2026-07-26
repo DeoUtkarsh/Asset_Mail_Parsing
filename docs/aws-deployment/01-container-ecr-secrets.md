@@ -10,11 +10,12 @@
 
 ## Checklist
 
-- [x] `backend/Dockerfile` + `.dockerignore`
+- [x] `backend/Dockerfile` + `.dockerignore` (excludes `.env` and `attachment_files/`)
 - [x] Local build + health with `PG_HOST=host.docker.internal`
 - [x] ECR `email-parser-api:latest` in `ap-southeast-1`
-- [x] Secrets Manager secret **`emaildev`** (16 keys)
-- [x] IAM role `ecsTaskExecutionRole-email-parser` + policy on `emaildev-*`
+- [x] Secrets Manager secret **`emaildev`**
+- [x] IAM **execution** role `ecsTaskExecutionRole-email-parser` + `GetSecretValue` on `emaildev-*`
+- [x] IAM **task** role `ecsTaskRole-email-parser` for S3 (see [08-attachments-s3.md](./08-attachments-s3.md))
 
 ---
 
@@ -23,11 +24,12 @@
 | Item | Value |
 |------|--------|
 | ECR URI | `867492128821.dkr.ecr.ap-southeast-1.amazonaws.com/email-parser-api:latest` |
-| Secret name | **`emaildev`** |
+| Secret name | **`emaildev`** (not the unused `email-parser/dev`) |
 | Secret ARN (base) | `arn:aws:secretsmanager:ap-southeast-1:867492128821:secret:emaildev-4sFMnJ` |
 | Execution role | `ecsTaskExecutionRole-email-parser` |
+| Task role | `ecsTaskRole-email-parser` |
 
-> Secret name in early notes was `email-parser/dev` — **deployed secret is `emaildev`**. Use the name and ARN suffix from the console.
+> **Always copy the ARN suffix from the console** — do not invent characters after `4sFMnJ`.
 
 ---
 
@@ -35,10 +37,10 @@
 
 ```text
 backend/Dockerfile
-backend/.dockerignore   # excludes .env
+backend/.dockerignore   # .env, venv, attachment_files/
 ```
 
-Build context: **`backend/`** folder only.
+Build context: **`backend/`** only.
 
 ---
 
@@ -73,18 +75,12 @@ aws sso login --profile emailparser-dev
 aws sts get-caller-identity --profile emailparser-dev
 ```
 
-PowerShell (avoid `$PROFILE` — reserved):
-
-```powershell
-$AwsProfile = "emailparser-dev"
-$REGION = "ap-southeast-1"
-```
-
 ---
 
 ## Step 1.4 — ECR push
 
 ```powershell
+$AwsProfile = "emailparser-dev"
 $ACCOUNT = "867492128821"
 $REGION = "ap-southeast-1"
 aws ecr get-login-password --region $REGION --profile $AwsProfile | docker login --username AWS --password-stdin "$ACCOUNT.dkr.ecr.$REGION.amazonaws.com"
@@ -94,38 +90,40 @@ docker push "$ACCOUNT.dkr.ecr.$REGION.amazonaws.com/email-parser-api:latest"
 
 ---
 
-## Step 1.5 — Secrets Manager
+## Step 1.5 — Secrets Manager (`emaildev`)
 
-**Console:** Secrets Manager → **Store a new secret** → key/value → name: **`emaildev`**
+### Required keys (current app)
 
-### Required keys (16)
-
-| Key | Dev notes |
-|-----|-----------|
-| `EMAIL_USER` | Gmail |
+| Key | Notes |
+|-----|--------|
+| `EMAIL_USER` | Broker mailbox |
 | `EMAIL_PASSWORD` | Gmail app password |
-| `FILTER_SENDER` | |
-| `TARGET_SUBJECT` | |
 | `IMAP_SERVER` | `imap.gmail.com` |
 | `IMAP_PORT` | `993` |
-| `NVIDIA_API_KEY` | |
-| `NVIDIA_API_BASE_URL` | |
-| `NVIDIA_LLM_MODEL` | |
-| `NVIDIA_PARSE_MODEL` | |
-| `PG_HOST` | RDS endpoint (Phase 3), **not** `localhost` |
+| `BLOCKED_SENDER_PATTERNS` | Optional; defaults in code if omitted |
+| `ANTHROPIC_API_KEY` | **Required** |
+| `CLAUDE_MODEL` | e.g. `claude-haiku-4-5` |
+| `PG_HOST` | RDS endpoint (**not** `localhost`) |
 | `PG_PORT` | `5432` |
-| `PG_DATABASE` | **`email_parser_import`** (dev) |
+| `PG_DATABASE` | **`email_parser`** (underscore) |
 | `PG_USER` | e.g. `postgres` |
 | `PG_PASSWORD` | RDS master password |
-| `MAX_ATTACHMENTS` | `0` |
+| `MAX_ATTACHMENTS` | `0` = all new emails |
+| `ATTACHMENTS_S3_BUCKET` | `email-parser-mail` |
+| `ATTACHMENTS_S3_PREFIX` | `attachment_files` |
+| `AWS_REGION` | `ap-southeast-1` |
+
+### Optional / legacy (ignored by current code)
+
+`FILTER_SENDER`, `TARGET_SUBJECT`, `NVIDIA_*` — may remain in the secret for compatibility with older task definitions.
 
 ---
 
 ## Step 1.6 — IAM execution role
 
-1. **IAM** → **Roles** → create **`ecsTaskExecutionRole-email-parser`**
+1. Create **`ecsTaskExecutionRole-email-parser`**
 2. Attach **`AmazonECSTaskExecutionRolePolicy`**
-3. Inline policy (adjust secret name for prod):
+3. Inline policy:
 
 ```json
 {
@@ -138,25 +136,26 @@ docker push "$ACCOUNT.dkr.ecr.$REGION.amazonaws.com/email-parser-api:latest"
 }
 ```
 
+Task **role** for S3: see [08-attachments-s3.md](./08-attachments-s3.md).
+
 ---
 
 ## ECS task definition — secret injection
 
-Console only shows **Value** / **ValueFrom**. For each env var:
+For each key: **ValueFrom** =
 
-- **Type:** `ValueFrom`
-- **Value:** `arn:aws:secretsmanager:ap-southeast-1:867492128821:secret:emaildev-4sFMnJ:EMAIL_USER::`
+```text
+arn:aws:secretsmanager:ap-southeast-1:867492128821:secret:emaildev-4sFMnJ:KEY_NAME::
+```
 
-Replace `EMAIL_USER` with each key. **Copy ARN suffix from console** (`4sFMnJ` — do not add extra characters like `yh`).
-
-Full list: see [04-backend-ecs-alb.md](./04-backend-ecs-alb.md#step-42--environment-variables-valuefrom).
+Full list: [04-backend-ecs-alb.md](./04-backend-ecs-alb.md#step-42--environment-variables-valuefrom).
 
 ---
 
 ## Phase 1 complete when
 
 - [x] ECR has `latest`
-- [x] Secret `emaildev` has RDS `PG_*`
+- [x] `emaildev` has Anthropic + RDS `PG_*` + S3 keys
 - [x] Execution role can read secret
 
 **Next:** [02-network-vpc.md](./02-network-vpc.md)
