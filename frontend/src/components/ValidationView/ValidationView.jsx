@@ -18,6 +18,8 @@ import {
   sortVesselsBySourceOrder,
 } from "../../utils/standardColumns";
 import { formatStandardField, formatDwtSdwt, formatCbm, formatYearBuilt, parseAiNormalized, formatAiNormalized } from "../../utils/fieldFormat";
+import RegionSelect from "../RegionSelect";
+import VesselTypeSelect, { isImoTypeValue } from "../VesselTypeSelect";
 import CellHighlightLegend from "../CellHighlightLegend";
 
 const RECEIVED_COL = { id: "received", header: "RECEIVED", read_only: true, storage: "derived" };
@@ -419,7 +421,12 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
     <div className="vgrid-root">
 
       <div className="vgrid-head">
-        <h2>Vessel Position List</h2>
+        <div className="vgrid-title">
+          <h2>Vessel Position List</h2>
+          <span className="vgrid-sub">
+            Select vessel and click on draft mail, your position list is ready to send
+          </span>
+        </div>
 
         <div className="vgrid-actions">
           <span className={`vgrid-saved ${savedMsg ? "show" : ""}`}>✓ Saved</span>
@@ -671,7 +678,11 @@ function AddPositionModal({ columns, saving, onClose, onSave }) {
   const submit = (e) => {
     e.preventDefault();
     if (saving) return;
-    onSave(form);
+    const cleaned = { ...form };
+    let vt = String(cleaned.vessel_type || "").trim();
+    if (vt === "Others" || isImoTypeValue(vt)) vt = "";
+    cleaned.vessel_type = vt;
+    onSave(cleaned);
   };
 
   return createPortal(
@@ -695,6 +706,30 @@ function AddPositionModal({ columns, saving, onClose, onSave }) {
         <div className="vlib-modal-grid">
           {visibleColumns.map((c) => {
             const key = fieldKey(c);
+            if (c.storage === "region" || c.id === "region") {
+              return (
+                <label key={c.id} className="vlib-field">
+                  <span>{c.header}</span>
+                  <RegionSelect
+                    value={form[key] || ""}
+                    onChange={(val) => set(key, val)}
+                    fieldSize
+                  />
+                </label>
+              );
+            }
+            if (c.id === "vessel_type") {
+              return (
+                <label key={c.id} className="vlib-field">
+                  <span>{c.header}</span>
+                  <VesselTypeSelect
+                    value={form[key] || ""}
+                    onChange={(val) => set(key, val)}
+                    fieldSize
+                  />
+                </label>
+              );
+            }
             return (
               <label key={c.id} className="vlib-field">
                 <span>{c.header}</span>

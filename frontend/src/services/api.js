@@ -137,6 +137,9 @@ export const getVesselLibrary = () => request("GET", "/vessel-library");
 /** Add a vessel to the library (manual entry or promotion from review). */
 export const addVesselLibrary = (fields) => request("POST", "/vessel-library", fields);
 
+/** Add all new (unreviewed) vessels from position lists into the library. */
+export const autofillVesselLibrary = () => request("POST", "/vessel-library/autofill");
+
 /** Update one vessel in the library. */
 export const updateVesselLibrary = (id, fields) => request("PUT", `/vessel-library/${id}`, fields);
 

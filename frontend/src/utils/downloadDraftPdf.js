@@ -2,7 +2,7 @@ import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import html2canvas from "html2canvas";
 import L from "leaflet";
-import { ZONE_ORDER } from "./zoneMapping";
+import { ZONE_ORDER, regionToZone } from "./zoneMapping";
 import { mapViewFromZones, leafletBoundsFromZones } from "./mapBounds";
 import {
   resolveStandardCellValue,
@@ -22,88 +22,152 @@ const ZONE_COLORS = {
   UNSPECIFIED: [148, 163, 184],
 };
 
-const STATIC_MAP_MARKER = {
-  "STRAITS/SEA": "blue",
-  "FAR EAST": "orange",
-  INDIA: "green",
-  "AG/MIDDLE EAST": "purple",
-  "MED/BLACK SEA": "teal",
-  EUROPE: "lightblue1",
-  AFRICA: "red",
-  AMERICAS: "orange",
-  OCEANIA: "pink",
-  UNSPECIFIED: "gray",
+const ZONE_COLORS_CSS = {
+  "STRAITS/SEA": "#0ea5e9",
+  "FAR EAST": "#f59e0b",
+  INDIA: "#10b981",
+  "AG/MIDDLE EAST": "#8b5cf6",
+  "MED/BLACK SEA": "#14b8a6",
+  EUROPE: "#3b82f6",
+  AFRICA: "#ef4444",
+  AMERICAS: "#f97316",
+  OCEANIA: "#ec4899",
+  UNSPECIFIED: "#94a3b8",
 };
 
 function groupVesselsByZone(vessels) {
+  /** Group by trade zone from region — same logic as the draft email, not attachment filename. */
   const byZone = {};
   for (const v of vessels || []) {
-    const zone = v.filename || v.attachment_id || "UNSPECIFIED";
+    const zone = regionToZone(v.region);
     if (!byZone[zone]) byZone[zone] = [];
     byZone[zone].push(v);
   }
   return byZone;
 }
 
-function buildStaticMapUrl(zones) {
-  const view = mapViewFromZones(zones);
-  const markerStr = (zones || [])
-    .map((z) => {
-      const colour = STATIC_MAP_MARKER[z.zone || z.name] || "gray";
-      return `${z.lat},${z.lng},${colour}`;
-    })
-    .join("|");
-
-  const params = new URLSearchParams({
-    center: `${view.lat},${view.lng}`,
-    zoom: String(view.zoom),
-    size: `${view.size.w}x${view.size.h}`,
-    maptype: "mapnik",
-  });
-  if (markerStr) params.set("markers", markerStr);
-  return `https://staticmap.openstreetmap.de/staticmap.php?${params.toString()}`;
-}
-
-async function fetchStaticMapImage(zones) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 4000);
-  try {
-    const res = await fetch(buildStaticMapUrl(zones), {
-      mode: "cors",
-      signal: controller.signal,
-    });
-    if (!res.ok) throw new Error(`Map fetch failed (${res.status})`);
-    const blob = await res.blob();
-    return await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result);
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
-  } catch (err) {
-    console.warn("Static map fetch failed:", err);
-    return null;
-  } finally {
-    clearTimeout(timer);
+function orderedZoneKeys(byZone) {
+  const keys = ZONE_ORDER.filter((z) => byZone[z]?.length);
+  for (const z of Object.keys(byZone)) {
+    if (!ZONE_ORDER.includes(z) && byZone[z]?.length) keys.push(z);
   }
+  return keys;
 }
 
-async function waitForMapTiles(leafletEl, maxMs = 2500) {
+function mercatorXY(lat, lng, zoom) {
+  const n = 2 ** zoom;
+  const x = ((lng + 180) / 360) * 256 * n;
+  const sin = Math.sin((lat * Math.PI) / 180);
+  const clamped = Math.max(Math.min(sin, 0.9999), -0.9999);
+  const y =
+    (0.5 - Math.log((1 + clamped) / (1 - clamped)) / (4 * Math.PI)) * 256 * n;
+  return { x, y };
+}
+
+/**
+ * Always-available map for PDF: ocean background + zone pins.
+ * Avoids Leaflet tile CORS / collapsed-panel capture failures.
+ */
+function renderZonesMapImage(zones, width = 1100, height = 360) {
+  if (typeof document === "undefined" || !zones?.length) return null;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+
+  const view = mapViewFromZones(zones);
+  const center = mercatorXY(view.lat, view.lng, view.zoom);
+
+  // Ocean / map panel
+  const grad = ctx.createLinearGradient(0, 0, 0, height);
+  grad.addColorStop(0, "#c5e4f0");
+  grad.addColorStop(1, "#9ec9dc");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, width, height);
+
+  // Soft grid (map feel without external tiles)
+  ctx.strokeStyle = "rgba(255,255,255,0.35)";
+  ctx.lineWidth = 1;
+  for (let i = 1; i < 8; i++) {
+    const x = (width / 8) * i;
+    const y = (height / 6) * i;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, height);
+    ctx.stroke();
+    if (i < 6) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(width, y);
+      ctx.stroke();
+    }
+  }
+
+  const toPx = (lat, lng) => {
+    const p = mercatorXY(lat, lng, view.zoom);
+    return {
+      x: width / 2 + (p.x - center.x),
+      y: height / 2 + (p.y - center.y),
+    };
+  };
+
+  for (const z of zones) {
+    const { x, y } = toPx(z.lat, z.lng);
+    if (x < -40 || y < -40 || x > width + 40 || y > height + 40) continue;
+    const color = ZONE_COLORS_CSS[z.zone || z.name] || ZONE_COLORS_CSS.UNSPECIFIED;
+
+    // Pin shadow
+    ctx.beginPath();
+    ctx.ellipse(x, y + 2, 7, 3, 0, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(0,0,0,0.18)";
+    ctx.fill();
+
+    // Pin body (teardrop-ish circle)
+    ctx.beginPath();
+    ctx.arc(x, y - 4, 9, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "#fff";
+    ctx.stroke();
+
+    // Count
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 10px Helvetica, Arial, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(String(z.count ?? ""), x, y - 4);
+  }
+
+  // Border
+  ctx.strokeStyle = "#94a3b8";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(1, 1, width - 2, height - 2);
+
+  return canvas.toDataURL("image/png");
+}
+
+async function waitForMapTiles(leafletEl, maxMs = 4000) {
   const start = Date.now();
   return new Promise((resolve) => {
     const tick = () => {
-      const imgs = leafletEl.querySelectorAll(".leaflet-tile-pane img");
+      const imgs = leafletEl.querySelectorAll(".leaflet-tile-pane img.leaflet-tile");
       const ready =
         imgs.length > 0 &&
         [...imgs].every((img) => img.complete && img.naturalWidth > 0);
-      if (ready || Date.now() - start > maxMs) resolve();
+      if (ready || Date.now() - start > maxMs) resolve(ready);
       else requestAnimationFrame(tick);
     };
     tick();
   });
 }
 
-/** Screenshot the live Leaflet map exactly as shown in the draft modal. */
+/**
+ * Composite Leaflet OSM tiles + zone pins onto a canvas (real map look for PDF).
+ * Avoids html2canvas CORS/transform issues.
+ */
 export async function captureLeafletMap(mapWrapperEl, leafletMap, zones) {
   if (!mapWrapperEl) return null;
   const leaflet = mapWrapperEl.querySelector(".leaflet-container");
@@ -119,27 +183,69 @@ export async function captureLeafletMap(mapWrapperEl, leafletMap, zones) {
         leafletMap.fitBounds(L.latLngBounds(points), { padding: [32, 32], maxZoom: 5 });
       }
       leafletMap.invalidateSize();
-      await new Promise((r) => setTimeout(r, 300));
+      await new Promise((r) => setTimeout(r, 450));
     } else if (leafletMap) {
       leafletMap.invalidateSize();
-      await new Promise((r) => setTimeout(r, 150));
+      await new Promise((r) => setTimeout(r, 200));
     }
-    await waitForMapTiles(leaflet);
-    const canvas = await html2canvas(leaflet, {
-      scale: 2,
-      useCORS: true,
-      allowTaint: false,
-      backgroundColor: "#aad3df",
-      logging: false,
-      ignoreElements: (node) =>
-        node.classList?.contains("leaflet-control-container") ||
-        node.classList?.contains("leaflet-tooltip-pane"),
-      onclone: (clonedDoc) => {
-        clonedDoc.querySelectorAll(".leaflet-tooltip-pane").forEach((el) => {
-          el.style.display = "none";
+
+    const tilesReady = await waitForMapTiles(leaflet, 4500);
+    const mapRect = leaflet.getBoundingClientRect();
+    if (mapRect.width < 40 || mapRect.height < 40) return null;
+
+    const scale = 2;
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(mapRect.width * scale));
+    canvas.height = Math.max(1, Math.round(mapRect.height * scale));
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return null;
+    ctx.scale(scale, scale);
+    ctx.fillStyle = "#aad3df";
+    ctx.fillRect(0, 0, mapRect.width, mapRect.height);
+
+    let tilesDrawn = 0;
+    const tiles = leaflet.querySelectorAll(".leaflet-tile-pane img.leaflet-tile");
+    for (const img of tiles) {
+      if (!img.complete || img.naturalWidth === 0) continue;
+      const r = img.getBoundingClientRect();
+      const x = r.left - mapRect.left;
+      const y = r.top - mapRect.top;
+      try {
+        ctx.drawImage(img, x, y, r.width, r.height);
+        tilesDrawn += 1;
+      } catch {
+        /* cross-origin tile — skip */
+      }
+    }
+
+    // If tile draw failed (CORS), fall back to html2canvas
+    if (tilesDrawn === 0) {
+      try {
+        const shot = await html2canvas(leaflet, {
+          scale: 2,
+          useCORS: true,
+          allowTaint: false,
+          backgroundColor: "#aad3df",
+          logging: false,
+          ignoreElements: (node) =>
+            node.classList?.contains("leaflet-control-container") ||
+            node.classList?.contains("leaflet-tooltip-pane"),
         });
-      },
-    });
+        // Still redraw pins on top for clarity
+        const out = document.createElement("canvas");
+        out.width = shot.width;
+        out.height = shot.height;
+        const octx = out.getContext("2d");
+        octx.drawImage(shot, 0, 0);
+        drawPinsOnCtx(octx, leafletMap, zones, shot.width / mapRect.width);
+        return out.toDataURL("image/png");
+      } catch (err) {
+        console.warn("html2canvas map fallback failed:", err);
+        if (!tilesReady) return null;
+      }
+    }
+
+    drawPinsOnCtx(ctx, leafletMap, zones, 1);
     return canvas.toDataURL("image/png");
   } catch (err) {
     console.warn("Leaflet capture failed:", err);
@@ -149,10 +255,47 @@ export async function captureLeafletMap(mapWrapperEl, leafletMap, zones) {
   }
 }
 
+function drawPinsOnCtx(ctx, leafletMap, zones, cssToCanvas = 1) {
+  if (!leafletMap || !zones?.length) return;
+  const s = cssToCanvas || 1;
+  for (const z of zones) {
+    let pt;
+    try {
+      pt = leafletMap.latLngToContainerPoint([z.lat, z.lng]);
+    } catch {
+      continue;
+    }
+    const x = pt.x * s;
+    const y = pt.y * s;
+    const r = 8 * Math.min(Math.max(s, 1), 2);
+    const color = ZONE_COLORS_CSS[z.zone || z.name] || ZONE_COLORS_CSS.UNSPECIFIED;
+
+    ctx.beginPath();
+    ctx.arc(x, y - 4 * s, r, 0, Math.PI * 2);
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.lineWidth = 2 * Math.min(s, 2);
+    ctx.strokeStyle = "#fff";
+    ctx.stroke();
+
+    ctx.fillStyle = "#fff";
+    ctx.font = `bold ${10 * Math.min(s, 2)}px Helvetica, Arial, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(String(z.count ?? ""), x, y - 4 * s);
+  }
+}
+
 async function resolveMapImage(zones, mapWrapperEl, leafletMap) {
-  const live = await captureLeafletMap(mapWrapperEl, leafletMap, zones);
-  if (live) return live;
-  return fetchStaticMapImage(zones);
+  // Prefer the live Leaflet map (same as draft modal)
+  try {
+    const live = await captureLeafletMap(mapWrapperEl, leafletMap, zones);
+    if (live) return live;
+  } catch (err) {
+    console.warn("Live map capture failed:", err);
+  }
+  // Fallback: drawn pin map (never blank)
+  return renderZonesMapImage(zones);
 }
 
 function fitImageInBox(doc, imgData, x, y, maxW, maxH) {
@@ -168,38 +311,41 @@ function fitImageInBox(doc, imgData, x, y, maxW, maxH) {
   return { w, h };
 }
 
-function drawLegendBox(doc, zones, x, y, w, h) {
-  doc.setFillColor(255, 255, 255);
-  doc.setDrawColor(186, 230, 253);
-  doc.setLineWidth(0.3);
-  doc.roundedRect(x, y, w, h, 2, 2, "FD");
-
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(8);
-  doc.setTextColor(3, 105, 161);
-  doc.text("Zones", x + 4, y + 6);
-
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(8.5);
-  doc.setTextColor(12, 74, 110);
-
-  let legY = y + 12;
+/** Compact legend row directly under the map (modal-style, minimal height). */
+function drawLegendBelow(doc, zones, x, y, maxW) {
   const sorted = [...(zones || [])].sort((a, b) => {
     const ia = ZONE_ORDER.indexOf(a.zone || a.name);
     const ib = ZONE_ORDER.indexOf(b.zone || b.name);
     return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
   });
+  if (!sorted.length) return 0;
+
+  const rowH = 7;
+  doc.setFillColor(255, 255, 255);
+  doc.setDrawColor(186, 230, 253);
+  doc.setLineWidth(0.25);
+  doc.roundedRect(x, y, maxW, rowH + 2, 1.5, 1.5, "FD");
+
+  let cursorX = x + 3;
+  const midY = y + rowH / 2 + 1.2;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(7.5);
+  doc.setTextColor(12, 74, 110);
 
   for (const z of sorted) {
+    const label = `${z.name} (${z.count})`;
+    const labelW = doc.getTextWidth(label);
+    const chipW = 5 + labelW + 4;
+    if (cursorX + chipW > x + maxW - 2) break;
+
     const rgb = ZONE_COLORS[z.zone || z.name] || ZONE_COLORS.UNSPECIFIED;
     doc.setFillColor(...rgb);
-    doc.circle(x + 5, legY - 1.3, 2, "F");
-    doc.text(`${z.name}`, x + 9, legY);
-    doc.setFont("helvetica", "bold");
-    doc.text(`(${z.count})`, x + w - 4, legY, { align: "right" });
-    doc.setFont("helvetica", "normal");
-    legY += 6.5;
+    doc.circle(cursorX + 2, midY - 1.2, 1.6, "F");
+    doc.text(label, cursorX + 5, midY);
+    cursorX += chipW + 3;
   }
+
+  return rowH + 2;
 }
 
 function drawMapFrame(doc, x, y, w, h) {
@@ -209,7 +355,7 @@ function drawMapFrame(doc, x, y, w, h) {
 }
 
 /**
- * Landscape PDF: OSM map fitted to zone markers + legend + tables.
+ * Landscape PDF: map + legend under it + vessel tables.
  */
 export async function downloadDraftPdf({
   vessels = [],
@@ -230,41 +376,50 @@ export async function downloadDraftPdf({
   let y = margin;
 
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(14);
+  doc.setFontSize(13);
   doc.setTextColor(3, 105, 161);
   doc.text("Map & Draft", margin, y);
-  y += 8;
+  y += 6;
 
-  const maxMapH = 68;
-  const maxMapW = pageW * 0.74;
-  const legendW = pageW - margin * 2 - maxMapW - 4;
-  const legendX = margin + maxMapW + 4;
+  const contentW = pageW - margin * 2;
+  // Compact map — leave room for table
+  const maxMapH = 42;
+  const maxMapW = contentW;
 
   if (zones?.length) {
     const mapImg = await resolveMapImage(zones, mapWrapperEl, leafletMap);
-    let mapBlockH = maxMapH;
+    let mapH = maxMapH;
+    let mapW = maxMapW;
 
     if (mapImg) {
-      const { w, h } = fitImageInBox(doc, mapImg, margin, y, maxMapW, maxMapH);
-      drawMapFrame(doc, margin, y, w, h);
-      mapBlockH = h;
+      const fitted = fitImageInBox(doc, mapImg, margin, y, maxMapW, maxMapH);
+      drawMapFrame(doc, margin, y, fitted.w, fitted.h);
+      mapH = fitted.h;
+      mapW = fitted.w;
     } else {
       doc.setFillColor(186, 230, 253);
       doc.roundedRect(margin, y, maxMapW, maxMapH, 2, 2, "F");
       doc.setFontSize(9);
       doc.setTextColor(100, 116, 139);
-      doc.text("Map unavailable — check network and retry", margin + 4, y + 8);
+      doc.text("Map unavailable", margin + 4, y + 8);
     }
 
-    drawLegendBox(doc, zones, legendX, y, legendW, mapBlockH);
-    y += mapBlockH + 8;
+    y += mapH + 2;
+    const legendH = drawLegendBelow(doc, zones, margin, y, mapW);
+    y += legendH + 5;
   }
 
   const byZone = groupVesselsByZone(vessels);
   const headers = columns.map((c) => c.header);
   let globalRowNum = 1;
+  const zoneKeys = orderedZoneKeys(byZone);
 
-  for (const zone of ZONE_ORDER) {
+  if (!zoneKeys.length && vessels.length) {
+    zoneKeys.push("UNSPECIFIED");
+    byZone.UNSPECIFIED = vessels;
+  }
+
+  for (const zone of zoneKeys) {
     const zoneVessels = byZone[zone];
     if (!zoneVessels?.length) continue;
 

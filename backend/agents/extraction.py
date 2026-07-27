@@ -64,7 +64,9 @@ KEYS:
 - "company": the OWNER / OPERATOR company that owns the tonnage — read it from the letterhead, logo,
   title, table header or signature (e.g. "Hafnia Chemicals", "Ardmore Shipping", "Womar Logistics",
   "Stolt Tankers", "N.E. Shipping Pte Ltd", "Stealth Maritime Corp. S.A.", "Empire Smart Freight LLC",
-  "VietSea Company"). This is NEVER a person name (Rohan Kalantre), NEVER a desk/department
+  "VietSea Company", "Shell"). Also use the email SUBJECT brand when the body is only a position table
+  (e.g. subject "Shell Eastern Chemical and Coastal Positions…" → company "Shell").
+  This is NEVER a person name (Rohan Kalantre), NEVER a desk/department
   ("Chartering Dept", "Commercial Team", "Ops"). Use the SAME company for every vessel in this email.
 - "vessel_name": ship name incl. prefix/code (e.g. "M/T OCEAN JUPITER", "PVT Jupiter", "GS/J19",
   "SRIWANGI", "SC LIAONING"). NEVER use PIC / contact / person-in-charge columns as vessel_name
@@ -100,7 +102,16 @@ KEYS:
 - "sire_date", "sire_location": SIRE info if present.
 - "cdi_date", "cdi_location": CDI info if present.
 - "remarks": short status / notes (e.g. "ON SUBS", "PPT", "REVERT", "Subs, In ballast").
-- "other_info": EXTRA INFO — anything important that does not fit another key (keep short).
+- "other_info": EXTRA INFO — capture ALL leftover vessel particulars that do NOT fit another KEY.
+  Prefer a semicolon-separated list of "Label: value" pairs. Include every available detail such as:
+  ex-name / former name, call sign, class, yard / built details, LOA/LBP, beam, depth, GRT/NRT,
+  FWA/TPC, cargo tank capacities (98% / 100%), speed & bunker consumption (ballast/laden),
+  in-port consumption (idle / loading / discharging), charter flexibility (trips / short / long TC /
+  voyage), "inviting offers", and similar circular facts.
+  Completeness matters — do NOT shorten or drop particulars to save space.
+  Do NOT repeat values already stored in other keys (vessel_name, imo, imo_type, year_built,
+  dwt_sdwt, cbm, draft, flag, open_location, opening_date, vessel_type, region, remarks, etc.).
+  Omit greetings, signatures, phone/Teams/web, and commercial-manager marketing footers.
 - "q88": "YES" if a Q88 is mentioned/available.
 - "status": e.g. "ON SUBS", "OPEN", "AVAILABLE" if stated.
 
@@ -116,7 +127,9 @@ RULES:
    If a field appears ONLY as crossed-out, OMIT that key for the vessel.
 7. Return vessels in the SAME ORDER they appear in the source (top-to-bottom, first listed = first in
    the vessels array). Do not sort alphabetically.
-8. Put leftover facts that have no matching KEY into "other_info" (Extra Info), not into company/imo/vessel_name.
+8. Put leftover facts that have no matching KEY into "other_info" (Extra Info), not into
+   company/imo/vessel_name. For position circulars with long particulars blocks, other_info
+   must include the FULL set of leftover labelled lines (not a short summary).
 
 TEXT TO PARSE:
 {raw_text}
@@ -254,6 +267,7 @@ async def _extract_single_attachment(
     semaphore: asyncio.Semaphore,
     files_meta: list[dict] | None = None,
     preview_html: str | None = None,
+    mail_subject: str = "",
 ) -> list[dict]:
     """Run Claude on one broker email (body + attachments) and save vessels."""
     async with semaphore:
@@ -288,7 +302,9 @@ async def _extract_single_attachment(
                             "content": (
                                 "You are a precise shipbroking data extractor. "
                                 "Output only valid JSON with columns_in_email and vessels. "
-                                "Never extract data from crossed-out or strikethrough text."
+                                "Never extract data from crossed-out or strikethrough text. "
+                                "For other_info / EXTRA INFO, include all leftover particulars "
+                                "completely — do not shorten them."
                             ),
                         },
                         {
@@ -336,6 +352,7 @@ async def _extract_single_attachment(
             llm_company=llm_companies[0] if llm_companies else "",
             mail_from=mail_from,
             parent_sender=parent_sender,
+            mail_subject=mail_subject,
         )
 
         # Persist each vessel as a separate row (stored in STANDARD schema).
@@ -349,6 +366,7 @@ async def _extract_single_attachment(
                 mail_from=mail_from,
                 parent_sender=parent_sender,
                 raw_text=raw_text,
+                mail_subject=mail_subject,
                 vessel_name=normalised.get("vessel_name") or "",
                 llm_company=llm_company,
                 ai_picked_company=ai_company,
@@ -397,7 +415,7 @@ async def run_extraction(job_id: str, attachment_ids: list[str]) -> int:
     # Fetch attachment metadata
     rows = (
         supabase.table("attachments")
-        .select("id, filename, raw_text, preview_html, mail_from, parent_email_id, files")
+        .select("id, filename, raw_text, preview_html, mail_from, mail_subject, parent_email_id, files")
         .in_("id", attachment_ids)
         .execute()
     )
@@ -428,6 +446,7 @@ async def run_extraction(job_id: str, attachment_ids: list[str]) -> int:
             semaphore,
             att.get("files") or [],
             att.get("preview_html") or "",
+            att.get("mail_subject") or "",
         )
         for att in attachments
     ]

@@ -5,9 +5,13 @@ import {
   addVesselLibrary,
   updateVesselLibrary,
   deleteVesselLibrary,
+  autofillVesselLibrary,
 } from "../../services/api";
 import Icon from "../icons";
 import { formatStandardField } from "../../utils/fieldFormat";
+import VesselTypeSelect, {
+  isImoTypeValue,
+} from "../VesselTypeSelect";
 
 const COLS = [
   { key: "vessel_name", label: "Vessel name", ph: "e.g. AMICO PEARL", colClass: "vlib-col-name" },
@@ -23,24 +27,6 @@ const COLS = [
   { key: "cdi_date", label: "Last CDI date", ph: "e.g. Mar 2026", colClass: "vlib-col-date" },
 ];
 
-const VESSEL_TYPE_OPTIONS = [
-  "Oil Tanker",
-  "Chemical Tanker",
-  "Bulk Carrier",
-  "Chem/Prod Tanker",
-  "Container",
-  "LPG Carrier (Refri)",
-  "LNG Carrier",
-  "Cement Carrier",
-  "Asphalt / Bitumen Tanker",
-  "LPG Carrier (Press)",
-  "Gen Cargo / Multi-Purpose Vessel",
-  "Dredger",
-  "Offshore Support Vessel",
-  "Tug Boat",
-  "Others",
-];
-
 const BLANK = COLS.reduce((acc, c) => ({ ...acc, [c.key]: "" }), {});
 
 export default function VesselLibraryView({ isActive = false, refreshKey = 0, onLibraryUpdated }) {
@@ -51,6 +37,7 @@ export default function VesselLibraryView({ isActive = false, refreshKey = 0, on
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState({ key: null, dir: "asc" });
   const [saving, setSaving] = useState(false);
+  const [reviewAllSaving, setReviewAllSaving] = useState(false);
   const [savedMsg, setSavedMsg] = useState(false);
   const savedTimer = useRef(null);
 
@@ -157,20 +144,48 @@ export default function VesselLibraryView({ isActive = false, refreshKey = 0, on
     }
   };
 
-  const handleVesselTypeChange = async (row, nextType) => {
-    const value = String(nextType || "").trim();
-    if ((row.vessel_type || "") === value) return;
-    setRows((prev) => prev.map((r) => (r.id === row.id ? { ...r, vessel_type: value } : r)));
+  const handleReviewAll = async () => {
+    const n = newRows.length;
+    if (!n || reviewAllSaving) return;
+    if (
+      !window.confirm(
+        `Add all ${n} new vessel${n === 1 ? "" : "s"} to the library now?\n\nYou can still edit any vessel later.`
+      )
+    ) {
+      return;
+    }
+    setReviewAllSaving(true);
     setError("");
     try {
-      await updateVesselLibrary(row.id, { ...row, vessel_type: value });
+      const stats = await autofillVesselLibrary();
       flashSaved();
-      onLibraryUpdated?.();
-    } catch (e) {
-      setError("Failed to update vessel type: " + e.message);
       await load();
+      onLibraryUpdated?.();
+      const inserted = stats?.inserted ?? n;
+      window.alert(
+        inserted > 0
+          ? `Added ${inserted} vessel${inserted === 1 ? "" : "s"} to the library.`
+          : "No new vessels were added (they may already be in the library)."
+      );
+    } catch (e) {
+      setError("Review all failed: " + e.message);
+    } finally {
+      setReviewAllSaving(false);
     }
   };
+
+  const nameSuggestions = useMemo(() => {
+    const set = new Set();
+    for (const r of rows) {
+      const n = String(r.vessel_name || "").trim();
+      if (n) set.add(n);
+    }
+    for (const r of newRows) {
+      const n = String(r.vessel_name || "").trim();
+      if (n) set.add(n);
+    }
+    return [...set].sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+  }, [rows, newRows]);
 
   return (
     <div className="vgrid-root">
@@ -213,10 +228,23 @@ export default function VesselLibraryView({ isActive = false, refreshKey = 0, on
           {!loading && newRows.length > 0 && (
           <div className="vlib-new" style={{ marginBottom: 14 }}>
             <div className="vlib-new-head">
-              <span className="vlib-new-badge">New vessels to review</span>
-              <span className="vlib-new-sub">
-                Found in fetched position lists — add only the ones you want to the library.
-              </span>
+              <div className="vlib-new-head-text">
+                <span className="vlib-new-badge">New vessels to review</span>
+                <span className="vlib-new-sub">
+                  Found in fetched position lists — add only the ones you want, or add all at once.
+                </span>
+              </div>
+              <button
+                type="button"
+                className="tb-btn tb-btn-primary vlib-review-all-btn"
+                onClick={handleReviewAll}
+                disabled={reviewAllSaving}
+                title="Add every new vessel to the library without reviewing one by one"
+              >
+                {reviewAllSaving
+                  ? "Adding…"
+                  : `Review all (${newRows.length})`}
+              </button>
             </div>
             <div className="vessel-grid-wrap">
               <div className="vessel-grid-scroll">
@@ -234,16 +262,24 @@ export default function VesselLibraryView({ isActive = false, refreshKey = 0, on
                     {newRows.map((row, i) => (
                       <tr key={row.match_key || i} className="vlib-new-row">
                         <td className="vlib-sr">{i + 1}</td>
-                        {COLS.map((c) => (
-                          <td
-                            key={c.key}
-                            className={[c.colClass || "", row[c.key] ? "" : "vlib-blank"]
-                              .filter(Boolean)
-                              .join(" ")}
-                          >
-                            {formatLibCell(c.key, row[c.key])}
-                          </td>
-                        ))}
+                        {COLS.map((c) => {
+                          const rawVal = row[c.key];
+                          const display =
+                            c.key === "vessel_type"
+                              ? (isImoTypeValue(rawVal) ? "" : String(rawVal || "").trim())
+                              : formatLibCell(c.key, rawVal);
+                          const empty = !display || display === "—";
+                          return (
+                            <td
+                              key={c.key}
+                              className={[c.colClass || "", empty ? "vlib-blank" : ""]
+                                .filter(Boolean)
+                                .join(" ")}
+                            >
+                              {empty ? "—" : display}
+                            </td>
+                          );
+                        })}
                         <td className="vlib-actions">
                           <button
                             type="button"
@@ -308,10 +344,11 @@ export default function VesselLibraryView({ isActive = false, refreshKey = 0, on
                         <td className="vlib-sr">{i + 1}</td>
                         {COLS.map((c) => {
                           const rawVal = row[c.key];
-                          const empty =
+                          const display =
                             c.key === "vessel_type"
-                              ? !String(rawVal || "").trim() || isImoTypeValue(rawVal)
-                              : !String(rawVal || "").trim();
+                              ? (isImoTypeValue(rawVal) ? "" : String(rawVal || "").trim())
+                              : formatLibCell(c.key, rawVal);
+                          const empty = !display || display === "—";
                           return (
                             <td
                               key={c.key}
@@ -319,14 +356,7 @@ export default function VesselLibraryView({ isActive = false, refreshKey = 0, on
                                 .filter(Boolean)
                                 .join(" ")}
                             >
-                              {c.key === "vessel_type" ? (
-                                <VesselTypeSelect
-                                  value={row.vessel_type}
-                                  onChange={(val) => handleVesselTypeChange(row, val)}
-                                />
-                              ) : (
-                                formatLibCell(c.key, row[c.key])
-                              )}
+                              {empty ? "—" : display}
                             </td>
                           );
                         })}
@@ -364,6 +394,7 @@ export default function VesselLibraryView({ isActive = false, refreshKey = 0, on
           mode={modal.mode}
           initial={modal.data}
           saving={saving}
+          nameSuggestions={nameSuggestions}
           onClose={() => setModal(null)}
           onSave={handleSave}
         />
@@ -377,118 +408,6 @@ function formatLibCell(key, value) {
   return formatted || "—";
 }
 
-function isImoTypeValue(val) {
-  const s = String(val || "").trim();
-  if (!s) return false;
-  return /^\d+(\/\d+)?$/i.test(s) || /^imo\s*[ivx\d]/i.test(s);
-}
-
-function VesselTypeSelect({ value, onChange }) {
-  const raw = String(value || "").trim();
-  const current = isImoTypeValue(raw) ? "" : raw;
-  const known = !current || VESSEL_TYPE_OPTIONS.includes(current);
-  const options = [
-    { value: "", label: "Select type…" },
-    ...(!known && current ? [{ value: current, label: current }] : []),
-    ...VESSEL_TYPE_OPTIONS.map((opt) => ({ value: opt, label: opt })),
-  ];
-
-  const btnRef = useRef(null);
-  const menuRef = useRef(null);
-  const [open, setOpen] = useState(false);
-  const [menuPos, setMenuPos] = useState({ top: 0, left: 0, width: 220 });
-
-  const placeMenu = useCallback(() => {
-    const el = btnRef.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    const width = Math.max(r.width, 220);
-    let left = r.left;
-    if (left + width > window.innerWidth - 8) left = Math.max(8, window.innerWidth - width - 8);
-    const below = r.bottom + 4;
-    const menuH = Math.min(260, options.length * 34 + 12);
-    const top =
-      below + menuH > window.innerHeight - 8
-        ? Math.max(8, r.top - menuH - 4)
-        : below;
-    setMenuPos({ top, left, width });
-  }, [options.length]);
-
-  useEffect(() => {
-    if (!open) return undefined;
-    placeMenu();
-    const onDoc = (e) => {
-      if (btnRef.current?.contains(e.target) || menuRef.current?.contains(e.target)) return;
-      setOpen(false);
-    };
-    const onKey = (e) => {
-      if (e.key === "Escape") setOpen(false);
-    };
-    const onScroll = () => placeMenu();
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onKey);
-    window.addEventListener("resize", onScroll);
-    window.addEventListener("scroll", onScroll, true);
-    return () => {
-      document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("keydown", onKey);
-      window.removeEventListener("resize", onScroll);
-      window.removeEventListener("scroll", onScroll, true);
-    };
-  }, [open, placeMenu]);
-
-  return (
-    <div className="vlib-type-dd">
-      <button
-        ref={btnRef}
-        type="button"
-        className={`vlib-type-btn ${current ? "" : "is-empty"} ${open ? "open" : ""}`}
-        onClick={(e) => {
-          e.stopPropagation();
-          setOpen((v) => !v);
-        }}
-        title="Select vessel type"
-      >
-        <span className="vlib-type-label">{current || "Select type…"}</span>
-        <span className="vlib-type-chev" aria-hidden="true">{open ? "▲" : "▼"}</span>
-      </button>
-      {open &&
-        createPortal(
-          <div
-            ref={menuRef}
-            className="vlib-type-menu"
-            style={{ top: menuPos.top, left: menuPos.left, width: menuPos.width }}
-            role="listbox"
-          >
-            {options.map((opt) => (
-              <button
-                key={opt.value || "__empty"}
-                type="button"
-                role="option"
-                aria-selected={opt.value === current}
-                className={[
-                  "vlib-type-opt",
-                  opt.value === current ? "active" : "",
-                  !opt.value ? "placeholder" : "",
-                ]
-                  .filter(Boolean)
-                  .join(" ")}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setOpen(false);
-                  onChange(opt.value);
-                }}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>,
-          document.body
-        )}
-    </div>
-  );
-}
-
 function LibStat({ label, value }) {
   return (
     <div className="vgrid-stat">
@@ -498,8 +417,9 @@ function LibStat({ label, value }) {
   );
 }
 
-function VesselModal({ mode, initial, saving, onClose, onSave }) {
+function VesselModal({ mode, initial, saving, nameSuggestions = [], onClose, onSave }) {
   const [form, setForm] = useState({ ...BLANK, ...initial });
+  const nameListId = "vlib-vessel-name-suggestions";
 
   const title =
     mode === "edit" ? "Edit vessel" : mode === "review" ? "Review new vessel" : "Add a vessel";
@@ -511,7 +431,10 @@ function VesselModal({ mode, initial, saving, onClose, onSave }) {
     if (saving) return;
     onSave(
       COLS.reduce((acc, c) => {
-        const raw = (form[c.key] || "").trim();
+        let raw = (form[c.key] || "").trim();
+        if (c.key === "vessel_type") {
+          if (raw === "Others" || isImoTypeValue(raw)) raw = "";
+        }
         acc[c.key] = formatStandardField(c.key, raw) || raw;
         return acc;
       }, {})
@@ -539,7 +462,27 @@ function VesselModal({ mode, initial, saving, onClose, onSave }) {
                   <VesselTypeSelect
                     value={form.vessel_type}
                     onChange={(val) => set(c.key, val)}
+                    fieldSize
                   />
+                </label>
+              );
+            }
+            if (c.key === "vessel_name") {
+              return (
+                <label key={c.key} className="vlib-field">
+                  <span>{c.label}</span>
+                  <input
+                    list={nameListId}
+                    value={form.vessel_name || ""}
+                    placeholder="Pick a suggestion or type any name"
+                    onChange={(e) => set(c.key, e.target.value)}
+                    autoFocus
+                  />
+                  <datalist id={nameListId}>
+                    {nameSuggestions.map((name) => (
+                      <option key={name} value={name} />
+                    ))}
+                  </datalist>
                 </label>
               );
             }
@@ -550,7 +493,6 @@ function VesselModal({ mode, initial, saving, onClose, onSave }) {
                   value={form[c.key] || ""}
                   placeholder={c.ph}
                   onChange={(e) => set(c.key, e.target.value)}
-                  autoFocus={c.key === "vessel_name"}
                 />
               </label>
             );

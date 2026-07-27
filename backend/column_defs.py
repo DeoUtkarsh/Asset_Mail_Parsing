@@ -155,7 +155,7 @@ _COMPANY_HINT_RE = re.compile(
     re.I,
 )
 _PERSON_NAME_RE = re.compile(
-    r"^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){0,3}$",
+    r"^[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3}$",
 )
 _COMPANY_JUNK_RE = re.compile(
     r"(?:"
@@ -193,6 +193,74 @@ def _clean_company_candidate(name: str) -> str:
     return s
 
 
+_TITLE_POSITION_TAIL_RE = re.compile(
+    r"\s*[-–—|:]\s*(?:"
+    r"position\s*lists?|positions?|open\s+tonnage|open\s+positions?|"
+    r"fleet(?:\s+list)?|tonnage|ww|weekly|daily|coastal|spot"
+    r").*$",
+    re.I,
+)
+_TITLE_POSITION_INLINE_RE = re.compile(
+    r"\s+(?:and\s+)?(?:coastal\s+)?(?:position\s*lists?|positions?|open\s+tonnage|open\s+positions?)\b.*$",
+    re.I,
+)
+_TITLE_TRAILING_DATE_RE = re.compile(
+    r"\s+(?:"
+    r"\d{1,2}[./-]\d{1,2}[./-]\d{2,4}"
+    r"|\d{1,2}\s+[A-Za-z]{3,9}\.?\s*'?\d{2,4}"
+    r"|[A-Za-z]{3,9}\.?\s+\d{1,2},?\s+\d{2,4}"
+    r"|20\d{2}"
+    r")\s*$",
+    re.I,
+)
+
+_FREE_EMAIL_DOMAINS = frozenset({
+    "gmail.com", "yahoo.com", "hotmail.com", "outlook.com", "live.com",
+    "icloud.com", "me.com", "aol.com", "protonmail.com", "proton.me",
+    "mail.com", "yandex.com", "gmx.com", "qq.com", "163.com",
+})
+
+# High-confidence domain → company (Contact List often already knows these).
+_DOMAIN_TO_COMPANY = {
+    "shell.com": "Shell",
+    "bp.com": "BP",
+    "exxonmobil.com": "ExxonMobil",
+    "chevron.com": "Chevron",
+    "totalenergies.com": "TotalEnergies",
+    "total.com": "TotalEnergies",
+    "eni.com": "Eni",
+    "equinor.com": "Equinor",
+    "stolt.com": "Stolt Tankers",
+    "stolt-nielsen.com": "Stolt Tankers",
+    "hafnia.com": "Hafnia",
+    "ardmoreshipping.com": "Ardmore Shipping",
+    "womar.com": "Womar Logistics",
+    "maersk.com": "Maersk",
+    "traffigure.com": "Trafigura",
+    "vitol.com": "Vitol",
+    "gunvor.com": "Gunvor",
+    "mercuria.com": "Mercuria",
+}
+
+_EMAIL_DOMAIN_RE = re.compile(r"@([a-z0-9.-]+\.[a-z]{2,})", re.I)
+
+
+def clean_company_from_title(title: str) -> str:
+    """Turn a subject / attachment title into a usable company label.
+
+    e.g. 'Shell Eastern Chemical and Coastal Positions 24 Jul 2026'
+      → 'Shell Eastern Chemical and Coastal'
+    """
+    s = _clean_company_candidate(title)
+    if not s:
+        return ""
+    s = _TITLE_POSITION_TAIL_RE.sub("", s).strip()
+    s = _TITLE_POSITION_INLINE_RE.sub("", s).strip()
+    s = _TITLE_TRAILING_DATE_RE.sub("", s).strip()
+    s = re.sub(r"\s{2,}", " ", s).strip(" -–—|/,")
+    return s
+
+
 def is_generic_company_name(name: str) -> bool:
     s = _clean_company_candidate(name)
     if not s or len(s) < 3:
@@ -219,6 +287,63 @@ def is_generic_company_name(name: str) -> bool:
     if _PERSON_NAME_RE.match(s) and not _COMPANY_LINE_RE.search(s) and not _COMPANY_HINT_RE.search(s):
         return True
     return False
+
+
+def company_from_subject(subject: str) -> str:
+    cleaned = clean_company_from_title(subject)
+    if cleaned and not is_generic_company_name(cleaned):
+        return cleaned
+    # Short brand left after aggressive clean (e.g. only "Shell")
+    if cleaned and len(cleaned) >= 3 and not _COMPANY_JUNK_RE.search(cleaned):
+        if _COMPANY_HINT_RE.search(cleaned) or len(cleaned.split()) <= 4:
+            return cleaned
+    return ""
+
+
+def company_from_email_domains(text: str) -> str:
+    """Infer company from @domain addresses in the body (same signal Contact List uses)."""
+    from collections import Counter
+
+    counts: Counter[str] = Counter()
+    for m in _EMAIL_DOMAIN_RE.finditer(text or ""):
+        dom = m.group(1).lower().lstrip(".")
+        if not dom or dom in _FREE_EMAIL_DOMAINS:
+            continue
+        # daniel.kc.tan@sg.shell.com → try shell.com / sg.shell.com
+        parts = dom.split(".")
+        mapped = None
+        for i in range(len(parts) - 1):
+            candidate = ".".join(parts[i:])
+            if candidate in _DOMAIN_TO_COMPANY:
+                mapped = _DOMAIN_TO_COMPANY[candidate]
+                break
+        if mapped:
+            counts[mapped] += 1
+            continue
+        if dom in _DOMAIN_TO_COMPANY:
+            counts[_DOMAIN_TO_COMPANY[dom]] += 1
+            continue
+        label = parts[0]
+        if len(label) >= 3 and label not in ("mail", "email", "smtp", "www", "corp", "group"):
+            counts[label.title()] += 1
+    if not counts:
+        return ""
+    return counts.most_common(1)[0][0]
+
+
+def consensus_broker_company(companies: list[str] | None) -> str:
+    """Most common non-generic company already on contacts for this attachment."""
+    from collections import Counter
+
+    counts: Counter[str] = Counter()
+    for raw in companies or []:
+        for part in re.split(r"\s*,\s*", str(raw or "")):
+            cleaned = _clean_company_candidate(part)
+            if cleaned and not is_generic_company_name(cleaned):
+                counts[cleaned] += 1
+    if not counts:
+        return ""
+    return counts.most_common(1)[0][0]
 
 
 def strip_parenthetical_extras(text: str | None) -> str:
@@ -302,6 +427,7 @@ def resolve_vessel_company(
     mail_from: str = "",
     parent_sender: str = "",
     raw_text: str = "",
+    mail_subject: str = "",
     vessel_name: str = "",
     llm_company: str = "",
     broker_companies: list[str] | None = None,
@@ -310,7 +436,9 @@ def resolve_vessel_company(
     """Best-effort owner/operator company label for one vessel row.
 
     Prefer AI-picked company (signature + body candidates) when provided.
-    Never keep department desks, person names, subjects, or sentence junk.
+    Also use subject brand, @domain addresses, and Contact List consensus —
+    the same signals that already work for contacts — so position rows stay in sync.
+    Never keep department desks, person names, raw subjects, or sentence junk.
     """
     ai_picked = _clean_company_candidate(ai_picked_company)
     if _has_value(ai_picked) and not is_generic_company_name(ai_picked):
@@ -322,13 +450,29 @@ def resolve_vessel_company(
         if matched and not is_generic_company_name(matched):
             return matched
 
+    # Contact List already resolved company for people on this mail
+    consensus = consensus_broker_company(broker_companies)
+    if consensus:
+        return consensus
+
+    from_domain = company_from_email_domains(raw_text)
+    if from_domain and not is_generic_company_name(from_domain):
+        return from_domain
+
+    from_subject = company_from_subject(mail_subject)
+    if from_subject:
+        return from_subject
+
     signature = _clean_company_candidate(_company_from_raw_signature(raw_text))
     if signature and not is_generic_company_name(signature):
         return signature
 
     llm = _clean_company_candidate(llm_company)
     if _has_value(llm) and not is_generic_company_name(llm):
-        return llm
+        # LLM sometimes echoes the full subject — clean it
+        llm_clean = company_from_subject(llm) or llm
+        if llm_clean and not is_generic_company_name(llm_clean):
+            return llm_clean
 
     for header in (mail_from, parent_sender):
         display = _clean_company_candidate(_parse_mail_display_name(header))
@@ -336,11 +480,11 @@ def resolve_vessel_company(
             if _COMPANY_LINE_RE.search(display) or _COMPANY_HINT_RE.search(display):
                 return display
 
-    from_file = _clean_company_candidate(company_name_from_filename(filename))
+    from_file = clean_company_from_title(company_name_from_filename(filename))
     if (
         from_file
         and not is_generic_company_name(from_file)
-        and (_COMPANY_LINE_RE.search(from_file) or _COMPANY_HINT_RE.search(from_file))
+        and (_COMPANY_LINE_RE.search(from_file) or _COMPANY_HINT_RE.search(from_file) or len(from_file.split()) <= 4)
     ):
         return from_file
     return ""
@@ -352,12 +496,17 @@ async def pick_owner_company_with_ai(
     llm_company: str = "",
     mail_from: str = "",
     parent_sender: str = "",
+    mail_subject: str = "",
 ) -> str:
     """Ask Claude to pick the real owner/operator company from candidates + mail context."""
     candidates = _company_candidates_from_text(raw_text)
-    if llm_company and not is_generic_company_name(llm_company):
-        if llm_company not in candidates:
-            candidates.insert(0, llm_company.strip())
+    for extra in (
+        company_from_subject(mail_subject),
+        company_from_email_domains(raw_text),
+        llm_company if llm_company and not is_generic_company_name(llm_company) else "",
+    ):
+        if extra and extra not in candidates:
+            candidates.insert(0, extra.strip())
     for header in (mail_from, parent_sender):
         display = _parse_mail_display_name(header)
         if display and not is_generic_company_name(display):
@@ -368,20 +517,24 @@ async def pick_owner_company_with_ai(
     excerpt_parts = lines[:18] + (["…"] if len(lines) > 40 else []) + lines[-22:]
     excerpt = "\n".join(excerpt_parts)[:4500]
     cand_block = "\n".join(f"- {c}" for c in candidates[:12]) or "(none extracted)"
+    subject_line = (mail_subject or "").strip() or "(none)"
 
     prompt = (
         "You pick the OWNER / OPERATOR company for a shipbroking position-list email.\n"
         "Return ONLY the company name as plain text (no quotes, no JSON).\n"
         "Rules:\n"
         "- Prefer real company legal names (…Maritime, …Shipping, LLC, S.A., Pte Ltd, Corp).\n"
+        "- Brand names from the subject are valid (e.g. subject 'Shell Eastern Chemical…'\n"
+        "  → return 'Shell' or 'Shell Eastern Chemical').\n"
+        "- Corporate email domains in the body are strong evidence (@shell.com → Shell).\n"
         "- NEVER return a person name (e.g. Rohan Kalantre).\n"
         "- NEVER return a department/desk (Chartering Dept, Commercial Team, Ops).\n"
-        "- NEVER return a subject line, section header, vessel name line, or sentence\n"
-        "  (e.g. 'Subject: …', 'Please propose…', 'SPECIALIZED – CPP', 'MT SUN FALCON – 3700 DWT…').\n"
+        "- NEVER return a raw subject line with dates/Positions wording — clean it to the brand.\n"
         "- NEVER return cargo grades or vessel-class labels (e.g. 'NAP/VEG/CHEMS', 'Large Tanker',\n"
         "  'TYPE: GAS CARRIER', 'MR', 'CPP/CHEMS').\n"
         "- Prefer signature / letterhead company over a desk line above the signature.\n"
         "- If nothing is a real company, return an empty string.\n\n"
+        f"SUBJECT:\n{subject_line}\n\n"
         f"CANDIDATES:\n{cand_block}\n\n"
         f"EMAIL EXCERPT (letterhead + signature):\n{excerpt}\n"
     )
@@ -401,6 +554,8 @@ async def pick_owner_company_with_ai(
         picked = (resp.choices[0].message.content or "").strip().strip('"').strip("'")
         picked = re.sub(r"^(company\s*[:=]\s*)", "", picked, flags=re.I).strip()
         picked = _clean_company_candidate(picked)
+        if picked and is_generic_company_name(picked):
+            picked = company_from_subject(picked) or clean_company_from_title(picked)
         if picked and not is_generic_company_name(picked):
             return picked
     except Exception as exc:  # noqa: BLE001
@@ -1308,6 +1463,7 @@ def backfill_vessel_company_names(supabase) -> int:
             mail_from=att.get("mail_from") or "",
             parent_sender=parent_sender.get(att.get("parent_email_id") or "", ""),
             raw_text=att.get("raw_text") or "",
+            mail_subject=att.get("mail_subject") or "",
             vessel_name=vessel_name,
             llm_company=current if not is_generic_company_name(current) else "",
             broker_companies=contacts_by_att.get(att_id, []),

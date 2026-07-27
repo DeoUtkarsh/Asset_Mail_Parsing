@@ -13,6 +13,7 @@ import {
   editFieldForColumn,
   isVesselNameColumn,
   isRegionColumn,
+  isVesselTypeColumn,
   isDraftColumnSelectable,
   DRAFT_LOCKED_COLUMN_IDS,
   SINGLE_LINE_COLUMN_IDS,
@@ -20,6 +21,8 @@ import {
   POSITION_LIST_SUMMARY_COLUMN_IDS,
 } from "../../utils/standardColumns";
 import { isAiNormalizedField } from "../../utils/fieldFormat";
+import RegionSelect from "../RegionSelect";
+import VesselTypeSelect, { isImoTypeValue, normalizeVesselType } from "../VesselTypeSelect";
 
 const helper = createColumnHelper();
 
@@ -96,7 +99,6 @@ function EditableCell({ getValue, row, column, table, vesselName = false, column
 
 function EditableRegionCell({ getValue, row, column, table }) {
   const initial = getValue() ?? "";
-  const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(initial);
   const readOnly = table.options.meta?.readOnly;
 
@@ -104,21 +106,19 @@ function EditableRegionCell({ getValue, row, column, table }) {
     setValue(initial);
   }, [initial]);
 
-  const commit = () => {
-    setEditing(false);
-    if (value !== initial) {
-      table.options.meta?.onCellEdit(row.original.id, "__region__", value);
+  const commit = (next) => {
+    const cleaned = String(next ?? "").trim();
+    setValue(cleaned);
+    if (cleaned !== String(initial || "").trim()) {
+      table.options.meta?.onCellEdit(row.original.id, "__region__", cleaned);
     }
   };
 
-  if (!editing || readOnly) {
+  if (readOnly) {
     return (
       <div
-        onClick={readOnly ? undefined : () => setEditing(true)}
-        className={`cell-val uppercase ${value ? "" : "is-empty"} ${
-          readOnly ? "cursor-default" : "cursor-text"
-        }`}
-        title={readOnly ? (initial || "") : "Click to edit · Enter to save"}
+        className={`cell-val ${value ? "" : "is-empty"} cursor-default`}
+        title={initial || ""}
       >
         {value || "—"}
       </div>
@@ -126,16 +126,48 @@ function EditableRegionCell({ getValue, row, column, table }) {
   }
 
   return (
-    <input
-      autoFocus
+    <RegionSelect
       value={value}
-      onChange={(e) => setValue(e.target.value.toUpperCase())}
-      onBlur={commit}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") { commit(); table.options.meta?.onEnterSave?.(); }
-        if (e.key === "Escape") { setValue(initial); setEditing(false); }
-      }}
-      className="cell-edit region"
+      onChange={setValue}
+      onCommit={commit}
+    />
+  );
+}
+
+function EditableVesselTypeCell({ getValue, row, column, table }) {
+  const initial = normalizeVesselType(getValue() ?? "");
+  const [value, setValue] = useState(initial);
+  const readOnly = table.options.meta?.readOnly;
+
+  useEffect(() => {
+    setValue(initial);
+  }, [initial]);
+
+  const commit = (next) => {
+    let cleaned = String(next ?? "").trim();
+    if (cleaned === "Others" || isImoTypeValue(cleaned)) cleaned = "";
+    setValue(cleaned);
+    if (cleaned !== String(initial || "").trim()) {
+      table.options.meta?.onCellEdit(row.original.id, "vessel_type", cleaned);
+    }
+  };
+
+  if (readOnly) {
+    return (
+      <div
+        className={`cell-val ${value ? "" : "is-empty"} cursor-default`}
+        title={initial || ""}
+      >
+        {value || "—"}
+      </div>
+    );
+  }
+
+  return (
+    <VesselTypeSelect
+      value={value}
+      onChange={setValue}
+      onCommit={commit}
     />
   );
 }
@@ -340,6 +372,7 @@ export default function EditableGrid({
     for (const col of standardCols) {
       const isReadOnly = col.read_only || col.id === "_num";
       const isRegion = isRegionColumn(col.id);
+      const isVesselType = isVesselTypeColumn(col.id);
       const isName = isVesselNameColumn(col.id);
 
       if (col.id === "_num") {
@@ -368,6 +401,14 @@ export default function EditableGrid({
             if (isRegion) {
               return (
                 <EditableRegionCell
+                  {...info}
+                  getValue={() => value}
+                />
+              );
+            }
+            if (isVesselType) {
+              return (
+                <EditableVesselTypeCell
                   {...info}
                   getValue={() => value}
                 />
@@ -581,6 +622,7 @@ export default function EditableGrid({
     else if (columnId === "_num") parts.push("cell-num");
     else if (columnId === "vessel_name") parts.push("cell-vname");
     else if (columnId === "region") parts.push("cell-region");
+    else if (columnId === "vessel_type") parts.push("cell-vessel-type");
     if (SINGLE_LINE_COLUMN_IDS.has(columnId)) parts.push("cell-compact");
     if (hasDraftCheck(columnId)) parts.push("has-draft-check");
     return parts.join(" ");

@@ -203,7 +203,26 @@ export default function DraftView({ html = "", zones = [], vessels = [], columns
 
   const handleDownloadPdf = async () => {
     setDownloading(true);
+    const wasMapOpen = mapOpen;
     try {
+      // Map must be mounted + tiles loaded for a real PDF map (collapsed = no Leaflet DOM)
+      if (zones.length > 0 && !mapOpen) {
+        setMapOpen(true);
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      // Wait until Leaflet instance exists and has size
+      for (let i = 0; i < 40; i++) {
+        const map = leafletMapRef.current;
+        const wrap = mapWrapperRef.current;
+        const el = wrap?.querySelector(".leaflet-container");
+        if (map && el && el.getBoundingClientRect().width > 40) break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      if (leafletMapRef.current) {
+        leafletMapRef.current.invalidateSize();
+        await new Promise((r) => setTimeout(r, 500));
+      }
+
       const stamp = new Date().toISOString().slice(0, 10);
       await downloadDraftPdf({
         vessels: gridVessels,
@@ -217,6 +236,7 @@ export default function DraftView({ html = "", zones = [], vessels = [], columns
       console.error("PDF download failed:", e);
       alert("Could not generate PDF. Try again or use Copy to Clipboard.");
     } finally {
+      if (!wasMapOpen) setMapOpen(false);
       setDownloading(false);
     }
   };

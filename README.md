@@ -52,10 +52,19 @@ React workspace (Broker Sense)
 
 1. **Home** — AI dashboard: pipeline stepper, readiness, review / positions counts, agent cards.
 2. **Vessel Extracted Data** — Outlook-style inbox + editable vessel grid + original message.
-3. **Need to Review** — medium/low confidence or failed extractions.
-4. **Vessel Position List** — verified vessels; column select; draft email (map + zones).
+3. **Need to Review** — medium/low confidence or failed extractions (helper: review medium & low confidence mail).
+4. **Vessel Position List** — verified vessels; select vessels/columns → **Draft Email** (map + zone PDF).  
+   Helper line: *Select vessel and click on draft mail, your position list is ready to send.*
 5. **Contact List** — broker contacts from signatures.
-6. **Vessel Libraries List** — deduplicated vessel master + “newly detected” review.
+6. **Vessel Libraries List** — deduplicated vessel master + “newly detected” review / **Review all**.
+
+### Editing notes (Position List · Extraction · Need to Review)
+
+- Click **Edit** to change cells; **Save changes** persists.
+- **REGION** and **VESSEL TYPE** use a shared combobox (pick from list or type free text; **Others** focuses free text).
+- **Company** is resolved from subject, email domains, and contacts when the mail does not spell it out (e.g. Shell position lists).
+- **Extra Info** keeps full leftover vessel particulars from extraction (not truncated stubs).
+- Vessel Library tables stay read-only; edit only via Add / Edit / Review modals (same vessel-type combobox).
 
 ---
 
@@ -113,11 +122,14 @@ App: `http://localhost:5173` (Vite proxies `/api` → `:8000`).
 ## Usage Flow
 
 1. **Fetch Emails** — IMAP pull of **new** broker mail; Phase 1 extraction + contacts; SSE progress.
-2. **Review** — fix amber (missing) / blue (AI-normalized) cells; **Verify**.
-3. **Draft** — on Vessel Position List, select rows/columns → **Draft Email** → copy / PDF.
-4. **Library** — maintain Vessel Libraries List; promote newly detected vessels.
+2. **Review** — fix amber (missing) / blue (AI-normalized) cells; use REGION / VESSEL TYPE comboboxes in Edit mode; **Verify**.
+3. **Draft** — on Vessel Position List, select vessels + columns → **Draft Email** → map + zone-grouped copy / PDF.
+4. **Library** — Vessel Libraries List: Add / Edit / Review / **Review all** (autofill from extracted vessels).
 
-### Clear data (keep tables + column headers)
+### Clear data (keep tables + column headers + region reference)
+
+Clears emails, attachments, vessels, contacts (and optionally `vessel_library`).  
+**Does not** wipe `column_definitions` or trade geo tables (`trade_regions`, `trade_ports`, `open_location_aliases`).
 
 ```powershell
 cd backend
@@ -125,6 +137,19 @@ cd backend
 python -m scripts.reset_data --yes
 # also clear vessel_library:
 python -m scripts.reset_data --library --yes
+```
+
+Equivalent SQL (e.g. on RDS / pgAdmin):
+
+```sql
+TRUNCATE parent_emails, attachments, vessels, broker_contacts, vessel_library
+RESTART IDENTITY CASCADE;
+
+-- Check region seed still present:
+SELECT
+  (SELECT COUNT(*) FROM trade_regions) AS regions,
+  (SELECT COUNT(*) FROM trade_ports) AS ports,
+  (SELECT COUNT(*) FROM open_location_aliases) AS aliases;
 ```
 
 ---
@@ -164,10 +189,12 @@ Email_Parser_Two/
 │   ├── file_storage.py            ← Local disk or S3 for attachment binaries
 │   ├── database.py / pg_db.py
 │   ├── column_defs.py / verification.py / vessel_library.py
+│   ├── region_map.py / region_geo.py   ← standard regions from open_location + DB seed
 │   ├── imap_client.py / sse_manager.py / workflow.py / llm.py
 │   ├── scripts/
-│   │   ├── reset_data.py
-│   │   └── autofill_vessel_library.py
+│   │   ├── reset_data.py              ← wipe fetch/extract rows (keeps headers + geo)
+│   │   ├── autofill_vessel_library.py
+│   │   └── preview_inbox.py           ← IMAP keep/skip dry-run (no LLM)
 │   └── agents/
 │       ├── ingestion.py / extraction.py / normalization.py
 │       ├── drafter.py / signature_extract.py / contact_extract.py
@@ -175,7 +202,9 @@ Email_Parser_Two/
 │       └── …
 └── frontend/
     ├── vite.config.js             ← Proxy /api; allowedHosts for ngrok
-    └── src/                       ← App shell, views, grid, draft, library
+    └── src/
+        ├── components/            ← views, EditableGrid, RegionSelect, VesselTypeSelect
+        └── utils/                 ← standardColumns, regionOptions, downloadDraftPdf
 ```
 
 ---

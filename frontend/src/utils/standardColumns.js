@@ -46,7 +46,7 @@ export const COLUMN_WIDTHS = {
   vessel_name: 180,
   call_sign: 110,
   year_built: 110,
-  vessel_type: 120,
+  vessel_type: 200,
   cargo_type: 120,
   direction: 110,
   dwt_sdwt: 112,
@@ -54,7 +54,7 @@ export const COLUMN_WIDTHS = {
   draft: 80,
   flag: 80,
   eta_foc: 120,
-  region: 160,
+  region: 200,
   open_location: 150,
   opening_date: 140,
   cargo_history_combo: 260,
@@ -279,6 +279,10 @@ export function isVesselNameColumn(id) {
 
 export function isRegionColumn(id) {
   return id === "region";
+}
+
+export function isVesselTypeColumn(id) {
+  return id === "vessel_type";
 }
 
 /** Format an email received timestamp as "17 Jul 2026, 09:42" (24h). */
