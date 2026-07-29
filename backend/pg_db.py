@@ -115,6 +115,11 @@ CREATE INDEX IF NOT EXISTS idx_broker_contacts_attachment_id
 CREATE INDEX IF NOT EXISTS idx_broker_contacts_parent_email_id
     ON broker_contacts(parent_email_id);
 
+ALTER TABLE broker_contacts ADD COLUMN IF NOT EXISTS match_key TEXT NOT NULL DEFAULT '';
+
+CREATE INDEX IF NOT EXISTS idx_broker_contacts_match_key
+    ON broker_contacts(match_key);
+
 -- Master list of vessels (static particulars, deduplicated) — the Vessel Library.
 CREATE TABLE IF NOT EXISTS vessel_library (
     id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -256,6 +261,10 @@ class QueryBuilder:
         self._filters.append(("eq", column, value))
         return self
 
+    def neq(self, column: str, value: Any) -> "QueryBuilder":
+        self._filters.append(("neq", column, value))
+        return self
+
     def in_(self, column: str, values: list) -> "QueryBuilder":
         self._filters.append(("in", column, values))
         return self
@@ -284,6 +293,9 @@ class QueryBuilder:
         for op, col, val in self._filters:
             if op == "eq":
                 clauses.append(f"{col} = %s")
+                params.append(val)
+            elif op == "neq":
+                clauses.append(f"{col} <> %s")
                 params.append(val)
             elif op == "in":
                 placeholders = ", ".join(["%s"] * len(val))

@@ -1,7 +1,6 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { getContacts, updateBrokerContact } from "../../services/api";
 import { downloadContactsCsv } from "../../utils/exportContactsCsv";
-import AllColumnsToggle from "../ValidationView/AllColumnsToggle";
 import CellHighlightLegend from "../CellHighlightLegend";
 
 const CONTEXT_COLUMNS = [
@@ -30,12 +29,20 @@ const EXTRA_CONTACT_COLUMNS = [
   { key: "website_address", label: "Website", minW: 120 },
   { key: "office_address", label: "Office address", minW: 160 },
   { key: "other_info", label: "Other info", minW: 120 },
-  { key: "status", label: "Status", minW: 80 },
+  { key: "status", label: "Status", minW: 110, type: "status" },
 ];
 
 const ALL_CONTACT_COLUMNS = [...SUMMARY_CONTACT_COLUMNS, ...EXTRA_CONTACT_COLUMNS];
 const ALL_COLUMNS = [...CONTEXT_COLUMNS, ...ALL_CONTACT_COLUMNS];
 const SUMMARY_KEYS = new Set(SUMMARY_CONTACT_COLUMNS.map((c) => c.key));
+
+const STATUS_OPTIONS = ["Active", "Inactive"];
+
+function normalizeStatus(value) {
+  const s = String(value || "").trim().toLowerCase();
+  if (s === "inactive" || s === "in-active" || s === "in active") return "Inactive";
+  return "Active";
+}
 
 function formatDate(iso) {
   if (!iso) return "—";
@@ -50,6 +57,34 @@ function formatDate(iso) {
   } catch {
     return String(iso);
   }
+}
+
+function StatusSelect({ value, onChange, readOnly = false }) {
+  const status = normalizeStatus(value);
+  if (readOnly) {
+    return (
+      <div
+        className={`contact-cell contact-status ${status === "Inactive" ? "is-inactive" : "is-active"}`}
+        title={status}
+      >
+        {status}
+      </div>
+    );
+  }
+  return (
+    <select
+      className="contact-status-select"
+      value={status}
+      onChange={(e) => onChange(e.target.value)}
+      aria-label="Contact status"
+    >
+      {STATUS_OPTIONS.map((opt) => (
+        <option key={opt} value={opt}>
+          {opt}
+        </option>
+      ))}
+    </select>
+  );
 }
 
 function EditableContactCell({
@@ -131,7 +166,12 @@ function EditableContactCell({
 
 function cellValue(row, key) {
   if (key === "date_received") return formatDate(row.date_received);
+  if (key === "status") return normalizeStatus(row.status);
   return row[key] ?? "";
+}
+
+function withNormalizedStatus(rows) {
+  return (rows || []).map((r) => ({ ...r, status: normalizeStatus(r.status) }));
 }
 
 export default function ContactListView({ isActive = false, refreshKey = 0 }) {
@@ -141,7 +181,6 @@ export default function ContactListView({ isActive = false, refreshKey = 0 }) {
   const [savedMsg, setSavedMsg] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
-  const [showAllColumns, setShowAllColumns] = useState(false);
   const savedTimer = useRef(null);
   const rowsRef = useRef([]);
   const editSnapshot = useRef(null);
@@ -162,8 +201,9 @@ export default function ContactListView({ isActive = false, refreshKey = 0 }) {
     setError("");
     try {
       const data = await getContacts();
-      setRows(data);
-      rowsRef.current = data;
+      const normalized = withNormalizedStatus(data);
+      setRows(normalized);
+      rowsRef.current = normalized;
     } catch (e) {
       setError(e.message);
     } finally {
@@ -174,14 +214,6 @@ export default function ContactListView({ isActive = false, refreshKey = 0 }) {
   useEffect(() => {
     if (isActive) load();
   }, [isActive, refreshKey, load]);
-
-  const visibleColumns = useMemo(
-    () =>
-      showAllColumns
-        ? ALL_COLUMNS
-        : [...CONTEXT_COLUMNS, ...SUMMARY_CONTACT_COLUMNS],
-    [showAllColumns]
-  );
 
   const enterEditMode = useCallback(() => {
     editSnapshot.current = rowsRef.current.map((r) => ({ ...r }));
@@ -298,15 +330,6 @@ export default function ContactListView({ isActive = false, refreshKey = 0 }) {
 
           {editMode && <CellHighlightLegend className="contact-legends" />}
 
-          {!loading && rows.length > 0 && (
-            <AllColumnsToggle
-              enabled={showAllColumns}
-              onChange={setShowAllColumns}
-              visibleCount={CONTEXT_COLUMNS.length + SUMMARY_CONTACT_COLUMNS.length}
-              totalCount={ALL_COLUMNS.length}
-            />
-          )}
-
           <button
             type="button"
             onClick={handleExportCsv}
@@ -349,7 +372,7 @@ export default function ContactListView({ isActive = false, refreshKey = 0 }) {
               <table className="vessel-grid contact-grid">
                 <thead>
                   <tr>
-                    {visibleColumns.map((col) => (
+                    {ALL_COLUMNS.map((col) => (
                       <th key={col.key} style={{ minWidth: col.minW }}>
                         {col.label}
                       </th>
@@ -362,7 +385,7 @@ export default function ContactListView({ isActive = false, refreshKey = 0 }) {
                       key={row.contact_id}
                       className={row.used_fallback ? "contact-fallback" : undefined}
                     >
-                      {visibleColumns.map((col) => {
+                      {ALL_COLUMNS.map((col) => {
                         const raw = cellValue(row, col.key);
                         const isEditable = editMode && !col.readOnly;
                         const highlightMissing =
@@ -375,18 +398,28 @@ export default function ContactListView({ isActive = false, refreshKey = 0 }) {
                             key={col.key}
                             style={{
                               minWidth: col.minW,
-                              maxWidth: col.readOnly ? 220 : 280,
+                              maxWidth: col.key === "status" ? 140 : col.readOnly ? 220 : 280,
                             }}
                             className={highlightMissing ? "cell-missing" : undefined}
                           >
-                            <EditableContactCell
-                              value={raw}
-                              readOnly={!isEditable}
-                              highlightMissing={highlightMissing}
-                              onChange={(v) =>
-                                handleCellChange(row.contact_id, col.key, v)
-                              }
-                            />
+                            {col.type === "status" ? (
+                              <StatusSelect
+                                value={raw}
+                                readOnly={!isEditable}
+                                onChange={(v) =>
+                                  handleCellChange(row.contact_id, "status", v)
+                                }
+                              />
+                            ) : (
+                              <EditableContactCell
+                                value={raw}
+                                readOnly={!isEditable}
+                                highlightMissing={highlightMissing}
+                                onChange={(v) =>
+                                  handleCellChange(row.contact_id, col.key, v)
+                                }
+                              />
+                            )}
                           </td>
                         );
                       })}

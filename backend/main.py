@@ -46,6 +46,9 @@ from workflow import phase1_graph, phase2_graph
 from agents.summary import summarize_vessels, summarize_inbox, summarize_contacts, summarize_home
 from agents.contact_extract import (
     CONTACT_FIELD_KEYS,
+    contact_match_key,
+    dedupe_broker_contacts,
+    normalize_contact_status,
 )
 from agents.confidence_score import attachment_needs_review, compute_attachment_confidence
 from verification import backfill_auto_verify, set_attachment_verified
@@ -57,6 +60,7 @@ from vessel_library import (
     update_library_vessel,
     delete_library_vessel,
     normalize_library_formats,
+    rematch_library,
 )
 from column_defs import (
     ensure_column_definitions,
@@ -169,11 +173,28 @@ async def startup_event():
         # Do NOT autofill vessel_library here — new vessels stay in "Review & add"
         # until the user promotes them from the Vessel Libraries List.
         try:
+            rematch = rematch_library(db)
+            if rematch.get("merged") or rematch.get("updated"):
+                logger.info(
+                    "  Vessel library rematch: merged=%s updated_keys=%s",
+                    rematch.get("merged", 0),
+                    rematch.get("updated", 0),
+                )
             fmt_n = normalize_library_formats(db)
             if fmt_n:
                 logger.info("  Vessel library format normalize: %d rows", fmt_n)
         except Exception as lib_fmt_exc:
             logger.warning("  Vessel library format normalize skipped: %s", lib_fmt_exc)
+        try:
+            contact_dedupe = dedupe_broker_contacts(db)
+            if contact_dedupe.get("merged") or contact_dedupe.get("updated"):
+                logger.info(
+                    "  Contact rematch: merged=%s updated_keys=%s",
+                    contact_dedupe.get("merged", 0),
+                    contact_dedupe.get("updated", 0),
+                )
+        except Exception as contact_dedupe_exc:
+            logger.warning("  Contact rematch skipped: %s", contact_dedupe_exc)
         auto_verified = backfill_auto_verify(db)
         if auto_verified:
             logger.info("  Auto-verified %d high-confidence attachment(s)", auto_verified)
@@ -676,7 +697,10 @@ async def list_contacts():
                 "row_order": row.get("row_order") or 0,
             }
             for key in CONTACT_FIELD_KEYS:
-                item[key] = row.get(key) or ""
+                if key == "status":
+                    item[key] = normalize_contact_status(row.get(key))
+                else:
+                    item[key] = row.get(key) or ""
             result.append(item)
 
         result.sort(
@@ -704,19 +728,72 @@ async def update_broker_contact(contact_id: str, body: UpdateBrokerContactReques
         for key in CONTACT_FIELD_KEYS:
             val = getattr(body, key, None)
             if val is not None:
-                update_payload[key] = val.strip()
+                update_payload[key] = (
+                    normalize_contact_status(val) if key == "status" else val.strip()
+                )
         if not update_payload:
             raise HTTPException(status_code=400, detail="No fields to update.")
-        update_payload["updated_at"] = datetime.now(timezone.utc).isoformat()
-        result = (
+
+        existing = (
             supabase.table("broker_contacts")
-            .update(update_payload)
+            .select("id, match_key, " + ", ".join(CONTACT_FIELD_KEYS))
             .eq("id", contact_id)
+            .limit(1)
             .execute()
-        )
-        if not result.data:
+        ).data or []
+        if not existing:
             raise HTTPException(status_code=404, detail="Contact not found.")
-        row = result.data[0]
+        merged_for_key = {**existing[0], **update_payload}
+        new_key = contact_match_key(merged_for_key)
+        if new_key:
+            # If identity now collides with another row, merge into that row
+            clash = (
+                supabase.table("broker_contacts")
+                .select("id, " + ", ".join(CONTACT_FIELD_KEYS))
+                .eq("match_key", new_key)
+                .neq("id", contact_id)
+                .limit(1)
+                .execute()
+            ).data or []
+            if clash:
+                from agents.contact_extract import _merge_contact_fields
+
+                survivor = clash[0]
+                merged = _merge_contact_fields(survivor, merged_for_key)
+                merged["match_key"] = new_key
+                merged["updated_at"] = datetime.now(timezone.utc).isoformat()
+                result = (
+                    supabase.table("broker_contacts")
+                    .update(merged)
+                    .eq("id", survivor["id"])
+                    .execute()
+                )
+                supabase.table("broker_contacts").delete().eq("id", contact_id).execute()
+                row = result.data[0] if result.data else {**survivor, **merged}
+            else:
+                update_payload["match_key"] = new_key
+                update_payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+                result = (
+                    supabase.table("broker_contacts")
+                    .update(update_payload)
+                    .eq("id", contact_id)
+                    .execute()
+                )
+                if not result.data:
+                    raise HTTPException(status_code=404, detail="Contact not found.")
+                row = result.data[0]
+        else:
+            update_payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+            result = (
+                supabase.table("broker_contacts")
+                .update(update_payload)
+                .eq("id", contact_id)
+                .execute()
+            )
+            if not result.data:
+                raise HTTPException(status_code=404, detail="Contact not found.")
+            row = result.data[0]
+
         att = (
             supabase.table("attachments")
             .select("filename")
@@ -743,7 +820,11 @@ async def update_broker_contact(contact_id: str, body: UpdateBrokerContactReques
             "row_order": row.get("row_order") or 0,
         }
         for key in CONTACT_FIELD_KEYS:
-            out[key] = row.get(key) or ""
+            out[key] = (
+                normalize_contact_status(row.get(key))
+                if key == "status"
+                else (row.get(key) or "")
+            )
         return out
     except HTTPException:
         raise

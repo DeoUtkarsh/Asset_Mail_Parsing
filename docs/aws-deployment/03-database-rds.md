@@ -52,7 +52,10 @@ CREATE DATABASE email_parser;
 ```
 
 You normally **do not** need to run `schema.sql` by hand. When ECS starts with
-`PG_DATABASE=email_parser`, the API runs idempotent DDL and seeds column definitions.
+`PG_DATABASE=email_parser`, the API runs idempotent DDL (including
+`broker_contacts.match_key`), seeds column definitions, and rematches vessel-library /
+contact identity keys (soft-duplicate merge). Autofill insert into the library still
+waits for **Review all** in the UI.
 
 Optional manual apply:
 

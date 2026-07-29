@@ -46,18 +46,24 @@ function canAdvanceStatus(from, to) {
 }
 
 /**
- * Vessel Extracted Data + Need to Review share this view.
- * reviewMode only changes the mail list filter (low/medium / needs_review) and hides Fetch Emails.
- * Preview grid, edit, verify, column toggle, and highlights are identical.
+ * Vessel Extracted Data — All mails + Need to review as tabs (same grid/preview).
+ * Review tab filters low/medium / needs_review and hides Fetch Emails.
  */
-export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUpdated, onEmailsLoaded, reviewMode = false }) {
+export default function InboxView({
+  onEmailReady,
+  onVesselsUpdated,
+  onContactsUpdated,
+  onEmailsLoaded,
+  inboxTab = "all",
+  onInboxTabChange,
+}) {
+  const reviewMode = inboxTab === "review";
   const [emails, setEmails]           = useState([]);
   const [fetching, setFetching]       = useState(false);
   const [retrying, setRetrying]       = useState(false);
   const [jobId, setJobId]             = useState(null);
   const [attStatuses, setAttStatuses] = useState({});
-  // Inbox and Need-to-Review share this component instance, so keep a separate
-  // open-mail + search per tab — each tab remembers its own selection.
+  // Keep a separate open-mail + search per tab — each tab remembers its own selection.
   const [selById, setSelById]         = useState({ inbox: null, review: null });
   const [searchByMode, setSearchByMode] = useState({ inbox: "", review: "" });
   const modeKey = reviewMode ? "review" : "inbox";
@@ -356,28 +362,22 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
   }, [emails]);
 
   // Review tab: same rule as Home dashboard (needs_review flag from API).
-  const scopedRows = useMemo(() => {
-    if (!reviewMode) return mailRows;
-    return mailRows.filter((r) => {
-      if (r.is_verified) return false;
-      if (typeof r.needs_review === "boolean") return r.needs_review;
-      const tier = r.confidence_tier;
-      return tier === "medium" || tier === "low" || resolveAttStatus(r) === "failed";
-    });
-  }, [reviewMode, mailRows, attStatuses]);
+  const isReviewRow = useCallback((r) => {
+    if (r.is_verified) return false;
+    if (typeof r.needs_review === "boolean") return r.needs_review;
+    const tier = r.confidence_tier;
+    return tier === "medium" || tier === "low" || resolveAttStatus(r) === "failed";
+  }, [attStatuses]);
 
-  // Same retry control on both tabs; review only counts mails in the review list.
-  const retryTarget = useMemo(() => {
-    const attIds = reviewMode ? new Set(scopedRows.map((r) => r.id)) : null;
-    for (const em of emails) {
-      const count = (em.attachments || []).filter((att) => {
-        if (attIds && !attIds.has(att.id)) return false;
-        return isRetryableAtt(att);
-      }).length;
-      if (count > 0) return { emailId: em.id, count };
-    }
-    return null;
-  }, [emails, attStatuses, reviewMode, scopedRows]);
+  const reviewRows = useMemo(
+    () => mailRows.filter(isReviewRow),
+    [mailRows, isReviewRow]
+  );
+
+  const scopedRows = useMemo(
+    () => (reviewMode ? reviewRows : mailRows),
+    [reviewMode, reviewRows, mailRows]
+  );
 
   const filteredRows = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -410,24 +410,29 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
     return n;
   }, [filters]);
 
+  // Header KPIs stay global (all mails) so tab switches don't resize the header.
   const inboxStats = useMemo(() => {
-    let attachments = 0;
     let downloaded = 0;
     let vessels = 0;
-    const emailIds = new Set();
-    for (const row of scopedRows) {
-      emailIds.add(row.email.id);
-      attachments += 1;
+    for (const row of mailRows) {
       if (resolveAttStatus(row) === "downloaded") downloaded += 1;
       vessels += row.vessel_count || 0;
     }
     return {
-      emails: reviewMode ? emailIds.size : emails.length,
-      attachments,
+      emails: emails.length,
       downloaded,
       vessels,
     };
-  }, [scopedRows, reviewMode, emails, attStatuses]);
+  }, [mailRows, emails, attStatuses]);
+
+  // Retry control: count across all mails so the header action doesn't appear/disappear per tab.
+  const retryTarget = useMemo(() => {
+    for (const em of emails) {
+      const count = (em.attachments || []).filter((att) => isRetryableAtt(att)).length;
+      if (count > 0) return { emailId: em.id, count };
+    }
+    return null;
+  }, [emails, attStatuses]);
 
   const selectedRow = useMemo(
     () => mailRows.find((r) => r.id === selectedId) || null,
@@ -448,8 +453,8 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
       <div className="vgrid-head">
         <div className="vgrid-title">
           <div className="vgrid-title-row">
-            <h2>{reviewMode ? "Need to Review" : "Vessel Extracted Data"}</h2>
-            {emails.length > 0 && (!reviewMode || scopedRows.length > 0) && (
+            <h2>Vessel Extracted Data</h2>
+            {emails.length > 0 && (
               <div className="vgrid-stats inline">
                 <InboxStat label="Emails" value={inboxStats.emails} />
                 <InboxStat label="Synced" value={inboxStats.downloaded} />
@@ -457,11 +462,8 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
               </div>
             )}
           </div>
-          {reviewMode && (
-            <span className="vgrid-sub">Please review the medium & low confidence mails.</span>
-          )}
         </div>
-        <div className="vgrid-actions">
+        <div className="vgrid-actions inbox-head-actions">
           {retryTarget && !anyJobActive ? (
             <button
               type="button"
@@ -475,24 +477,59 @@ export default function InboxView({ onEmailReady, onVesselsUpdated, onContactsUp
                 `Retry Failed (${retryTarget.count})`
               )}
             </button>
-          ) : null}
-          {!reviewMode && (
-            <button
-              type="button"
-              onClick={handleFetch}
-              disabled={fetchBusy || anyJobActive}
-              className="btn btn-send"
-              style={{ fontSize: 13, padding: "9px 15px", display: "inline-flex", alignItems: "center", gap: 8 }}
-              title={fetchBusy || anyJobActive ? "Fetching emails…" : "Fetch new broker emails"}
-            >
-              {(fetchBusy || (anyJobActive && fetching)) && (
-                <span className="spin-ring" style={{ width: 14, height: 14 }} />
-              )}
-              Fetch Emails
-            </button>
+          ) : (
+            <span className="inbox-retry-slot" aria-hidden="true" />
           )}
+          <button
+            type="button"
+            onClick={handleFetch}
+            disabled={reviewMode || fetchBusy || anyJobActive}
+            className={`btn btn-send inbox-fetch-btn ${reviewMode ? "is-placeholder" : ""}`}
+            aria-hidden={reviewMode}
+            tabIndex={reviewMode ? -1 : undefined}
+            title={
+              reviewMode
+                ? undefined
+                : fetchBusy || anyJobActive
+                  ? "Fetching emails…"
+                  : "Fetch new broker emails"
+            }
+          >
+            {(fetchBusy || (anyJobActive && fetching)) && !reviewMode && (
+              <span className="spin-ring" style={{ width: 14, height: 14 }} />
+            )}
+            Fetch Emails
+          </button>
         </div>
       </div>
+
+      <div className="inbox-tabs" role="tablist" aria-label="Extracted mail views">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={!reviewMode}
+          className={`inbox-tab ${!reviewMode ? "active" : ""}`}
+          onClick={() => onInboxTabChange?.("all")}
+        >
+          <Icon name="mail" size={14} />
+          All mails ({mailRows.length})
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={reviewMode}
+          className={`inbox-tab ${reviewMode ? "active" : ""}`}
+          onClick={() => onInboxTabChange?.("review")}
+        >
+          <Icon name="alert" size={14} />
+          Need to review ({reviewRows.length})
+        </button>
+      </div>
+      <p className="inbox-tab-hint">
+        {reviewMode
+          ? "Please review the medium & low confidence mails."
+          : "Owner position emails, parsed automatically — open a mail to check vessels."}
+      </p>
 
       <div className="inbox-split">
         {/* ── Left: mail list ── */}

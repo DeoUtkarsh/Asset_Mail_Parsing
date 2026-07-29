@@ -1,17 +1,9 @@
 import Icon from "../icons";
 
-const STEPS = [
-  { key: "received", label: "Received", unit: "emails", fact: "emails_received" },
-  { key: "parsed", label: "Parsed", unit: "vessels", fact: "positions_parsed" },
-  { key: "compiled", label: "Compiled", unit: "zones", fact: "zones" },
-  { key: "review", label: "Review", unit: "to check", fact: "review_count" },
-];
-
 export default function HomeView({ data, loading = false, error = "", onNavigate, onRefresh }) {
   const load = () => onRefresh?.();
 
   const f = data?.facts || {};
-  const readiness = f.readiness_pct ?? 0;
   const reviewCount = f.review_count ?? 0;
   const positionsReady = f.positions_ready ?? 0;
   const positionsParsed = f.positions_parsed ?? 0;
@@ -29,22 +21,12 @@ export default function HomeView({ data, loading = false, error = "", onNavigate
 
   const headline =
     positionsReady > 0 && reviewCount === 0
-      ? "Ready to send"
+      ? "Morning brief"
       : positionsReady > 0
         ? "Almost ready to send"
         : positionsParsed > 0
           ? "Positions parsed — review pending"
           : "Waiting for your first sync";
-
-  const stepState = (key) => {
-    switch (key) {
-      case "received": return f.emails_received > 0 ? "done" : "pending";
-      case "parsed": return positionsParsed > 0 ? "done" : "pending";
-      case "compiled": return zones > 0 ? "done" : "pending";
-      case "review": return reviewCount > 0 ? "current" : positionsReady > 0 ? "done" : "pending";
-      default: return "pending";
-    }
-  };
 
   return (
     <div className="home-root">
@@ -63,60 +45,14 @@ export default function HomeView({ data, loading = false, error = "", onNavigate
               </button>
             </div>
 
-            <div className="home-kpis">
-              <div className="home-kpi">
-                <Icon name="mail" size={15} className="home-kpi-ic" />
-                <span className="home-kpi-label">Emails received</span>
-                <b className="home-kpi-val">{showBootLoading ? "—" : (f.emails_received ?? 0)}</b>
-              </div>
-              <div className="home-kpi">
-                <Icon name="anchor" size={15} className="home-kpi-ic" />
-                <span className="home-kpi-label">Positions parsed</span>
-                <b className="home-kpi-val">{showBootLoading ? "—" : positionsParsed}</b>
-              </div>
-              <div className="home-kpi">
-                <Icon name="grid" size={15} className="home-kpi-ic" />
-                <span className="home-kpi-label">Ready</span>
-                <b className="home-kpi-val">{showBootLoading ? "—" : `${readiness}%`}</b>
-              </div>
-            </div>
-
-            <div className="home-summary">
-              <div className="home-ring" style={{ "--pct": `${showBootLoading ? 0 : readiness}%` }}>
-                <div className="home-ring-inner">
-                  <b>{showBootLoading ? "…" : `${readiness}%`}</b>
-                  <span>READY</span>
-                </div>
-              </div>
+            <div className="home-summary home-summary--text-only">
               <div className="home-summary-text">
                 <h2>{showBootLoading ? "Loading…" : headline}</h2>
                 <p>{showBootLoading ? "Crunching the latest numbers…" : (data?.narrative || "")}</p>
               </div>
             </div>
-
-            <div className="home-stepper">
-              {STEPS.map((s, i) => {
-                const state = stepState(s.key);
-                const value = s.fact ? (f[s.fact] ?? 0) : null;
-                return (
-                  <div key={s.key} className="home-step-wrap">
-                    {i > 0 && <div className={`home-step-line ${state !== "pending" ? "on" : ""}`} />}
-                    <div className={`home-step ${state}`}>
-                      <div className="home-step-dot">
-                        {state === "done" ? "✓" : state === "current" ? value : <Icon name="navigation" size={13} />}
-                      </div>
-                      <div className="home-step-label">{s.label}</div>
-                      <div className="home-step-sub">
-                        {value != null ? `${value} ${s.unit}` : s.unit}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
           </div>
 
-          {/* Data cards only — review / positions lists */}
           <div className="home-actions">
             <button
               type="button"

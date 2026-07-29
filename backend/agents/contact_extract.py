@@ -86,7 +86,7 @@ Rules:
 13. designation = job title (Manager, Director…). department = desk (Chartering, Ops…).
     Do NOT put geographic region headers (ASIA, EUROPE, AMERICAS) into department.
 14. other_info: Skype / ICE / leave notes only — NEVER write "signature fallback".
-15. status: "Active" if contact looks current, else "".
+15. status: ONLY "Active" or "Inactive". Default "Active" if unclear. Never invent other labels.
 16. Do not include GDPR footers, Proofpoint links, or unsubscribe text.
 17. Extract EVERY named person in the signature — missing a named person is an error.
 
@@ -115,7 +115,7 @@ Your job:
 - Several emails + no person names → one row, emails comma-separated.
 - Clean company names (strip "Position List", dates, open tonnage titles).
 - other_info: only Skype / ICE / leave notes from the email — never "signature fallback".
-- status: "Active" if contact looks current, else "".
+- status: ONLY "Active" or "Inactive" (default "Active").
 
 Required keys on every object (use "" if unknown):
 contact_name, designation, department, company, company_type, vessel_name,
@@ -703,12 +703,168 @@ def enrich_contacts_vessel_names(
     return enriched
 
 
+_EMPTY_CONTACT = frozenset({
+    "", "-", "—", "–", ".", "..", "n/a", "na", "none", "null", "unknown",
+})
+
+
+def normalize_contact_status(val: Any) -> str:
+    """Canonical contact status: Active (default) or Inactive."""
+    s = str(val or "").strip().lower().replace("_", " ").replace("-", " ")
+    s = re.sub(r"\s+", " ", s)
+    if s in {"inactive", "in active", "disabled", "archived"}:
+        return "Inactive"
+    return "Active"
+
+
+def _clean_contact_val(val: Any) -> str:
+    s = str(val or "").strip()
+    return "" if s.lower() in _EMPTY_CONTACT else s
+
+
+def _first_email(raw: str) -> str:
+    text = _clean_contact_val(raw).lower()
+    if not text:
+        return ""
+    # Prefer first well-formed address in a comma/semicolon list
+    for part in re.split(r"[,;\s]+", text):
+        part = part.strip().strip("<>")
+        if "@" in part and "." in part.split("@")[-1]:
+            return part
+    if "@" in text:
+        return text.split(",")[0].strip()
+    return ""
+
+
+def _norm_phone(raw: str) -> str:
+    digits = re.sub(r"\D", "", _clean_contact_val(raw))
+    if len(digits) < 7:
+        return ""
+    # Drop leading country trunk zeros; keep full international digit string
+    return digits.lstrip("0") or digits
+
+
+def _norm_person_token(raw: str) -> str:
+    s = _clean_contact_val(raw).upper()
+    s = re.sub(r"[^A-Z0-9 ]+", "", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def contact_match_key(contact: dict[str, Any]) -> str:
+    """Identity: email → phone → name+company."""
+    email = _first_email(str(contact.get("email") or ""))
+    if email:
+        return f"email:{email}"
+    phone = _norm_phone(str(contact.get("mob_phone") or "")) or _norm_phone(
+        str(contact.get("off_phone") or "")
+    )
+    if phone:
+        return f"phone:{phone}"
+    name = _norm_person_token(str(contact.get("contact_name") or ""))
+    company = _norm_person_token(str(contact.get("company") or ""))
+    if name and company:
+        return f"name:{name}|company:{company}"
+    if name:
+        return f"name:{name}"
+    return ""
+
+
+def _merge_contact_fields(
+    base: dict[str, Any],
+    incoming: dict[str, Any],
+) -> dict[str, str]:
+    """Non-empty incoming contact fields overwrite base."""
+    out: dict[str, str] = {}
+    for key in CONTACT_FIELD_KEYS:
+        cur = _clean_contact_val(base.get(key))
+        nxt = _clean_contact_val(incoming.get(key))
+        if key == "other_info" and nxt.lower() == FALLBACK_OTHER_INFO:
+            nxt = ""
+        if key == "status":
+            base_st = normalize_contact_status(cur) if cur else ""
+            inc_st = normalize_contact_status(nxt) if nxt else ""
+            # Keep Inactive once set — extraction should not flip it back to Active
+            if base_st == "Inactive" and inc_st != "Inactive":
+                out[key] = "Inactive"
+            elif inc_st:
+                out[key] = inc_st
+            else:
+                out[key] = base_st or "Active"
+            continue
+        out[key] = nxt if nxt else cur
+    return out
+
+
+def dedupe_broker_contacts(supabase_client=None) -> dict[str, int]:
+    """Recompute match_keys and merge duplicate contact rows into one."""
+    db = supabase_client or supabase
+    rows = (
+        db.table("broker_contacts")
+        .select("id, match_key, attachment_id, parent_email_id, row_order, used_fallback, updated_at, "
+                + ", ".join(CONTACT_FIELD_KEYS))
+        .execute()
+    ).data or []
+    if not rows:
+        return {"merged": 0, "updated": 0}
+
+    def richness(r: dict) -> tuple:
+        filled = sum(1 for k in CONTACT_FIELD_KEYS if _clean_contact_val(r.get(k)))
+        return (filled, r.get("updated_at") or "")
+
+    rows_sorted = sorted(rows, key=richness)
+    by_key: dict[str, dict[str, Any]] = {}
+    merged = 0
+    updated = 0
+
+    for row in rows_sorted:
+        key = contact_match_key(row) or (row.get("match_key") or "")
+        if not key:
+            # Keep orphan rows unique so they do not collapse together
+            key = f"orphan:{row['id']}"
+        if key not in by_key:
+            if key != (row.get("match_key") or ""):
+                db.table("broker_contacts").update({
+                    "match_key": key,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }).eq("id", row["id"]).execute()
+                row["match_key"] = key
+                updated += 1
+            by_key[key] = row
+            continue
+
+        survivor = by_key[key]
+        merged_fields = _merge_contact_fields(survivor, row)
+        patch = dict(merged_fields)
+        patch["match_key"] = key
+        patch["attachment_id"] = row.get("attachment_id") or survivor.get("attachment_id")
+        patch["parent_email_id"] = row.get("parent_email_id") or survivor.get("parent_email_id")
+        patch["used_fallback"] = bool(survivor.get("used_fallback")) and bool(
+            row.get("used_fallback")
+        )
+        patch["updated_at"] = datetime.now(timezone.utc).isoformat()
+        db.table("broker_contacts").update(patch).eq("id", survivor["id"]).execute()
+        for f, v in patch.items():
+            survivor[f] = v
+        db.table("broker_contacts").delete().eq("id", row["id"]).execute()
+        merged += 1
+
+    if merged or updated:
+        logger.info(
+            "Broker contacts rematch: merged=%d updated_keys=%d",
+            merged,
+            updated,
+        )
+    return {"merged": merged, "updated": updated}
+
+
 def _contact_row_db_payload(
     attachment_id: str,
     parent_email_id: str | None,
     contact: dict[str, str],
     row_order: int,
     used_fallback: bool,
+    *,
+    match_key: str = "",
 ) -> dict[str, Any]:
     other = (contact.get("other_info") or "").strip()
     if other.lower() == FALLBACK_OTHER_INFO:
@@ -718,11 +874,14 @@ def _contact_row_db_payload(
         "parent_email_id": parent_email_id,
         "row_order": row_order,
         "used_fallback": used_fallback,
+        "match_key": match_key,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
     for key in CONTACT_FIELD_KEYS:
         if key == "other_info":
             row[key] = other
+        elif key == "status":
+            row[key] = normalize_contact_status(contact.get(key))
         else:
             row[key] = (contact.get(key) or "").strip()
     return row
@@ -735,16 +894,75 @@ def save_broker_contacts_for_attachment(
     *,
     used_fallback: bool | None = None,
 ) -> int:
-    """Replace broker_contacts for one attachment. Returns rows inserted."""
+    """Upsert broker contacts by global identity (email → phone → name+company).
+
+    Same person across mails updates one row. Returns number of contacts upserted.
+    """
     contacts = enrich_contacts_vessel_names(attachment_id, contacts)
-    supabase.table("broker_contacts").delete().eq("attachment_id", attachment_id).execute()
-    if not contacts:
-        return 0
     fb = contacts_used_fallback(contacts) if used_fallback is None else used_fallback
+
+    existing_rows = (
+        supabase.table("broker_contacts")
+        .select(
+            "id, match_key, attachment_id, parent_email_id, row_order, used_fallback, "
+            + ", ".join(CONTACT_FIELD_KEYS)
+        )
+        .execute()
+    ).data or []
+    by_key: dict[str, dict[str, Any]] = {}
+    for row in existing_rows:
+        key = row.get("match_key") or contact_match_key(row)
+        if key and key not in by_key:
+            by_key[key] = row
+
+    kept_keys: set[str] = set()
+    upserted = 0
+
     for i, contact in enumerate(contacts):
-        payload = _contact_row_db_payload(attachment_id, parent_email_id, contact, i, fb)
-        supabase.table("broker_contacts").insert(payload).execute()
-    return len(contacts)
+        key = contact_match_key(contact)
+        if not key:
+            key = f"orphan:{attachment_id}:{i}"
+        kept_keys.add(key)
+        payload = _contact_row_db_payload(
+            attachment_id, parent_email_id, contact, i, fb, match_key=key
+        )
+
+        existing = by_key.get(key)
+        if existing:
+            merged = _merge_contact_fields(existing, payload)
+            patch = dict(merged)
+            patch["match_key"] = key
+            patch["attachment_id"] = attachment_id
+            patch["parent_email_id"] = parent_email_id
+            patch["row_order"] = i
+            # Keep fallback flag only if both sides were fallback
+            patch["used_fallback"] = bool(existing.get("used_fallback")) and bool(fb)
+            patch["updated_at"] = datetime.now(timezone.utc).isoformat()
+            supabase.table("broker_contacts").update(patch).eq(
+                "id", existing["id"]
+            ).execute()
+            existing.update(patch)
+            upserted += 1
+            continue
+
+        result = supabase.table("broker_contacts").insert(payload).execute()
+        if result.data:
+            by_key[key] = result.data[0]
+        upserted += 1
+
+    # Drop stale rows still attributed to this attachment but not in the new extract
+    stale = (
+        supabase.table("broker_contacts")
+        .select("id, match_key")
+        .eq("attachment_id", attachment_id)
+        .execute()
+    ).data or []
+    for row in stale:
+        mk = row.get("match_key") or ""
+        if mk and mk not in kept_keys:
+            supabase.table("broker_contacts").delete().eq("id", row["id"]).execute()
+
+    return upserted
 
 
 async def _process_attachment_contacts(

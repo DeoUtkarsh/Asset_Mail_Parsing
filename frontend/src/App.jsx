@@ -17,7 +17,6 @@ const FILTER_SENDER = "sanjib@iconshipbrokers.com";
 const RAIL = [
   { id: "home", ic: "home", label: "Home" },
   { id: "inbox", ic: "grid", label: "Vessel Extracted Data" },
-  { id: "review", ic: "alert", label: "Need to Review" },
   { id: "today", ic: "anchor", label: "Vessel Position List" },
   { id: "list", ic: "users", label: "Contact List" },
   { id: "library", ic: "library", label: "Vessel Libraries List" },
@@ -63,6 +62,8 @@ export default function App() {
 
 function MainApp({ onLogout }) {
   const [view, setView] = useState("home");
+  /** Inbox sub-tab: "all" | "review" (Need to Review lives here, not on the rail). */
+  const [inboxTab, setInboxTab] = useState("all");
   const [emails, setEmails] = useState([]);
   const [activeEmailId, setActiveEmailId] = useState(null);
   const [vessels, setVessels] = useState([]);
@@ -162,6 +163,16 @@ function MainApp({ onLogout }) {
 
   // ── Nav ──
   const go = useCallback((v) => {
+    if (v === "review") {
+      setInboxTab("review");
+      setView("inbox");
+      return;
+    }
+    if (v === "inbox") {
+      setInboxTab("all");
+      setView("inbox");
+      return;
+    }
     setView(v);
   }, []);
 
@@ -259,12 +270,12 @@ function MainApp({ onLogout }) {
     ? new Date(activeEmail.date_received).toLocaleDateString("en-GB", { day: "2-digit", month: "short" })
     : "";
   const listRows = emailRows
-    .filter((r) => view === "review" ? r.status === "review" : true)
+    .filter((r) => true)
     .filter((r) => !query || r.filename.toLowerCase().includes(query.toLowerCase()));
 
   // auto-select first row when browsing emails
   useEffect(() => {
-    if ((view === "inbox" || view === "review") && listRows.length) {
+    if (view === "inbox" && listRows.length) {
       if (!selectedAttId || !listRows.some((r) => r.id === selectedAttId)) setSelectedAttId(listRows[0].id);
     }
   }, [view, listRows, selectedAttId]);
@@ -365,21 +376,22 @@ function MainApp({ onLogout }) {
       )}
 
       {/* ── Right panel ── */}
-      <div className={`rpanel ${view === "home" || view === "today" || view === "inbox" || view === "list" || view === "review" || view === "library" ? "rpanel-fill" : ""}`}>
+      <div className={`rpanel ${view === "home" || view === "today" || view === "inbox" || view === "list" || view === "library" ? "rpanel-fill" : ""}`}>
         {/* Position List stays mounted so a generated draft survives tab switches */}
         <div style={{ display: view === "today" ? "contents" : "none" }}>
           <ValidationView isActive={view === "today"} refreshKey={vesselRefreshKey} />
         </div>
-        {/* Extracted Data + Need to Review share one InboxView — same edit/verify/grid logic; review only filters low/medium */}
-        <div style={{ display: view === "inbox" || view === "review" ? "contents" : "none" }}>
+        {/* Vessel Extracted Data — All mails + Need to review as in-page tabs */}
+        <div style={{ display: view === "inbox" ? "contents" : "none" }}>
           <InboxView
-            reviewMode={view === "review"}
+            inboxTab={inboxTab}
+            onInboxTabChange={setInboxTab}
             onEmailsLoaded={syncHomeIfReviewCountChanged}
             onVesselsUpdated={() => { setVesselRefreshKey((k) => k + 1); setHomeRefreshKey((k) => k + 1); }}
             onContactsUpdated={() => setContactRefreshKey((k) => k + 1)}
           />
         </div>
-        {view === "today" || view === "inbox" || view === "review" ? null : loading && view !== "home" && view !== "list" && view !== "library" ? (
+        {view === "today" || view === "inbox" ? null : loading && view !== "home" && view !== "list" && view !== "library" ? (
           <div className="center-load"><span className="spin-ring" /> Loading…</div>
         ) : view === "home" ? (
           <HomeView

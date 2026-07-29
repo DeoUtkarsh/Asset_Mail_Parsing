@@ -17,9 +17,10 @@ boto3==1.35.36
 anthropic==0.39.0
 httpx==0.27.2
 langgraph==0.2.35
-# openai==1.51.0   # legacy NVIDIA NIM client — no longer used
+# openai / NVIDIA NIM — removed; Claude is the only LLM client
 
 # ── Attachment parsing (Claude reads images/PDF natively) ─────────
 Pillow==10.4.0          # image downscaling / format conversion
 openpyxl==3.1.5         # Excel (.xlsx) → text
 python-docx==1.1.2      # Word (.docx) → text
+# python-multipart — not required (no multipart upload routes)

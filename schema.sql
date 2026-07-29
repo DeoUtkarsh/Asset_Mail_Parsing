@@ -120,10 +120,16 @@ CREATE INDEX IF NOT EXISTS idx_broker_contacts_attachment_id
 CREATE INDEX IF NOT EXISTS idx_broker_contacts_parent_email_id
     ON broker_contacts(parent_email_id);
 
+ALTER TABLE broker_contacts ADD COLUMN IF NOT EXISTS match_key TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_broker_contacts_match_key
+    ON broker_contacts(match_key);
+
 -- ─────────────────────────────────────────────
 -- vessel_library — deduplicated master list of vessels (static particulars)
 -- Auto-filled from vessels on first startup; managed from the UI thereafter.
--- match_key: "imo:<7-digit>" when an IMO number exists, else "name:<normalized name>"
+-- match_key: "imo:<7-digit>" when an IMO exists, else
+--   "name:<normalized>|year:…|dwt:…|type:…|imotype:…" (present fields only).
+-- Name matching strips MT / MV / M/T / M/V prefixes.
 -- ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS vessel_library (
     id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),

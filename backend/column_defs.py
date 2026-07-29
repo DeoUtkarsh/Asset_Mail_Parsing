@@ -1122,6 +1122,206 @@ def _format_year_built(raw: str) -> tuple[str, bool]:
     return str(y), True
 
 
+# ── Display casing (Title Case for text; keep codes / IMO / call signs) ──────
+_SMALL_WORDS = frozenset({
+    "a", "an", "and", "as", "at", "by", "for", "from", "in", "of", "on", "or", "the", "to", "via",
+})
+_COMPANY_TOKENS = frozenset({
+    "pte", "ltd", "llc", "inc", "corp", "co", "sa", "plc", "gmbh", "bv", "nv", "ag", "oy", "ab",
+})
+# Match frontend VesselTypeSelect options (case-insensitive → canonical spelling).
+_VESSEL_TYPE_CANONICAL = (
+    "Oil Tanker",
+    "Chemical Tanker",
+    "Bulk Carrier",
+    "Chem/Prod Tanker",
+    "Container",
+    "LPG Carrier (Refri)",
+    "LNG Carrier",
+    "Cement Carrier",
+    "Asphalt / Bitumen Tanker",
+    "LPG Carrier (Press)",
+    "Gen Cargo / Multi-Purpose Vessel",
+    "Dredger",
+    "Offshore Support Vessel",
+    "Tug Boat",
+    "Others",
+)
+_VESSEL_TYPE_BY_KEY = {t.casefold(): t for t in _VESSEL_TYPE_CANONICAL}
+_VESSEL_TYPE_ALIASES = {
+    "general cargo": "Gen Cargo / Multi-Purpose Vessel",
+    "gen cargo": "Gen Cargo / Multi-Purpose Vessel",
+    "mpp": "Gen Cargo / Multi-Purpose Vessel",
+    "multi purpose": "Gen Cargo / Multi-Purpose Vessel",
+    "multipurpose": "Gen Cargo / Multi-Purpose Vessel",
+    "chem tanker": "Chemical Tanker",
+    "chemical": "Chemical Tanker",
+    "oil": "Oil Tanker",
+    "product tanker": "Chem/Prod Tanker",
+    "prod tanker": "Chem/Prod Tanker",
+}
+_CODEISH_RE = re.compile(r"^[A-Za-z0-9]{1,5}(/[A-Za-z0-9]{1,5})*$")
+_ACRONYM_DOT_RE = re.compile(r"^([A-Za-z]\.){1,}[A-Za-z]?\.?$")
+
+
+def _letter_stats(s: str) -> tuple[int, int]:
+    upper = sum(1 for c in s if c.isalpha() and c.isupper())
+    lower = sum(1 for c in s if c.isalpha() and c.islower())
+    return upper, lower
+
+
+def _mostly_all_caps(s: str) -> bool:
+    upper, lower = _letter_stats(s)
+    return upper > 0 and lower == 0
+
+
+def _title_word(word: str, *, index: int) -> str:
+    if not word:
+        return word
+    if _ACRONYM_DOT_RE.match(word):
+        return word.upper()
+    # Keep slash-codes like SS/ML, WCI as uppercase when short.
+    if "/" in word and _CODEISH_RE.match(word) and len(word) <= 11:
+        return word.upper()
+    letters_only = "".join(c for c in word if c.isalpha())
+    was_all_caps = bool(letters_only) and letters_only.isupper()
+    # Short ALL-CAPS tokens: keep upper for mid-phrase codes (PTE) or vowel-less acronyms (RCM, ML).
+    if was_all_caps and 2 <= len(letters_only) <= 3 and "." not in word:
+        if index > 0 or not re.search(r"[aeiouAEIOU]", letters_only):
+            return word.upper()
+    low = word.lower()
+    bare = re.sub(r"[^a-z]", "", low)
+    if index > 0 and bare in _SMALL_WORDS:
+        return low
+    if index > 0 and bare in _COMPANY_TOKENS:
+        return word.upper() if len(bare) <= 3 else (bare[:1].upper() + bare[1:])
+
+    # Capitalize first letter of each alphanumeric run (handles M/T, O'Brien-ish).
+    out: list[str] = []
+    i = 0
+    while i < len(word):
+        ch = word[i]
+        if ch.isalpha():
+            j = i + 1
+            while j < len(word) and word[j].isalpha():
+                j += 1
+            chunk = word[i:j]
+            out.append(chunk[:1].upper() + chunk[1:].lower())
+            i = j
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+def title_case_text(raw: str) -> str:
+    """Idempotent Title Case for free-text fields (company, flag, locations, …)."""
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    # Split on whitespace but keep separators.
+    parts = re.split(r"(\s+)", s)
+    word_i = 0
+    out: list[str] = []
+    for part in parts:
+        if not part:
+            continue
+        if part.isspace():
+            out.append(part)
+            continue
+        out.append(_title_word(part, index=word_i))
+        word_i += 1
+    return "".join(out)
+
+
+def _normalize_vessel_name_case(raw: str) -> str:
+    s = title_case_text(raw)
+    if not s:
+        return ""
+    # Common ship prefixes → stable uppercase form.
+    s = re.sub(r"^(M\s*/\s*T)\b", "M/T", s, flags=re.I)
+    s = re.sub(r"^(M\s*/\s*V)\b", "M/V", s, flags=re.I)
+    s = re.sub(r"^(MT)\b", "MT", s, flags=re.I)
+    s = re.sub(r"^(MV)\b", "MV", s, flags=re.I)
+    return s
+
+
+def _normalize_vessel_type_case(raw: str) -> str:
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    key = re.sub(r"\s+", " ", s).casefold()
+    if key in _VESSEL_TYPE_BY_KEY:
+        return _VESSEL_TYPE_BY_KEY[key]
+    if key in _VESSEL_TYPE_ALIASES:
+        return _VESSEL_TYPE_ALIASES[key]
+    return title_case_text(s)
+
+
+def _normalize_direction_case(raw: str) -> str:
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    compact = s.replace(" ", "")
+    if _CODEISH_RE.match(compact) and len(compact) <= 8:
+        return compact.upper()
+    return title_case_text(s)
+
+
+def _normalize_coating_case(raw: str) -> str:
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    compact = s.replace(" ", "")
+    if _CODEISH_RE.match(compact) and len(compact) <= 12:
+        return compact.upper()
+    return title_case_text(s)
+
+
+def _normalize_long_text_case(raw: str) -> str:
+    """Title-case only when the whole value is ALL CAPS (avoid rewriting sentences)."""
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+    if _mostly_all_caps(s) and sum(1 for c in s if c.isalpha()) >= 4:
+        return title_case_text(s)
+    return s
+
+
+_CASING_TITLE_KEYS = (
+    "company",
+    "flag",
+    "open_location",
+    "cargo_type",
+    "eta_foc",
+    "sire_location",
+    "cdi_location",
+    "cargo_history_combo",
+    "status",
+    "region_raw",
+)
+
+
+def _normalize_text_casing(out: dict[str, str]) -> None:
+    """Apply consistent Title Case / code casing on text fields (idempotent)."""
+    if _has_value(out.get("vessel_name")):
+        out["vessel_name"] = _normalize_vessel_name_case(out["vessel_name"])
+    if _has_value(out.get("vessel_type")):
+        out["vessel_type"] = _normalize_vessel_type_case(out["vessel_type"])
+    if _has_value(out.get("direction")):
+        out["direction"] = _normalize_direction_case(out["direction"])
+    if _has_value(out.get("tank_coating")):
+        out["tank_coating"] = _normalize_coating_case(out["tank_coating"])
+    for key in _CASING_TITLE_KEYS:
+        if _has_value(out.get(key)):
+            out[key] = title_case_text(out[key])
+    if _has_value(out.get("remarks")):
+        out["remarks"] = _normalize_long_text_case(out["remarks"])
+    if _has_value(out.get("other_info")):
+        out["other_info"] = _normalize_long_text_case(out["other_info"])
+    # call_sign / imo / imo_type / numeric fields left untouched.
+
+
 def _normalize_standard_formats(out: dict[str, str]) -> None:
     flags = _parse_ai_normalized(out.get("ai_normalized"))
     if _has_value(out.get("opening_date")):
@@ -1150,6 +1350,7 @@ def _normalize_standard_formats(out: dict[str, str]) -> None:
         if expanded:
             flags.add("year_built")
         # else: keep existing flag (LLM already expanded 17→2017)
+    _normalize_text_casing(out)
     out["ai_normalized"] = _format_ai_normalized(flags)
 
 

@@ -50,21 +50,28 @@ React workspace (Broker Sense)
 
 ### Workspace tabs
 
-1. **Home** — AI dashboard: pipeline stepper, readiness, review / positions counts, agent cards.
-2. **Vessel Extracted Data** — Outlook-style inbox + editable vessel grid + original message.
-3. **Need to Review** — medium/low confidence or failed extractions (helper: review medium & low confidence mail).
-4. **Vessel Position List** — verified vessels; select vessels/columns → **Draft Email** (map + zone PDF).  
+1. **Home** — AI **Morning brief**, review / positions counts, agent cards (no KPI stepper).
+2. **Vessel Extracted Data** — Outlook-style inbox with tabs **All mails** / **Need to review**, editable vessel grid + original message.
+3. **Vessel Position List** — verified vessels; select vessels/columns → **Draft Email** (map + zone PDF).  
    Helper line: *Select vessel and click on draft mail, your position list is ready to send.*
-5. **Contact List** — broker contacts from signatures.
-6. **Vessel Libraries List** — deduplicated vessel master + “newly detected” review / **Review all**.
+4. **Contact List** — unique broker people (not one row per mail). All columns always visible; **Status** is Active/Inactive (Edit → dropdown, default Active).
+5. **Vessel Libraries List** — deduplicated vessel master + “newly detected” review / **Review all**.
 
-### Editing notes (Position List · Extraction · Need to Review)
+### Unique identity (library + contacts)
+
+- **Vessel library** — same ship = one row. Match by **IMO (7 digits)** first; else normalized name (strips `MT`/`MV`/`M/T`/`M/V`) plus year / DWT / type / IMO type when present. Soft-merge when name matches and particulars do not conflict. Match → **upsert** (non-empty newer values win); else insert. Review list = extracted vessels not yet in the library.
+- **Contact list** — same person = one row. Match by **email** → else **phone** → else **name + company**. Re-extract upserts; does not create duplicates across mails. User **Inactive** is kept on later extracts.
+- **Position list / extracted vessels** stay per-email operational rows; the masters above are the deduped lists.
+
+### Editing notes (Position List · Extracted Data tabs)
 
 - Click **Edit** to change cells; **Save changes** persists.
 - **REGION** and **VESSEL TYPE** use a shared combobox (pick from list or type free text; **Others** focuses free text).
 - **Company** is resolved from subject, email domains, and contacts when the mail does not spell it out (e.g. Shell position lists).
 - **Extra Info** keeps full leftover vessel particulars from extraction (not truncated stubs).
+- Text fields use consistent Title Case (vessel names keep `M/T` / `MT` prefixes where present).
 - Vessel Library tables stay read-only; edit only via Add / Edit / Review modals (same vessel-type combobox).
+- Contact List: click **Edit** for Status dropdown and other fields; no column toggle — all fields show at once.
 
 ---
 
@@ -122,9 +129,10 @@ App: `http://localhost:5173` (Vite proxies `/api` → `:8000`).
 ## Usage Flow
 
 1. **Fetch Emails** — IMAP pull of **new** broker mail; Phase 1 extraction + contacts; SSE progress.
-2. **Review** — fix amber (missing) / blue (AI-normalized) cells; use REGION / VESSEL TYPE comboboxes in Edit mode; **Verify**.
+2. **Review** — inbox **Need to review** tab (or Home → Review now); fix amber (missing) / blue (AI-normalized) cells; use REGION / VESSEL TYPE comboboxes in Edit mode; **Verify**.
 3. **Draft** — on Vessel Position List, select vessels + columns → **Draft Email** → map + zone-grouped copy / PDF.
-4. **Library** — Vessel Libraries List: Add / Edit / Review / **Review all** (autofill from extracted vessels).
+4. **Contacts** — one row per person; Edit → set Status Active/Inactive; Export CSV.
+5. **Library** — Vessel Libraries List: Add / Edit / Review / **Review all** (autofill upserts by IMO / particulars).
 
 ### Clear data (keep tables + column headers + region reference)
 
@@ -204,8 +212,10 @@ Email_Parser_Two/
     ├── vite.config.js             ← Proxy /api; allowedHosts for ngrok
     └── src/
         ├── components/            ← views, EditableGrid, RegionSelect, VesselTypeSelect
-        └── utils/                 ← standardColumns, regionOptions, downloadDraftPdf
+        └── utils/                 ← standardColumns, regionOptions, fieldFormat, downloadDraftPdf
 ```
+
+Startup rematch: on boot the API recomputes vessel-library and contact `match_key`s and merges soft duplicates (no autofill insert into the library until you **Review all**).
 
 ---
 
