@@ -14,7 +14,7 @@ import json
 from collections import OrderedDict
 from typing import Any
 
-_MAX_EVENTS_PER_JOB = 60
+_MAX_EVENTS_PER_JOB = 500
 _MAX_BUFFERED_JOBS = 40
 
 
@@ -45,10 +45,9 @@ class SSEManager:
                 pass
             if not self._subscribers[job_id]:
                 del self._subscribers[job_id]
-                # Keep the persistent "live" bus buffer so a reconnecting
-                # browser can still see recent auto_fetch_started notices.
-                if job_id != "live":
-                    self._buffer.pop(job_id, None)
+                # Do NOT drop the job buffer here. CloudFront/ALB often drops the
+                # SSE socket mid-job; the browser reconnects and needs replay,
+                # including phase1_complete. Buffers age out via _MAX_BUFFERED_JOBS.
 
     def _buffer_event(self, job_id: str, payload: str) -> None:
         buf = self._buffer.get(job_id)

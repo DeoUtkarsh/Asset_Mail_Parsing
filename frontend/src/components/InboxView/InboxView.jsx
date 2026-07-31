@@ -85,8 +85,13 @@ export default function InboxView({
   const expectedEmailIdsRef = useRef(new Set());
   const readyEmailIdsRef = useRef(new Set());
   const loadGenRef = useRef(0);
+  const jobIdRef = useRef(null);
+  const finishJobRef = useRef(null);
+  const sawInflightRef = useRef(false);
 
   useEffect(() => { loadEmails(); }, []);
+
+  useEffect(() => { jobIdRef.current = jobId; }, [jobId]);
 
   const attachLiveJob = useCallback((nextJobId) => {
     if (!nextJobId) return;
@@ -99,12 +104,14 @@ export default function InboxView({
   useEffect(() => {
     if (!jobId) {
       lastLiveJobRef.current = null;
+      sawInflightRef.current = false;
       return;
     }
     if (lastLiveJobRef.current === jobId) return;
     lastLiveJobRef.current = jobId;
     expectedEmailIdsRef.current = new Set();
     readyEmailIdsRef.current = new Set();
+    sawInflightRef.current = false;
     setAttStatuses({});
   }, [jobId]);
 
@@ -195,6 +202,48 @@ export default function InboxView({
       });
       pickReadyEmail(data);
       onEmailsLoaded?.(data);
+
+      // Reconcile stuck SSE overlays from DB (CloudFront often drops phase1_complete).
+      setAttStatuses((prev) => {
+        if (!Object.keys(prev).length) return prev;
+        const next = { ...prev };
+        let changed = false;
+        for (const em of data) {
+          for (const att of em.attachments || []) {
+            const db = mapDbStatus(att, em.status);
+            if (
+              (db === "downloaded" || db === "failed")
+              && next[att.id]
+              && next[att.id] !== db
+            ) {
+              next[att.id] = db;
+              changed = true;
+            }
+          }
+          const pendingKey = `pending-${em.id}`;
+          if (next[pendingKey] && (em.attachments || []).length) {
+            delete next[pendingKey];
+            changed = true;
+          }
+        }
+        return changed ? next : prev;
+      });
+
+      // End job chrome once DB shows no extracting parents (after we saw some).
+      if (jobIdRef.current) {
+        const inflight = data.some(
+          (em) => em.status === "extracting" || em.status === "pending"
+        );
+        if (inflight) sawInflightRef.current = true;
+        const tracked = expectedEmailIdsRef.current;
+        const allTrackedDone = tracked.size > 0 && [...tracked].every((id) => {
+          const em = data.find((e) => e.id === id);
+          return em && (em.status === "ready_for_validation" || em.status === "drafted");
+        });
+        if (allTrackedDone || (sawInflightRef.current && !inflight)) {
+          finishJobRef.current?.();
+        }
+      }
     } catch (e) {
       if (gen !== loadGenRef.current) return;
       console.error("Failed to load emails:", e);
@@ -216,8 +265,11 @@ export default function InboxView({
     setAttStatuses({});
     expectedEmailIdsRef.current = new Set();
     readyEmailIdsRef.current = new Set();
+    sawInflightRef.current = false;
     loadEmails();
   }, []);
+
+  useEffect(() => { finishJobRef.current = finishJob; }, [finishJob]);
 
   const patchAttachmentMeta = useCallback((attachmentId, patch) => {
     if (!attachmentId) return;
@@ -403,12 +455,12 @@ export default function InboxView({
     patchAttachmentMeta,
   ]);
 
-  useSSE(jobId, handleEvent, undefined, { reconnect: true });
+  useSSE(jobId, handleEvent);
 
-  // Safety net while a job is live: refresh list if an SSE event was missed.
+  // Safety net: if CloudFront drops SSE, poll DB and clear stuck spinners.
   useEffect(() => {
     if (!jobId) return undefined;
-    const t = setInterval(() => { loadEmails(); }, 4000);
+    const t = setInterval(() => { loadEmails(); }, 2500);
     return () => clearInterval(t);
   }, [jobId]);
 
@@ -471,8 +523,11 @@ export default function InboxView({
   const anyJobActive = Boolean(jobId);
 
   const resolveAttStatus = (att) => {
+    const fromDb = mapDbStatus(att, att.email?.status);
+    // Once DB says done/failed, never keep a stale SSE spinner overlay.
+    if (fromDb === "downloaded" || fromDb === "failed") return fromDb;
     if (attStatuses[att.id]) return attStatuses[att.id];
-    return mapDbStatus(att, att.email?.status);
+    return fromDb;
   };
 
   const isOpenable = (status) => status === "downloaded" || status === "failed";
