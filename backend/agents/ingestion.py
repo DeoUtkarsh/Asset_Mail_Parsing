@@ -91,9 +91,13 @@ def _existing_message_ids(message_ids: list[str]) -> set[str]:
     return {r.get("message_id") for r in rows if r.get("message_id")}
 
 
-async def run_ingestion(job_id: str) -> dict[str, Any]:
+async def run_ingestion(
+    job_id: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> dict[str, Any]:
     """
-    Fetch all broker emails and ingest only the NEW ones.
+    Fetch broker emails (optionally date-filtered) and ingest only the NEW ones.
 
     Returns:
         {
@@ -105,10 +109,16 @@ async def run_ingestion(job_id: str) -> dict[str, Any]:
         }
     """
     await sse_manager.send(job_id, "ingestion_started",
-                           {"message": "Connecting to mailbox…"})
+                           {"message": "Connecting to mailbox…",
+                            "date_from": date_from or None,
+                            "date_to": date_to or None})
 
     # Run the blocking IMAP call in a thread so we don't block the event loop
-    all_emails = await asyncio.to_thread(fetch_broker_emails)
+    all_emails = await asyncio.to_thread(
+        fetch_broker_emails,
+        date_from,
+        date_to,
+    )
     total_found = len(all_emails)
 
     # ── Only-new: drop emails whose Message-ID already exists ────────────

@@ -143,10 +143,13 @@ def _subject_to_filename(subject: str, sender: str) -> str:
     return base[:200]
 
 
-def fetch_broker_emails() -> list[dict]:
+def fetch_broker_emails(
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+) -> list[dict]:
     """
-    Connect to the mailbox, walk every INBOX message, skip automated senders,
-    and return one record per broker email:
+    Connect to the mailbox, walk INBOX messages (optionally date-filtered),
+    skip automated senders, and return one record per broker email:
 
         {
             "message_id": str,   # stable dedupe key
@@ -159,16 +162,56 @@ def fetch_broker_emails() -> list[dict]:
         }
 
     Newest first. Dedupe / only-new filtering is handled downstream (ingestion).
+
+    date_from / date_to: ISO dates YYYY-MM-DD (inclusive). Mapped to IMAP
+    SINCE / BEFORE (BEFORE is exclusive, so date_to uses the next calendar day).
     """
-    logger.info("Connecting to IMAP %s:%s as %s",
-                settings.IMAP_SERVER, settings.IMAP_PORT, settings.EMAIL_USER)
+    from datetime import date, datetime, timedelta
+
+    def _parse_iso(raw: Optional[str]) -> Optional[date]:
+        if not raw:
+            return None
+        try:
+            return datetime.strptime(raw.strip()[:10], "%Y-%m-%d").date()
+        except ValueError:
+            logger.warning("Ignoring invalid fetch date: %r", raw)
+            return None
+
+    def _imap_day(d: date) -> str:
+        # IMAP requires English month abbreviations regardless of locale.
+        return d.strftime("%d-%b-%Y")
+
+    df = _parse_iso(date_from)
+    dt = _parse_iso(date_to)
+    if df and dt and dt < df:
+        df, dt = dt, df
+
+    logger.info(
+        "Connecting to IMAP %s:%s as %s (date_from=%s date_to=%s)",
+        settings.IMAP_SERVER,
+        settings.IMAP_PORT,
+        settings.EMAIL_USER,
+        df.isoformat() if df else None,
+        dt.isoformat() if dt else None,
+    )
     mail = imaplib.IMAP4_SSL(settings.IMAP_SERVER, settings.IMAP_PORT)
     mail.login(settings.EMAIL_USER, settings.EMAIL_PASSWORD)
     mail.select("INBOX")
 
-    _, uids = mail.search(None, "ALL")
+    if df or dt:
+        parts: list[str] = []
+        if df:
+            parts.append(f'SINCE "{_imap_day(df)}"')
+        if dt:
+            parts.append(f'BEFORE "{_imap_day(dt + timedelta(days=1))}"')
+        criteria = "(" + " ".join(parts) + ")"
+        logger.info("IMAP SEARCH %s", criteria)
+        _, uids = mail.search(None, criteria)
+    else:
+        _, uids = mail.search(None, "ALL")
+
     uid_list = uids[0].split() if uids and uids[0] else []
-    logger.info("INBOX contains %d messages", len(uid_list))
+    logger.info("INBOX search returned %d messages", len(uid_list))
 
     emails: list[dict] = []
     skipped = 0
@@ -176,7 +219,7 @@ def fetch_broker_emails() -> list[dict]:
     for uid in reversed(uid_list):  # newest first
         # Cheap header peek first — decide blocklist without downloading body.
         _, hdr_data = mail.fetch(
-            uid, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT)])"
+            uid, "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE)])"
         )
         from_header = ""
         if hdr_data and hdr_data[0] and isinstance(hdr_data[0][1], (bytes, bytearray)):

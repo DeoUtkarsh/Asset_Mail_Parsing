@@ -645,15 +645,63 @@ def _match_brief_copy_text(facts: dict[str, Any]) -> str:
 
 
 async def summarize_home() -> dict[str, Any]:
-    """Home dashboard: pipeline aggregates from DB + short AI narrative."""
+    """Home dashboard: pipeline aggregates from DB + short AI narrative.
+
+    When a date-filtered fetch is active, stats/narrative only cover mails in that window.
+    """
     from collections import defaultdict
+    from datetime import datetime, timezone
+
+    from fetch_scope import load_fetch_scope
 
     MANUAL_ENTRIES_MESSAGE_ID = "manual-entries"
 
     emails = (
-        supabase.table("parent_emails").select("id, status, message_id").execute()
+        supabase.table("parent_emails").select("id, status, message_id, date_received").execute()
     ).data or []
     emails = [e for e in emails if e.get("message_id") != MANUAL_ENTRIES_MESSAGE_ID]
+
+    scope = load_fetch_scope() or {}
+    scope_from = (scope.get("date_from") or "").strip() or None
+    scope_to = (scope.get("date_to") or "").strip() or None
+    scoped_ids = set(scope.get("email_ids") or [])
+
+    def _day(raw: str | None):
+        if not raw:
+            return None
+        try:
+            s = str(raw).replace("Z", "+00:00")
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.date()
+        except ValueError:
+            try:
+                return datetime.strptime(str(raw)[:10], "%Y-%m-%d").date()
+            except ValueError:
+                return None
+
+    if scope_from or scope_to or scoped_ids:
+        df = None
+        dt = None
+        try:
+            if scope_from:
+                df = datetime.strptime(scope_from[:10], "%Y-%m-%d").date()
+            if scope_to:
+                dt = datetime.strptime(scope_to[:10], "%Y-%m-%d").date()
+        except ValueError:
+            df = dt = None
+
+        if df or dt:
+            emails = [
+                e for e in emails
+                if (d := _day(e.get("date_received"))) is not None
+                and (not df or d >= df)
+                and (not dt or d <= dt)
+            ]
+        elif scoped_ids:
+            emails = [e for e in emails if e["id"] in scoped_ids]
+
     email_ids = [e["id"] for e in emails]
     ready_ids = {
         e["id"] for e in emails
@@ -733,6 +781,8 @@ async def summarize_home() -> dict[str, Any]:
         "review_count": review_count,
         "zones": zone_count,
         "readiness_pct": readiness_pct,
+        "fetch_date_from": scope_from,
+        "fetch_date_to": scope_to,
         "headline_stats": [
             {"label": "Emails", "value": len(emails)},
             {"label": "Positions", "value": positions_parsed},
@@ -748,6 +798,8 @@ async def summarize_home() -> dict[str, Any]:
         "review_count": review_count,
         "zones": zone_count,
         "readiness_pct": readiness_pct,
+        "fetch_date_from": scope_from,
+        "fetch_date_to": scope_to,
     }
     # Keep Home refresh snappy: don't hang the whole dashboard on a slow LLM.
     try:

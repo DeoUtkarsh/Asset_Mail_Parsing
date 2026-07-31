@@ -16,8 +16,12 @@ async function request(method, path, body) {
 
 // ── Phase 1 ────────────────────────────────────────────────────────────────
 
-/** Kick off Phase 1. Returns { job_id }. */
-export const fetchEmails = () => request("POST", "/fetch-emails");
+/** Kick off Phase 1. Optional { date_from, date_to } as YYYY-MM-DD. Returns { job_id }. */
+export const fetchEmails = (opts = {}) =>
+  request("POST", "/fetch-emails", {
+    date_from: opts.date_from || null,
+    date_to: opts.date_to || null,
+  });
 
 /** Deployment flags (no secrets). */
 export const getRuntimeConfig = () => request("GET", "/runtime-config");

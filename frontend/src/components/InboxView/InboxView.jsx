@@ -9,6 +9,7 @@ import {
 import { useSSE } from "../../hooks/useSSE";
 import PreviewPanel from "./PreviewPanel";
 import Icon from "../icons";
+import DateRangePicker from "../DateRangePicker/DateRangePicker";
 
 const AV_COLORS = ["#219495", "#3b82f6", "#8b5cf6", "#f59e0b", "#ef4444", "#10b981", "#ec4899", "#0ea5e9"];
 const LIVE_BUS_ID = "live";
@@ -62,6 +63,8 @@ export default function InboxView({
   const reviewMode = inboxTab === "review";
   const [emails, setEmails]           = useState([]);
   const [fetching, setFetching]       = useState(false);
+  const [fetchDateFrom, setFetchDateFrom] = useState("");
+  const [fetchDateTo, setFetchDateTo] = useState("");
   const [retrying, setRetrying]       = useState(false);
   const [jobId, setJobId]             = useState(null);
   const [attStatuses, setAttStatuses] = useState({});
@@ -290,6 +293,10 @@ export default function InboxView({
         finishJob();
         break;
       case "phase1_no_new":
+        // Date scope may still have updated — refresh Home summary.
+        onVesselsUpdated?.();
+        finishJob();
+        break;
       case "retry_no_work":
       case "phase1_failed":
         finishJob();
@@ -310,12 +317,19 @@ export default function InboxView({
   useSSE(jobId, handleEvent);
 
   const handleFetch = async () => {
+    if (!fetchDateFrom && !fetchDateTo) {
+      alert("Pick a fetch date range first, then click Fetch Emails.");
+      return;
+    }
     setFetching(true);
     expectedEmailIdsRef.current = new Set();
     readyEmailIdsRef.current = new Set();
     setAttStatuses({});
     try {
-      const { job_id } = await fetchEmails();
+      const { job_id } = await fetchEmails({
+        date_from: fetchDateFrom || null,
+        date_to: fetchDateTo || null,
+      });
       setJobId(job_id);
     } catch (e) {
       setFetching(false);
@@ -509,19 +523,33 @@ export default function InboxView({
           ) : (
             <span className="inbox-retry-slot" aria-hidden="true" />
           )}
+          {!reviewMode && (
+            <div className="inbox-fetch-dates">
+              <DateRangePicker
+                from={fetchDateFrom}
+                to={fetchDateTo}
+                onChange={({ from: f, to: t }) => {
+                  setFetchDateFrom(f);
+                  setFetchDateTo(t);
+                }}
+              />
+            </div>
+          )}
           <button
             type="button"
             onClick={handleFetch}
-            disabled={reviewMode || fetchBusy || anyJobActive}
+            disabled={reviewMode || fetchBusy || anyJobActive || (!fetchDateFrom && !fetchDateTo)}
             className={`btn btn-send inbox-fetch-btn ${reviewMode ? "is-placeholder" : ""}`}
             aria-hidden={reviewMode}
             tabIndex={reviewMode ? -1 : undefined}
             title={
               reviewMode
                 ? undefined
-                : fetchBusy || anyJobActive
-                  ? "Fetching emails…"
-                  : "Fetch new broker emails"
+                : !fetchDateFrom && !fetchDateTo
+                  ? "Select a date range, then fetch"
+                  : fetchBusy || anyJobActive
+                    ? "Fetching emails…"
+                    : "Fetch broker emails in the selected date range"
             }
           >
             {(fetchBusy || (anyJobActive && fetching)) && !reviewMode && (
@@ -770,20 +798,13 @@ function InboxFilterPanel({ initial, hideHigh = false, onApply, onClear }) {
       <div className="iflt-group">
         <span className="iflt-label">DATE RANGE</span>
         <div className="iflt-dates">
-          <input
-            type="date"
-            className="iflt-input"
-            value={dateFrom}
-            max={dateTo || undefined}
-            onChange={(e) => setDateFrom(e.target.value)}
-          />
-          <span className="iflt-dash">–</span>
-          <input
-            type="date"
-            className="iflt-input"
-            value={dateTo}
-            min={dateFrom || undefined}
-            onChange={(e) => setDateTo(e.target.value)}
+          <DateRangePicker
+            from={dateFrom}
+            to={dateTo}
+            onChange={({ from: f, to: t }) => {
+              setDateFrom(f);
+              setDateTo(t);
+            }}
           />
         </div>
       </div>

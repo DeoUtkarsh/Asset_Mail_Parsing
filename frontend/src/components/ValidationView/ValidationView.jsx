@@ -21,6 +21,7 @@ import { formatStandardField, formatDwtSdwt, formatCbm, formatYearBuilt, parseAi
 import RegionSelect from "../RegionSelect";
 import VesselTypeSelect, { isImoTypeValue } from "../VesselTypeSelect";
 import CellHighlightLegend from "../CellHighlightLegend";
+import DateRangePicker from "../DateRangePicker/DateRangePicker";
 
 const RECEIVED_COL = { id: "received", header: "RECEIVED", read_only: true, storage: "derived" };
 
@@ -557,20 +558,13 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
           <div className="vf-group">
             <label className="vf-label">EMAIL DATE RANGE</label>
             <div className="vf-dates">
-              <input
-                type="date"
-                className="vf-input"
-                value={dateFrom}
-                max={dateTo || undefined}
-                onChange={(e) => setDateFrom(e.target.value)}
-              />
-              <span className="vf-dash">–</span>
-              <input
-                type="date"
-                className="vf-input"
-                value={dateTo}
-                min={dateFrom || undefined}
-                onChange={(e) => setDateTo(e.target.value)}
+              <DateRangePicker
+                from={dateFrom}
+                to={dateTo}
+                onChange={({ from: f, to: t }) => {
+                  setDateFrom(f);
+                  setDateTo(t);
+                }}
               />
             </div>
           </div>

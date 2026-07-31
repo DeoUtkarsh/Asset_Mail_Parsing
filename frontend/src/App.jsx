@@ -16,10 +16,10 @@ import { summarizeInbox } from "./services/api";
 const FILTER_SENDER = "sanjib@iconshipbrokers.com";
 const RAIL = [
   { id: "home", ic: "home", label: "Home" },
-  { id: "inbox", ic: "grid", label: "Vessel Extracted Data" },
-  { id: "today", ic: "anchor", label: "Vessel Position List" },
+  { id: "inbox", ic: "mail", label: "Vessel Extracted Data" },
+  { id: "today", ic: "ship", label: "Vessel Position List" },
   { id: "list", ic: "users", label: "Contact List" },
-  { id: "library", ic: "library", label: "Vessel Libraries List" },
+  { id: "library", ic: "folder", label: "Vessel Libraries List" },
 ];
 const ST = {
   auto: ["st-auto", "✓ auto"],
@@ -293,7 +293,10 @@ function MainApp({ onLogout }) {
       <header className="topbar">
         <div className="logo">
           <img className="mark" src="/logo-mark.png?v=3" alt="" aria-hidden="true" />
-          <img className="brand-logo" src="/logo.png?v=6" alt="Broker Sense" />
+          <div className="wm" aria-label="Broker Sense">
+            <span className="l1">BROKER</span>
+            <span className="l2">SENSE</span>
+          </div>
         </div>
         <div className="tb-right">
           <button type="button" className="tb-logout" onClick={onLogout}>
@@ -307,9 +310,15 @@ function MainApp({ onLogout }) {
       {/* ── Rail ── */}
       <div className="rail">
         {RAIL.map((n) => (
-          <button key={n.id} className={`ricon ${view === n.id ? "active" : ""}`} onClick={() => go(n.id)}>
-            <Icon name={n.ic} size={21} />
-            <span className="ricon-tip">{n.label}</span>
+          <button
+            key={n.id}
+            type="button"
+            className={`ricon ${view === n.id ? "active" : ""}`}
+            onClick={() => go(n.id)}
+            aria-label={n.label}
+          >
+            <span className="ricon-ic"><Icon name={n.ic} size={21} /></span>
+            <span className="ricon-lbl"><span>{n.label}</span></span>
           </button>
         ))}
         <div className="rspacer" />

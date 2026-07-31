@@ -55,6 +55,8 @@ pnpm-debug.log*
 backend/attachment_files/
 # Debug / audit output
 backend/output/
+# Active fetch date window for Home AI summary
+backend/data/
 
 # ── OS / Editor / Assistant ───────────────────────────────────────────────────
 .DS_Store
