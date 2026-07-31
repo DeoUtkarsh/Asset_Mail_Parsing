@@ -109,6 +109,8 @@ docker push "$ACCOUNT.dkr.ecr.$REGION.amazonaws.com/email-parser-api:latest"
 | `PG_USER` | e.g. `postgres` |
 | `PG_PASSWORD` | RDS master password |
 | `MAX_ATTACHMENTS` | `0` = all new emails |
+| `AUTO_FETCH_IMAP_IDLE` | **`true` on ECS** — IMAP IDLE auto-runs Phase 1 when new mail arrives. Leave `false` locally |
+| `AUTO_FETCH_IDLE_RECONNECT_SEC` | Optional; default `30` — wait before reconnecting IDLE after errors |
 | `ATTACHMENTS_S3_BUCKET` | `email-parser-mail` |
 | `ATTACHMENTS_S3_PREFIX` | `attachment_files` |
 | `AWS_REGION` | `ap-southeast-1` |

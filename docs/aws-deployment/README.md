@@ -161,8 +161,23 @@ Browser
 2. If secrets/env keys changed: new task definition revision
 3. ECS: update service → Force new deployment (latest task def)
 4. frontend/: npm run build → aws s3 sync dist/ → CloudFront invalidation /*
-5. Smoke: /api/health → CloudWatch startup (DB + FILE STORAGE) → Fetch Emails
+5. Smoke: /api/health → CloudWatch startup (DB + FILE STORAGE + AUTO_FETCH_IDLE : ON) → Fetch Emails
 ```
+
+### Auto-fetch (IMAP IDLE)
+
+On the **`aws-deployment`** branch / ECS secret set:
+
+```text
+AUTO_FETCH_IMAP_IDLE=true
+```
+
+ECS keeps one IMAP IDLE on the broker INBOX. When Gmail signals new mail, the API runs the
+**same Phase-1 pipeline** as the Fetch Emails button (blocked-sender filter + only-new Message-IDs).
+No timed inbox search. Manual **Fetch Emails** still works.
+
+Local `feature/frontend-redesign` / `.env` should keep `AUTO_FETCH_IMAP_IDLE=false`.
+Optional local AWS env file: `backend/.env.aws` (gitignored) + `ENV_FILE=.env.aws`.
 
 ### CMD example (Windows)
 

@@ -1,9 +1,12 @@
+import os
 from functools import lru_cache
 from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-_ENV_FILE = Path(__file__).resolve().parent / ".env"
+# Default: backend/.env — set ENV_FILE=.env.aws to load the AWS local env copy.
+_ENV_NAME = (os.getenv("ENV_FILE") or ".env").strip() or ".env"
+_ENV_FILE = Path(__file__).resolve().parent / _ENV_NAME
 
 
 class Settings(BaseSettings):
@@ -12,6 +15,12 @@ class Settings(BaseSettings):
     EMAIL_PASSWORD: str
     IMAP_SERVER: str = "imap.gmail.com"
     IMAP_PORT: int = 993
+
+    # When true (AWS ECS / .env.aws): IMAP IDLE watches INBOX and runs the same
+    # Phase-1 pipeline as Fetch Emails whenever new mail arrives. Local .env
+    # should leave this false so only the button triggers fetch.
+    AUTO_FETCH_IMAP_IDLE: bool = False
+    AUTO_FETCH_IDLE_RECONNECT_SEC: int = 30
 
     # Automated/notification senders to skip when fetching (comma-separated
     # substrings, matched case-insensitively against the whole From header).

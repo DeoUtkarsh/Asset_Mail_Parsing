@@ -71,8 +71,14 @@ from column_defs import (
     get_column_definitions,
     empty_standard_dynamic_data,
 )
+from imap_idle_watcher import (
+    run_phase1_exclusive,
+    start_imap_idle_watcher,
+    stop_imap_idle_watcher,
+)
 
 MANUAL_ENTRIES_MESSAGE_ID = "manual-entries"
+LIVE_BUS_JOB_ID = "live"
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
 logging.config.dictConfig({
@@ -132,6 +138,10 @@ async def startup_event():
                 settings.PG_HOST, settings.PG_PORT, settings.PG_DATABASE)
     logger.info("  MAX_EMAILS/FETCH : %s",
                 settings.MAX_ATTACHMENTS if settings.MAX_ATTACHMENTS > 0 else "ALL")
+    logger.info(
+        "  AUTO_FETCH_IDLE  : %s",
+        "ON" if settings.AUTO_FETCH_IMAP_IDLE else "OFF",
+    )
     if uses_s3():
         logger.info(
             "  FILE STORAGE     : S3 s3://%s/%s/",
@@ -202,7 +212,20 @@ async def startup_event():
         logger.error("  PostgreSQL connection FAILED: %s", exc)
         logger.error("  Check that pgAdmin is running and PG_* settings in .env are correct.")
 
+    async def _notify_auto_fetch(job_id: str, data: dict) -> None:
+        await sse_manager.send(LIVE_BUS_JOB_ID, "auto_fetch_started", {
+            "job_id": job_id,
+            **data,
+        })
+
+    await start_imap_idle_watcher(_run_phase1, _notify_auto_fetch)
+
     logger.info("=" * 60)
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await stop_imap_idle_watcher()
 
 
 # ── Background runner ────────────────────────────────────────────────────────
@@ -266,14 +289,30 @@ async def health():
         db_status = "ok"
     except Exception as e:
         db_status = f"error: {e}"
-    return {"status": "ok", "db": db_status}
+    return {
+        "status": "ok",
+        "db": db_status,
+        "auto_fetch_imap_idle": bool(settings.AUTO_FETCH_IMAP_IDLE),
+    }
+
+
+@app.get("/api/runtime-config")
+async def runtime_config():
+    """UI flags for the current deployment (no secrets)."""
+    return {
+        "auto_fetch_imap_idle": bool(settings.AUTO_FETCH_IMAP_IDLE),
+    }
 
 
 @app.post("/api/fetch-emails")
 async def fetch_emails(background_tasks: BackgroundTasks):
     logger.info("[API] POST /api/fetch-emails — starting Phase 1")
     job_id = str(uuid.uuid4())
-    background_tasks.add_task(_run_phase1, job_id)
+
+    async def _locked() -> None:
+        await run_phase1_exclusive(_run_phase1, job_id=job_id, source="manual")
+
+    background_tasks.add_task(_locked)
     return {"job_id": job_id, "message": "Phase 1 started. Connect to /api/events/{job_id} for updates."}
 
 
@@ -281,6 +320,8 @@ async def fetch_emails(background_tasks: BackgroundTasks):
 async def sse_events(request: Request, job_id: str):
     logger.info("[SSE] Client connected — job_id=%s", job_id)
     queue = sse_manager.subscribe(job_id)
+    # Persistent bus for auto-fetch notifications (never closes on Phase-1 terminal).
+    is_live_bus = job_id == LIVE_BUS_JOB_ID
 
     async def generator():
         try:
@@ -294,7 +335,15 @@ async def sse_events(request: Request, job_id: str):
                     logger.debug("[SSE] Sending event type=%s job_id=%s", parsed.get("type"), job_id)
                     yield {"data": payload}
 
-                    if parsed.get("type") in ("phase1_complete", "phase1_failed", "drafting_done", "phase2_failed"):
+                    if (
+                        not is_live_bus
+                        and parsed.get("type") in (
+                            "phase1_complete",
+                            "phase1_failed",
+                            "drafting_done",
+                            "phase2_failed",
+                        )
+                    ):
                         logger.info("[SSE] Terminal event — closing stream job_id=%s", job_id)
                         break
 

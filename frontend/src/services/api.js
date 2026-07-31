@@ -19,6 +19,9 @@ async function request(method, path, body) {
 /** Kick off Phase 1. Returns { job_id }. */
 export const fetchEmails = () => request("POST", "/fetch-emails");
 
+/** Deployment flags (no secrets). */
+export const getRuntimeConfig = () => request("GET", "/runtime-config");
+
 /** Retry failed/pending extractions for one parent email. Returns { job_id }. */
 export const retryExtraction = (emailId) =>
   request("POST", `/emails/${emailId}/retry-extraction`);

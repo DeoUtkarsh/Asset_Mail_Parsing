@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   fetchEmails,
   getEmails,
+  getRuntimeConfig,
   retryExtraction,
   retryAttachment,
 } from "../../services/api";
@@ -10,6 +11,7 @@ import PreviewPanel from "./PreviewPanel";
 import Icon from "../icons";
 
 const AV_COLORS = ["#219495", "#3b82f6", "#8b5cf6", "#f59e0b", "#ef4444", "#10b981", "#ec4899", "#0ea5e9"];
+const LIVE_BUS_ID = "live";
 
 const DEFAULT_FILTERS = { from: "", dateFrom: "", dateTo: "", tiers: [] };
 
@@ -76,11 +78,38 @@ export default function InboxView({
   const filters = filtersByMode[modeKey];
   const setFilters = useCallback((next) => setFiltersByMode((p) => ({ ...p, [modeKey]: next })), [modeKey]);
   const [filterOpen, setFilterOpen] = useState(false);
+  const [liveBusId, setLiveBusId] = useState(null);
   const expectedEmailIdsRef = useRef(new Set());
   const readyEmailIdsRef = useRef(new Set());
   const loadGenRef = useRef(0);
 
   useEffect(() => { loadEmails(); }, []);
+
+  // AWS: listen for IMAP IDLE auto-fetch and attach the same SSE progress UI.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const cfg = await getRuntimeConfig();
+        if (!cancelled && cfg?.auto_fetch_imap_idle) {
+          setLiveBusId(LIVE_BUS_ID);
+        }
+      } catch {
+        /* local / older API — leave manual fetch only */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  useSSE(liveBusId, useCallback((evt) => {
+    if (evt?.type === "auto_fetch_started" && evt.job_id) {
+      setFetching(true);
+      expectedEmailIdsRef.current = new Set();
+      readyEmailIdsRef.current = new Set();
+      setAttStatuses({});
+      setJobId(evt.job_id);
+    }
+  }, []));
 
   const pickReadyEmail = (data) => {
     const ready = data.find(
