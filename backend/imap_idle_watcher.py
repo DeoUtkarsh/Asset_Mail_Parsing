@@ -30,10 +30,17 @@ _phase1_lock = asyncio.Lock()
 _pending_rerun = False
 _watcher_task: Optional[asyncio.Task] = None
 _stop = threading.Event()
+# Job currently holding the Phase-1 lock (manual or IDLE) — for late UI attach.
+_active_job_id: Optional[str] = None
 
 
 def phase1_lock() -> asyncio.Lock:
     return _phase1_lock
+
+
+def get_active_phase1_job_id() -> Optional[str]:
+    """UUID of the in-flight Phase-1 job, or None if idle."""
+    return _active_job_id
 
 
 async def run_phase1_exclusive(
@@ -50,7 +57,7 @@ async def run_phase1_exclusive(
     wait=True  — queue behind the current run (manual Fetch).
     wait=False — if busy, mark pending re-run after current finishes (IDLE).
     """
-    global _pending_rerun
+    global _pending_rerun, _active_job_id
 
     if not wait and _phase1_lock.locked():
         _pending_rerun = True
@@ -65,6 +72,7 @@ async def run_phase1_exclusive(
             _pending_rerun = False
             jid = job_id or str(uuid.uuid4())
             job_id = None  # only first iteration may reuse caller id
+            _active_job_id = jid
             if notify_bus and source != "manual":
                 await notify_bus(jid, {"source": source})
             logger.info("[AutoFetch] Starting Phase 1 job_id=%s source=%s", jid, source)
@@ -73,6 +81,8 @@ async def run_phase1_exclusive(
             except Exception:
                 logger.exception("[AutoFetch] Phase 1 crashed job_id=%s", jid)
             if not _pending_rerun:
+                if _active_job_id == jid:
+                    _active_job_id = None
                 return jid
             logger.info("[AutoFetch] Pending mailbox change — running Phase 1 again")
             source = "imap_idle_queued"

@@ -88,31 +88,59 @@ export default function InboxView({
 
   useEffect(() => { loadEmails(); }, []);
 
+  const attachLiveJob = useCallback((nextJobId) => {
+    if (!nextJobId) return;
+    setFetching(true);
+    setJobId((prev) => (prev === nextJobId ? prev : nextJobId));
+  }, []);
+
+  // New Phase-1 job → clear stage map; SSE replay rebuilds it on late attach.
+  const lastLiveJobRef = useRef(null);
+  useEffect(() => {
+    if (!jobId) {
+      lastLiveJobRef.current = null;
+      return;
+    }
+    if (lastLiveJobRef.current === jobId) return;
+    lastLiveJobRef.current = jobId;
+    expectedEmailIdsRef.current = new Set();
+    readyEmailIdsRef.current = new Set();
+    setAttStatuses({});
+  }, [jobId]);
+
   // AWS: listen for IMAP IDLE auto-fetch and attach the same SSE progress UI.
+  // InboxView stays mounted (display:none off-tab), so live progress continues
+  // without auto-switching tabs — open Vessel Extracted Data anytime to watch.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const cfg = await getRuntimeConfig();
-        if (!cancelled && cfg?.auto_fetch_imap_idle) {
+        if (cancelled) return;
+        if (cfg?.auto_fetch_imap_idle) {
           setLiveBusId(LIVE_BUS_ID);
+        }
+        // Resume mid-flight if the page loaded / reconnected after start.
+        if (cfg?.active_phase1_job_id) {
+          attachLiveJob(cfg.active_phase1_job_id);
         }
       } catch {
         /* local / older API — leave manual fetch only */
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [attachLiveJob]);
 
-  useSSE(liveBusId, useCallback((evt) => {
-    if (evt?.type === "auto_fetch_started" && evt.job_id) {
-      setFetching(true);
-      expectedEmailIdsRef.current = new Set();
-      readyEmailIdsRef.current = new Set();
-      setAttStatuses({});
-      setJobId(evt.job_id);
-    }
-  }, []));
+  useSSE(
+    liveBusId,
+    useCallback((evt) => {
+      if (evt?.type === "auto_fetch_started" && evt.job_id) {
+        attachLiveJob(evt.job_id);
+      }
+    }, [attachLiveJob]),
+    undefined,
+    { reconnect: true },
+  );
 
   const pickReadyEmail = (data) => {
     const ready = data.find(
@@ -127,24 +155,43 @@ export default function InboxView({
       const data = await getEmails();
       if (gen !== loadGenRef.current) return; // ignore stale responses
       // Merge so a racey refresh cannot wipe vessel_count back to 0
+      // or drop optimistic in-flight rows before attachment_saved.
       setEmails((prev) => {
         const prevCount = new Map();
+        const prevById = new Map(prev.map((em) => [em.id, em]));
         for (const em of prev) {
           for (const att of em.attachments || []) {
             prevCount.set(att.id, att.vessel_count || 0);
           }
         }
-        return data.map((em) => ({
-          ...em,
-          attachments: (em.attachments || []).map((att) => {
-            const incoming = att.vessel_count || 0;
-            const kept = prevCount.get(att.id) || 0;
-            return {
-              ...att,
-              vessel_count: Math.max(incoming, kept),
-            };
-          }),
-        }));
+        const merged = data.map((em) => {
+          const incomingAtts = em.attachments || [];
+          if (!incomingAtts.length) {
+            const kept = prevById.get(em.id);
+            if (kept?.attachments?.length) {
+              return { ...em, attachments: kept.attachments, status: em.status || kept.status };
+            }
+          }
+          return {
+            ...em,
+            attachments: incomingAtts.map((att) => {
+              const incoming = att.vessel_count || 0;
+              const kept = prevCount.get(att.id) || 0;
+              return {
+                ...att,
+                vessel_count: Math.max(incoming, kept),
+              };
+            }),
+          };
+        });
+        // Keep optimistic placeholders not yet returned by API.
+        const seen = new Set(merged.map((e) => e.id));
+        for (const em of prev) {
+          if (!seen.has(em.id) && String(em.id) && (em.attachments || []).some((a) => String(a.id).startsWith("pending-"))) {
+            merged.unshift(em);
+          }
+        }
+        return merged;
       });
       pickReadyEmail(data);
       onEmailsLoaded?.(data);
@@ -220,9 +267,51 @@ export default function InboxView({
         }
         break;
       case "email_saved":
+        // Show a row immediately (before attachment exists) — stacked one under another.
+        if (rest.email_id) {
+          expectedEmailIdsRef.current.add(rest.email_id);
+          setEmails((prev) => {
+            if (prev.some((e) => e.id === rest.email_id)) return prev;
+            const placeholderAttId = `pending-${rest.email_id}`;
+            return [
+              {
+                id: rest.email_id,
+                subject: rest.subject || "",
+                sender: rest.sender || "",
+                date_received: rest.date_received || new Date().toISOString(),
+                status: "extracting",
+                attachments: [
+                  {
+                    id: placeholderAttId,
+                    filename: rest.subject || "Incoming mail…",
+                    status: "pending",
+                    vessel_count: 0,
+                  },
+                ],
+              },
+              ...prev,
+            ];
+          });
+          setAttStatuses((p) => {
+            const id = `pending-${rest.email_id}`;
+            if (p[id]) return p;
+            return { ...p, [id]: "in_progress" };
+          });
+        }
+        loadEmails();
+        break;
       case "attachment_saved":
         markOne(rest.attachment_id, "in_progress");
-        if (rest.email_id) expectedEmailIdsRef.current.add(rest.email_id);
+        if (rest.email_id) {
+          expectedEmailIdsRef.current.add(rest.email_id);
+          // Drop optimistic placeholder once the real attachment id exists.
+          setAttStatuses((p) => {
+            const next = { ...p };
+            delete next[`pending-${rest.email_id}`];
+            if (rest.attachment_id) next[rest.attachment_id] = "in_progress";
+            return next;
+          });
+        }
         loadEmails();
         break;
       case "vessels_phase_started":
@@ -314,7 +403,14 @@ export default function InboxView({
     patchAttachmentMeta,
   ]);
 
-  useSSE(jobId, handleEvent);
+  useSSE(jobId, handleEvent, undefined, { reconnect: true });
+
+  // Safety net while a job is live: refresh list if an SSE event was missed.
+  useEffect(() => {
+    if (!jobId) return undefined;
+    const t = setInterval(() => { loadEmails(); }, 4000);
+    return () => clearInterval(t);
+  }, [jobId]);
 
   const handleFetch = async () => {
     if (!fetchDateFrom && !fetchDateTo) {

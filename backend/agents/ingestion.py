@@ -158,6 +158,8 @@ async def run_ingestion(
         await sse_manager.send(job_id, "email_saved", {
             "email_id": email_id,
             "subject": subject,
+            "sender": em.get("sender") or "",
+            "date_received": em.get("date") or "",
         })
 
         # Original message body, for the formatted (Outlook-style) preview pane.

@@ -76,6 +76,7 @@ from imap_idle_watcher import (
     run_phase1_exclusive,
     start_imap_idle_watcher,
     stop_imap_idle_watcher,
+    get_active_phase1_job_id,
 )
 
 MANUAL_ENTRIES_MESSAGE_ID = "manual-entries"
@@ -380,6 +381,8 @@ async def runtime_config():
     """UI flags for the current deployment (no secrets)."""
     return {
         "auto_fetch_imap_idle": bool(settings.AUTO_FETCH_IMAP_IDLE),
+        # Lets the inbox attach mid-flight if it missed auto_fetch_started.
+        "active_phase1_job_id": get_active_phase1_job_id(),
     }
 
 
@@ -417,6 +420,18 @@ async def sse_events(request: Request, job_id: str):
     queue = sse_manager.subscribe(job_id)
     # Persistent bus for auto-fetch notifications (never closes on Phase-1 terminal).
     is_live_bus = job_id == LIVE_BUS_JOB_ID
+
+    # Late joiners (tab refresh / SSE reconnect): if Phase-1 is already running,
+    # push auto_fetch_started so the inbox can attach to the real job stream.
+    if is_live_bus:
+        active = get_active_phase1_job_id()
+        if active:
+            resume = json.dumps({
+                "type": "auto_fetch_started",
+                "job_id": active,
+                "source": "resume",
+            })
+            queue.put_nowait(resume)
 
     async def generator():
         try:
