@@ -20,6 +20,7 @@ from column_defs import (
     pick_owner_company_with_ai,
     map_raw_to_standard,
     normalize_columns_in_email,
+    reconcile_columns_in_email,
 )
 from sse_manager import sse_manager
 from llm import claude_client, files_to_content_blocks
@@ -54,7 +55,9 @@ as a table header, image-table column, or repeated labelled field. Examples:
 - N.E. Shipping text with DIRECTION TO ANY BOUND lines → include direction.
 - Womar table with Last Cargo / Remarks column → include cargo_history_combo.
 Always include vessel_name when any vessel is listed. Include company when a owner/operator name
-appears in letterhead, title, or signature. If no vessel data at all: {{"columns_in_email": [], "vessels": []}}
+appears in letterhead, title, or signature. CRITICAL: if you put a KEY on ANY vessel object,
+that KEY MUST also appear in columns_in_email (e.g. open_location / opening_date filled on vessels
+→ both keys in columns_in_email). If no vessel data at all: {{"columns_in_email": [], "vessels": []}}
 
 Each element in vessels is ONE vessel object.
 Use EXACTLY the key names listed below on each vessel. OMIT a key if that field is not present
@@ -356,6 +359,7 @@ async def _extract_single_attachment(
         )
 
         # Persist each vessel as a separate row (stored in STANDARD schema).
+        stored_vessels: list[dict] = []
         for row_order, vessel in enumerate(vessels_data):
             region = vessel.pop("region", None)
             llm_company = str(vessel.pop("company", "") or vessel.pop("Company", "") or "").strip()
@@ -383,6 +387,10 @@ async def _extract_single_attachment(
                 "region": reg,
                 "row_order": row_order,
             }).execute()
+            stored_vessels.append({"dynamic_data": standardized, "region": reg})
+
+        # Keep score checklist in sync with fields actually extracted onto vessels.
+        columns_in_email = reconcile_columns_in_email(columns_in_email, stored_vessels)
 
         supabase.table("attachments").update({
             "status": "done",

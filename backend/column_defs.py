@@ -124,6 +124,40 @@ def normalize_columns_in_email(raw: list | None) -> list[str]:
             out.append(key)
     return out if out else list(CONFIDENCE_DEFAULT_COLUMNS)
 
+
+def _confidence_value_filled(val) -> bool:
+    if val is None:
+        return False
+    s = str(val).strip().lower()
+    return bool(s) and s not in EMPTY_VALUES and s != "unspecified"
+
+
+def reconcile_columns_in_email(
+    declared: list[str] | None,
+    vessels: list[dict],
+) -> list[str]:
+    """Union LLM columns_in_email with keys that have real extracted values.
+
+    Prevents score drift when the model fills fields (e.g. open_location) on
+    vessels but omits them from columns_in_email. Region is excluded from
+    auto-add — it is often derived from open_location, not a source column.
+    """
+    base = normalize_columns_in_email(declared)
+    seen = set(base)
+    # Prefer stable default order when appending.
+    for key in CONFIDENCE_DEFAULT_COLUMNS:
+        if key in seen or key == "region":
+            continue
+        for vessel in vessels:
+            dd = vessel.get("dynamic_data") if isinstance(vessel.get("dynamic_data"), dict) else vessel
+            if not isinstance(dd, dict):
+                continue
+            if _confidence_value_filled(dd.get(key)):
+                base.append(key)
+                seen.add(key)
+                break
+    return base
+
 IMO_NUMBER_RE = re.compile(r"^\d{7}$")
 IMO_EMBEDDED_RE = re.compile(r"\b(\d{7})\b")
 
@@ -1424,26 +1458,28 @@ def mark_bare_year_ai_flag(dd: dict, raw_text: str) -> None:
 
 
 def _broker_region_for_audit(src: dict, region: str | None, existing_raw: str = "") -> str:
-    """Prefer real broker wording; ignore values that are only standard region codes."""
+    """Broker / section region text used as fallback when open_location is unmapped.
+
+    Prefer non-standard wording for audit (e.g. ``SEA / ECI``), but still keep
+    standard labels like ``Southeast Asia`` so section headers apply to every
+    vessel in the band when individual opens do not map.
+    """
     from region_map import is_standard_region
 
-    def _usable(text: str) -> str:
-        t = str(text or "").strip()
-        if not t:
-            return ""
-        # Keep non-standard broker strings (e.g. "SEA / ECI"). Standard codes alone
-        # are usually prior derived values, not useful audit text.
-        if is_standard_region(t):
-            return ""
-        return t
-
-    existing = _usable(existing_raw or src.get("region_raw") or "")
-    if existing:
-        return existing
-    passed = _usable(region)
-    if passed:
-        return passed
-    return _usable(_first_hit(src, ["region"]))
+    candidates = [
+        str(existing_raw or "").strip(),
+        str(src.get("region_raw") or "").strip(),
+        str(region or "").strip(),
+        _first_hit(src, ["region"]),
+    ]
+    candidates = [c for c in candidates if c and c.upper() != "UNSPECIFIED"]
+    non_standard = [c for c in candidates if not is_standard_region(c)]
+    if non_standard:
+        return non_standard[0]
+    for c in candidates:
+        if c:
+            return c
+    return ""
 
 
 def map_raw_to_standard(dd: dict | None, region: str | None = None) -> tuple[dict[str, str], str]:

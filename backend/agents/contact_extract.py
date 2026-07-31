@@ -71,6 +71,8 @@ Rules:
 6. PEOPLE vs SHARED BLOCKS:
    - If distinct people are named, create ONE ROW PER PERSON (even if they share a desk email).
      Never collapse multiple named people into a single row.
+   - Shared company / chartering desk email (e.g. chartering@…) MUST still yield
+     one row per named PIC — put the same email on each row.
    - If the SAME person lists multiple companies, put ALL companies in `company`
      as comma-separated values in ONE row — do NOT create one row per company.
    - Only if a shared signature has several emails and NO per-person names, create ONE row
@@ -110,7 +112,8 @@ Your job:
 - If EMAIL_TEXT does not contain a fact, that column MUST be "".
 - Do NOT invent company_type, WeChat, WhatsApp, designation, department, website, or phones.
 - Do NOT invent contact names that are not in the email.
-- Keep one row per distinct named person. Shared desk email may repeat.
+- Keep one row per distinct named person. Shared desk email may repeat on each row
+  (do NOT collapse named PICs into one contact).
 - Same person + multiple companies → one row, companies comma-separated.
 - Several emails + no person names → one row, emails comma-separated.
 - Clean company names (strip "Position List", dates, open tonnage titles).
@@ -751,21 +754,34 @@ def _norm_person_token(raw: str) -> str:
 
 
 def contact_match_key(contact: dict[str, Any]) -> str:
-    """Identity: email → phone → name+company."""
+    """Stable identity for upsert / dedupe.
+
+    Named people sharing a desk email must stay separate rows. Order:
+      1) name + email (when both present)
+      2) name + phone
+      3) name + company (or name alone)
+      4) email alone (unnamed / desk-only rows)
+      5) phone alone
+    """
+    name = _norm_person_token(str(contact.get("contact_name") or ""))
     email = _first_email(str(contact.get("email") or ""))
-    if email:
-        return f"email:{email}"
     phone = _norm_phone(str(contact.get("mob_phone") or "")) or _norm_phone(
         str(contact.get("off_phone") or "")
     )
+    company = _norm_person_token(str(contact.get("company") or ""))
+
+    if name:
+        if email:
+            return f"name:{name}|email:{email}"
+        if phone:
+            return f"name:{name}|phone:{phone}"
+        if company:
+            return f"name:{name}|company:{company}"
+        return f"name:{name}"
+    if email:
+        return f"email:{email}"
     if phone:
         return f"phone:{phone}"
-    name = _norm_person_token(str(contact.get("contact_name") or ""))
-    company = _norm_person_token(str(contact.get("company") or ""))
-    if name and company:
-        return f"name:{name}|company:{company}"
-    if name:
-        return f"name:{name}"
     return ""
 
 
@@ -773,7 +789,11 @@ def _merge_contact_fields(
     base: dict[str, Any],
     incoming: dict[str, Any],
 ) -> dict[str, str]:
-    """Non-empty incoming contact fields overwrite base."""
+    """Non-empty incoming contact fields overwrite base.
+
+    Never overwrite a non-empty contact_name with a different person name —
+    shared desk emails must not collapse distinct people.
+    """
     out: dict[str, str] = {}
     for key in CONTACT_FIELD_KEYS:
         cur = _clean_contact_val(base.get(key))
@@ -791,6 +811,10 @@ def _merge_contact_fields(
             else:
                 out[key] = base_st or "Active"
             continue
+        if key == "contact_name" and cur and nxt:
+            if _norm_person_token(cur) != _norm_person_token(nxt):
+                out[key] = cur
+                continue
         out[key] = nxt if nxt else cur
     return out
 

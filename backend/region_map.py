@@ -12,7 +12,8 @@ Rules (code — not in DB):
   3. SEA vs STRAITS: Spore/Straits-style opens → STRAITS; else SEA when both fit
   4. Compound opens (A / B): map tokens; prefer first decisive area-code token;
      if conflicting regions with no clear primary → UNSPECIFIED
-  5. Blank open_location → UNSPECIFIED (do not invent from broker region)
+  5. Blank / unmapped open_location → fall back to broker/section region text,
+     else UNSPECIFIED
 """
 from __future__ import annotations
 
@@ -125,7 +126,7 @@ def region_code_to_name(code: str | None) -> str:
     """
     c = str(code or "").strip()
     if not c or c.upper() == UNSPECIFIED:
-        return UNSPECIFIED
+        return "Unspecified"
     names: dict[str, str] = _load_map().get("region_codes") or {}
     raw_name = ""
     if c in names:
@@ -138,7 +139,7 @@ def region_code_to_name(code: str | None) -> str:
     if not raw_name:
         raw_name = c
     cleaned = _strip_parenthetical_extras(raw_name)
-    return cleaned or raw_name or UNSPECIFIED
+    return cleaned or raw_name or "Unspecified"
 
 
 def region_label_to_code(label: str | None) -> str | None:
@@ -300,6 +301,8 @@ def derive_vessel_region(
     """
     loc = _strip_parenthetical_extras(open_location)
     raw_full = str(broker_region or "").strip()
+    if raw_full.upper() == UNSPECIFIED:
+        raw_full = ""
     raw = _strip_parenthetical_extras(raw_full)
 
     code = resolve_region_from_open_location(loc)

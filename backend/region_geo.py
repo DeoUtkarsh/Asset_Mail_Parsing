@@ -15,11 +15,16 @@ _JSON_LEGACY = Path(__file__).resolve().parent / "data" / "region_port_map.json"
 
 
 def ensure_trade_geo_seeded(supabase) -> dict[str, int | bool]:
-    """Insert Excel-clone reference rows when trade_regions is empty."""
+    """Insert Excel-clone reference rows when trade_regions is empty.
+
+    Always upserts any new open_location aliases from seed that are missing in DB
+    (idempotent) so country slang like Vietnam → SEA lands on existing installs.
+    """
     existing = supabase.table("trade_regions").select("code").limit(1).execute().data
     if existing:
         _remove_legacy_json()
-        return {"skipped": True, "regions": 0, "ports": 0, "aliases": 0}
+        added = ensure_missing_open_aliases(supabase)
+        return {"skipped": True, "regions": 0, "ports": 0, "aliases": added}
 
     from region_geo_seed_data import OPEN_LOCATION_ALIASES, TRADE_PORTS, TRADE_REGIONS
 
@@ -63,6 +68,38 @@ def ensure_trade_geo_seeded(supabase) -> dict[str, int | bool]:
         "ports": len(TRADE_PORTS),
         "aliases": len(OPEN_LOCATION_ALIASES),
     }
+
+
+def ensure_missing_open_aliases(supabase) -> int:
+    """Insert seed aliases that are not yet in open_location_aliases (by alias)."""
+    from region_geo_seed_data import OPEN_LOCATION_ALIASES
+
+    existing = (
+        supabase.table("open_location_aliases").select("alias").execute()
+    ).data or []
+    have = {str(r.get("alias") or "").strip().lower() for r in existing}
+    added = 0
+    for row in OPEN_LOCATION_ALIASES:
+        alias = str(row.get("alias") or "").strip()
+        if not alias or alias.lower() in have:
+            continue
+        try:
+            supabase.table("open_location_aliases").insert({
+                "alias": alias,
+                "region_code": row["region_code"],
+            }).execute()
+            have.add(alias.lower())
+            added += 1
+        except Exception as exc:
+            logger.debug("Alias insert skipped (%s): %s", alias, exc)
+    if added:
+        try:
+            from region_map import clear_region_map_cache
+            clear_region_map_cache()
+        except Exception:
+            pass
+        logger.info("Added %d missing open_location aliases from seed", added)
+    return added
 
 
 def _remove_legacy_json() -> None:

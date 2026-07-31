@@ -10,10 +10,9 @@ from __future__ import annotations
 from typing import Any
 
 from column_defs import (
-    CONFIDENCE_DEFAULT_COLUMNS,
     CONFIDENCE_MAX_UNFILLED,
     EMPTY_VALUES,
-    normalize_columns_in_email,
+    reconcile_columns_in_email,
 )
 
 # Tier cutoffs — Need to Review = medium/low OR >5 applicable columns unfilled.
@@ -75,7 +74,7 @@ def compute_attachment_confidence(
     """
     del raw_text  # kept for call-site compatibility
 
-    applicable = normalize_columns_in_email(columns_in_email)
+    applicable = reconcile_columns_in_email(columns_in_email, vessels or [])
 
     st = (status or "").lower()
     if st in ("pending", "extracting", "in_progress"):
