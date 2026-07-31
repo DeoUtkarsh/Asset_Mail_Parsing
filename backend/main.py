@@ -220,7 +220,22 @@ async def startup_event():
             **data,
         })
 
-    await start_imap_idle_watcher(_run_phase1, _notify_auto_fetch)
+    async def _idle_phase1(job_id: str) -> None:
+        """IDLE: only messages newer than the UID watermark (never full-inbox backfill)."""
+        from imap_client import get_inbox_max_uid
+        from imap_uid_watermark import advance_watermark, get_watermark
+
+        min_uid = get_watermark()
+        try:
+            await _run_phase1(job_id, None, None, min_uid=min_uid)
+        finally:
+            # Always advance past current inbox max so empty results still move forward.
+            try:
+                advance_watermark(await asyncio.to_thread(get_inbox_max_uid))
+            except Exception as wm_exc:  # noqa: BLE001
+                logger.warning("[AutoFetch] Could not advance UID watermark: %s", wm_exc)
+
+    await start_imap_idle_watcher(_idle_phase1, _notify_auto_fetch)
 
     logger.info("=" * 60)
 
@@ -236,10 +251,11 @@ async def _run_phase1(
     job_id: str,
     date_from: str | None = None,
     date_to: str | None = None,
+    min_uid: int | None = None,
 ) -> None:
     logger.info(
-        "[Phase1] Starting job_id=%s date_from=%s date_to=%s",
-        job_id, date_from, date_to,
+        "[Phase1] Starting job_id=%s date_from=%s date_to=%s min_uid=%s",
+        job_id, date_from, date_to, min_uid,
     )
     initial_state = {
         "job_id": job_id,
@@ -250,6 +266,9 @@ async def _run_phase1(
         "error": "",
         "date_from": date_from or "",
         "date_to": date_to or "",
+        # -1 = unrestricted (manual). >=0 = IDLE UID watermark.
+        "min_uid": -1 if min_uid is None else int(min_uid),
+        "max_imap_uid": 0,
     }
     try:
         final_state = await phase1_graph.ainvoke(initial_state)

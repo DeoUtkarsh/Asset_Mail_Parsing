@@ -95,9 +95,12 @@ async def run_ingestion(
     job_id: str,
     date_from: str | None = None,
     date_to: str | None = None,
+    min_uid: int | None = None,
 ) -> dict[str, Any]:
     """
     Fetch broker emails (optionally date-filtered) and ingest only the NEW ones.
+
+    min_uid: IDLE watermark — only IMAP UIDs greater than this (no history backfill).
 
     Returns:
         {
@@ -106,20 +109,24 @@ async def run_ingestion(
             "attachment_count": int,
             "new_count": int,
             "total_found": int,
+            "max_imap_uid": int,           # highest UID seen this fetch (0 if none)
         }
     """
     await sse_manager.send(job_id, "ingestion_started",
                            {"message": "Connecting to mailbox…",
                             "date_from": date_from or None,
-                            "date_to": date_to or None})
+                            "date_to": date_to or None,
+                            "min_uid": min_uid})
 
     # Run the blocking IMAP call in a thread so we don't block the event loop
     all_emails = await asyncio.to_thread(
         fetch_broker_emails,
         date_from,
         date_to,
+        min_uid,
     )
     total_found = len(all_emails)
+    max_imap_uid = max((int(e.get("imap_uid") or 0) for e in all_emails), default=0)
 
     # ── Only-new: drop emails whose Message-ID already exists ────────────
     seen = _existing_message_ids([e["message_id"] for e in all_emails])
@@ -212,4 +219,5 @@ async def run_ingestion(
         "attachment_count": len(attachment_ids),
         "new_count": len(new_emails),
         "total_found": total_found,
+        "max_imap_uid": max_imap_uid,
     }

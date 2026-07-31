@@ -172,9 +172,10 @@ On the **`aws-deployment`** branch / ECS secret set:
 AUTO_FETCH_IMAP_IDLE=true
 ```
 
-ECS keeps one IMAP IDLE on the broker INBOX. When Gmail signals new mail, the API runs the
-**same Phase-1 pipeline** as the Fetch Emails button (blocked-sender filter + only-new Message-IDs).
-No timed inbox search. Manual **Fetch Emails** still works.
+ECS keeps one IMAP IDLE on the broker INBOX. On startup it records the current highest
+IMAP UID and **ignores mail already in INBOX**. Only messages that arrive *after* that
+baseline are auto-ingested (plus Message-ID dedupe). Historical backfill is **manual
+Fetch Emails + date range** only.
 
 Local `feature/frontend-redesign` / `.env` should keep `AUTO_FETCH_IMAP_IDLE=false`.
 Optional local AWS env file: `backend/.env.aws` (gitignored) + `ENV_FILE=.env.aws`.

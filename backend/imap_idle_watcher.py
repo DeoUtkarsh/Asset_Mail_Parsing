@@ -2,8 +2,9 @@
 IMAP IDLE auto-fetch (AWS only).
 
 When AUTO_FETCH_IMAP_IDLE=true, keep a long-lived IMAP IDLE on INBOX.
-On mailbox change (new mail), run the same Phase-1 pipeline as the
-Fetch Emails button (broker filter + only-new Message-IDs).
+On mailbox change (new mail), run Phase-1 for UIDs newer than the watermark
+only (broker filter + only-new Message-IDs). Existing inbox mail is never
+backfilled on deploy — use manual Fetch Emails + date filter for history.
 
 Does not poll/search on a timer — waits for IMAP server push via IDLE.
 """
@@ -195,6 +196,17 @@ async def start_imap_idle_watcher(
         logger.info("[AutoFetch] IMAP IDLE disabled (AUTO_FETCH_IMAP_IDLE=false)")
         return
     if _watcher_task and not _watcher_task.done():
+        return
+
+    # Baseline: ignore everything already in INBOX (empty DB must not backfill).
+    try:
+        from imap_client import get_inbox_max_uid
+        from imap_uid_watermark import ensure_idle_baseline
+
+        mx = await asyncio.to_thread(get_inbox_max_uid)
+        ensure_idle_baseline(mx)
+    except Exception:
+        logger.exception("[AutoFetch] Could not set IDLE UID baseline — aborting watcher start")
         return
 
     _stop.clear()
