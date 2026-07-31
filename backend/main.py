@@ -32,6 +32,7 @@ from config import settings
 from database import supabase, get_supabase
 from file_storage import read_bytes, uses_s3
 from models import (
+    FetchEmailsRequest,
     GenerateDraftRequest,
     SummaryScopeRequest,
     SetAttachmentVerifiedRequest,
@@ -207,8 +208,15 @@ async def startup_event():
 
 # ── Background runner ────────────────────────────────────────────────────────
 
-async def _run_phase1(job_id: str) -> None:
-    logger.info("[Phase1] Starting job_id=%s", job_id)
+async def _run_phase1(
+    job_id: str,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> None:
+    logger.info(
+        "[Phase1] Starting job_id=%s date_from=%s date_to=%s",
+        job_id, date_from, date_to,
+    )
     initial_state = {
         "job_id": job_id,
         "email_ids": [],
@@ -216,6 +224,8 @@ async def _run_phase1(job_id: str) -> None:
         "attachment_count": 0,
         "superset_columns": [],
         "error": "",
+        "date_from": date_from or "",
+        "date_to": date_to or "",
     }
     try:
         final_state = await phase1_graph.ainvoke(initial_state)
@@ -225,10 +235,28 @@ async def _run_phase1(job_id: str) -> None:
             return
 
         email_ids = final_state.get("email_ids", []) or []
+
+        # Persist active fetch window so Home AI summary scopes to it.
+        try:
+            from fetch_scope import save_fetch_scope, clear_fetch_scope
+            if date_from or date_to:
+                scoped_ids = _email_ids_in_date_window(date_from, date_to)
+                save_fetch_scope(
+                    date_from=date_from,
+                    date_to=date_to,
+                    email_ids=scoped_ids or email_ids,
+                )
+            else:
+                clear_fetch_scope()
+        except Exception as scope_exc:  # noqa: BLE001
+            logger.warning("[Phase1] Could not save fetch scope: %s", scope_exc)
+
         if not email_ids:
             logger.info("[Phase1] No new emails to process.")
             await sse_manager.send(job_id, "phase1_no_new", {
                 "message": "No new broker emails found.",
+                "date_from": date_from,
+                "date_to": date_to,
             })
             return
 
@@ -240,6 +268,8 @@ async def _run_phase1(job_id: str) -> None:
             "email_ids": email_ids,
             "email_count": len(email_ids),
             "columns": final_state.get("superset_columns", []),
+            "date_from": date_from,
+            "date_to": date_to,
         })
 
         try:
@@ -257,6 +287,56 @@ async def _run_phase1(job_id: str) -> None:
         await sse_manager.send(job_id, "phase1_failed", {"error": str(exc)})
 
 
+def _email_ids_in_date_window(date_from: str | None, date_to: str | None) -> list[str]:
+    """Return parent_email ids whose date_received falls in [date_from, date_to] (inclusive)."""
+    from datetime import datetime, timezone
+
+    rows = (
+        supabase.table("parent_emails")
+        .select("id, date_received, message_id")
+        .execute()
+    ).data or []
+
+    def _day(raw: str | None):
+        if not raw:
+            return None
+        try:
+            s = str(raw).replace("Z", "+00:00")
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.date()
+        except ValueError:
+            try:
+                return datetime.strptime(str(raw)[:10], "%Y-%m-%d").date()
+            except ValueError:
+                return None
+
+    df = None
+    dt = None
+    try:
+        if date_from:
+            df = datetime.strptime(date_from[:10], "%Y-%m-%d").date()
+        if date_to:
+            dt = datetime.strptime(date_to[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return []
+
+    out: list[str] = []
+    for r in rows:
+        if r.get("message_id") == "manual-entries":
+            continue
+        d = _day(r.get("date_received"))
+        if d is None:
+            continue
+        if df and d < df:
+            continue
+        if dt and d > dt:
+            continue
+        out.append(r["id"])
+    return out
+
+
 # ── Routes ───────────────────────────────────────────────────────────────────
 
 @app.get("/api/health")
@@ -270,11 +350,25 @@ async def health():
 
 
 @app.post("/api/fetch-emails")
-async def fetch_emails(background_tasks: BackgroundTasks):
-    logger.info("[API] POST /api/fetch-emails — starting Phase 1")
+async def fetch_emails(background_tasks: BackgroundTasks, body: FetchEmailsRequest | None = None):
+    date_from = (body.date_from if body else None) or None
+    date_to = (body.date_to if body else None) or None
+    if date_from:
+        date_from = date_from.strip()[:10] or None
+    if date_to:
+        date_to = date_to.strip()[:10] or None
+    logger.info(
+        "[API] POST /api/fetch-emails — starting Phase 1 date_from=%s date_to=%s",
+        date_from, date_to,
+    )
     job_id = str(uuid.uuid4())
-    background_tasks.add_task(_run_phase1, job_id)
-    return {"job_id": job_id, "message": "Phase 1 started. Connect to /api/events/{job_id} for updates."}
+    background_tasks.add_task(_run_phase1, job_id, date_from, date_to)
+    return {
+        "job_id": job_id,
+        "message": "Phase 1 started. Connect to /api/events/{job_id} for updates.",
+        "date_from": date_from,
+        "date_to": date_to,
+    }
 
 
 @app.get("/api/events/{job_id}")

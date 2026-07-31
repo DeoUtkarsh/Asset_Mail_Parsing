@@ -6,8 +6,9 @@ from datetime import datetime
 # ── Inbound request bodies ────────────────────────────────────────
 
 class FetchEmailsRequest(BaseModel):
-    """No body needed; kept for future filters."""
-    pass
+    """Optional IMAP date window (YYYY-MM-DD). Empty = fetch all (legacy)."""
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
 
 
 class GenerateDraftRequest(BaseModel):

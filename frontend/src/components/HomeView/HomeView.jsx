@@ -48,6 +48,12 @@ export default function HomeView({ data, loading = false, error = "", onNavigate
             <div className="home-summary home-summary--text-only">
               <div className="home-summary-text">
                 <h2>{showBootLoading ? "Loading…" : headline}</h2>
+                {(f.fetch_date_from || f.fetch_date_to) && !showBootLoading && (
+                  <div className="home-scope-chip">
+                    Fetch window:{" "}
+                    {[f.fetch_date_from, f.fetch_date_to].filter(Boolean).join(" → ") || "—"}
+                  </div>
+                )}
                 <p>{showBootLoading ? "Crunching the latest numbers…" : (data?.narrative || "")}</p>
               </div>
             </div>

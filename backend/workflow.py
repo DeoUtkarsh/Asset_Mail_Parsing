@@ -33,6 +33,8 @@ class Phase1State(TypedDict):
     attachment_count: int
     superset_columns: list[str]
     error: str
+    date_from: str
+    date_to: str
 
 
 class Phase2State(TypedDict):
@@ -48,7 +50,11 @@ class Phase2State(TypedDict):
 
 async def ingestion_node(state: Phase1State) -> Phase1State:
     try:
-        result = await run_ingestion(state["job_id"])
+        result = await run_ingestion(
+            state["job_id"],
+            date_from=(state.get("date_from") or None),
+            date_to=(state.get("date_to") or None),
+        )
         return {
             **state,
             "email_ids": result["email_ids"],
