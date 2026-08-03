@@ -15,6 +15,8 @@ GET  /api/emails/{email_id}/columns     → The superset column list for the gri
 PUT  /api/vessels/{vessel_id}           → Update a single vessel row (cell edit)
 DELETE /api/vessels/{vessel_id}         → Delete a vessel row
 POST /api/generate-draft                → Trigger Phase 2 (returns draft text)
+POST /api/auth/login                    → Validate user_id + password
+POST /api/auth/users                    → Create user (demo admin only)
 """
 import asyncio
 import json
@@ -33,6 +35,8 @@ from database import supabase, get_supabase
 from file_storage import read_bytes, uses_s3
 from models import (
     FetchEmailsRequest,
+    LoginRequest,
+    CreateUserRequest,
     GenerateDraftRequest,
     SummaryScopeRequest,
     SetAttachmentVerifiedRequest,
@@ -42,6 +46,10 @@ from models import (
     VesselLibraryRequest,
     ManualVesselRequest,
 )
+
+# Built-in admin — always valid; only this account may create users.
+DEMO_USER = "demo123"
+DEMO_PASS = "123"
 from sse_manager import sse_manager
 from workflow import phase1_graph, phase2_graph
 from agents.summary import summarize_vessels, summarize_inbox, summarize_contacts, summarize_home
@@ -403,6 +411,77 @@ async def runtime_config():
         # Lets the inbox attach mid-flight if it missed auto_fetch_started.
         "active_phase1_job_id": get_active_phase1_job_id(),
     }
+
+
+@app.post("/api/auth/login")
+async def auth_login(body: LoginRequest):
+    """Accept demo admin or a row in app_users (plaintext password match)."""
+    uid = (body.user_id or "").strip()
+    pwd = body.password or ""
+    if not uid or not pwd:
+        raise HTTPException(status_code=400, detail="User ID and password are required.")
+    if uid == DEMO_USER and pwd == DEMO_PASS:
+        return {"ok": True, "user_id": DEMO_USER, "is_demo": True}
+    try:
+        rows = (
+            get_supabase()
+            .table("app_users")
+            .select("user_id,password")
+            .eq("user_id", uid)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as exc:
+        logger.error("[API] POST /api/auth/login DB error: %s", exc)
+        raise HTTPException(status_code=500, detail="Login failed.") from exc
+    if rows and rows[0].get("password") == pwd:
+        return {"ok": True, "user_id": uid, "is_demo": False}
+    raise HTTPException(status_code=401, detail="Invalid user ID or password.")
+
+
+@app.post("/api/auth/users")
+async def auth_create_user(body: CreateUserRequest):
+    """Create a new app_users row. Only demo123 may create users."""
+    actor = (body.actor_user or "").strip()
+    actor_pwd = body.actor_password or ""
+    if actor != DEMO_USER or actor_pwd != DEMO_PASS:
+        raise HTTPException(status_code=403, detail="Only the demo admin can create users.")
+    uid = (body.user_id or "").strip()
+    pwd = body.password or ""
+    if not uid or not pwd:
+        raise HTTPException(status_code=400, detail="User ID and password are required.")
+    if uid == DEMO_USER:
+        raise HTTPException(status_code=400, detail="Cannot create the reserved demo user.")
+    try:
+        existing = (
+            get_supabase()
+            .table("app_users")
+            .select("user_id")
+            .eq("user_id", uid)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        if existing:
+            raise HTTPException(status_code=409, detail="User ID already exists.")
+        row = (
+            get_supabase()
+            .table("app_users")
+            .insert({"user_id": uid, "password": pwd})
+            .execute()
+            .data
+            or []
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("[API] POST /api/auth/users failed: %s", exc)
+        raise HTTPException(status_code=500, detail="Could not create user.") from exc
+    created = row[0] if row else {"user_id": uid}
+    return {"ok": True, "user_id": created.get("user_id", uid)}
 
 
 @app.post("/api/fetch-emails")

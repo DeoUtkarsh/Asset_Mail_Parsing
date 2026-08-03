@@ -470,6 +470,19 @@ tr.flag td:first-child{box-shadow:inset 3px 0 0 var(--lo)}
 .modal .recap .r:last-child{border-bottom:none}
 .modal .mbtns{display:flex;gap:10px;margin-top:6px}
 .modal .mbtns button{flex:1;padding:12px;border-radius:12px;font-weight:700;font-size:14px}
+
+.logout-modal{width:380px}
+.logout-create{margin:16px 0 14px;padding:14px;border:1px solid var(--line);border-radius:12px;display:flex;flex-direction:column;gap:10px;background:#fafbfc}
+.logout-create-title{font-size:12px;font-weight:700;letter-spacing:.4px;text-transform:uppercase;color:var(--muted)}
+.logout-field{display:flex;flex-direction:column;gap:5px;font-size:12px;font-weight:600;color:var(--ink)}
+.logout-field input{font-family:inherit;font-size:13.5px;padding:9px 11px;border-radius:9px;border:1px solid var(--line);background:#fff;outline:none}
+.logout-field input:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(33,148,149,.15)}
+.logout-create-btn{padding:10px 12px;border-radius:10px;border:1px solid var(--brand);background:var(--brand);color:#fff;font-weight:700;font-size:13.5px;cursor:pointer;font-family:var(--font-head)}
+.logout-create-btn:hover:not(:disabled){filter:brightness(.96)}
+.logout-create-btn:disabled{opacity:.65;cursor:default}
+.logout-err{font-size:12px;color:#b42318;background:#fef3f2;border:1px solid #fecdca;padding:7px 10px;border-radius:8px}
+.logout-ok{font-size:12px;color:#027a48;background:#ecfdf3;border:1px solid #abefc6;padding:7px 10px;border-radius:8px}
+.logout-confirm{background:var(--lo-d,#c0152f)!important;color:#fff!important;border:none!important}
 .m-cancel{background:#eef4f8;color:var(--muted)}.m-cancel:hover{background:#e2ecf2}
 .m-send{background:var(--brand);color:#fff}.m-send:hover{background:var(--brand-d)}
 

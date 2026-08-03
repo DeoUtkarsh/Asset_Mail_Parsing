@@ -1,20 +1,23 @@
 import { useState } from "react";
-
-const DEMO_USER = "demo123";
-const DEMO_PASS = "123";
+import { login } from "../../services/api";
 
 export default function LoginView({ onLogin }) {
   const [userId, setUserId] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
 
-  const submit = (e) => {
+  const submit = async (e) => {
     e.preventDefault();
-    if (userId.trim() === DEMO_USER && password === DEMO_PASS) {
-      setError("");
-      onLogin();
-    } else {
-      setError("Invalid user ID or password.");
+    setBusy(true);
+    setError("");
+    try {
+      const res = await login(userId.trim(), password);
+      onLogin({ userId: res.user_id, isDemo: !!res.is_demo });
+    } catch (err) {
+      setError(err?.message || "Invalid user ID or password.");
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -41,6 +44,7 @@ export default function LoginView({ onLogin }) {
             placeholder="demo123"
             autoFocus
             autoComplete="username"
+            disabled={busy}
           />
         </label>
 
@@ -52,12 +56,15 @@ export default function LoginView({ onLogin }) {
             onChange={(e) => setPassword(e.target.value)}
             placeholder="••••"
             autoComplete="current-password"
+            disabled={busy}
           />
         </label>
 
         {error && <div className="login-err">{error}</div>}
 
-        <button type="submit" className="login-btn">Sign in</button>
+        <button type="submit" className="login-btn" disabled={busy}>
+          {busy ? "Signing in…" : "Sign in"}
+        </button>
 
         <div className="login-hint">Demo access — <b>demo123</b> / <b>123</b></div>
       </form>
