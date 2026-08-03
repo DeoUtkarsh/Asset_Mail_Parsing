@@ -161,8 +161,25 @@ Browser
 2. If secrets/env keys changed: new task definition revision
 3. ECS: update service → Force new deployment (latest task def)
 4. frontend/: npm run build → aws s3 sync dist/ → CloudFront invalidation /*
-5. Smoke: /api/health → CloudWatch startup (DB + FILE STORAGE) → Fetch Emails
+5. Smoke: /api/health → CloudWatch startup (DB + FILE STORAGE + AUTO_FETCH_IDLE : ON) → Fetch Emails
 ```
+
+### Auto-fetch (IMAP IDLE)
+
+On the **`aws-deployment`** branch / ECS secret set:
+
+```text
+AUTO_FETCH_IMAP_IDLE=true
+```
+
+ECS keeps one IMAP IDLE on the broker INBOX. On startup it records the current highest
+IMAP UID and **ignores mail already in INBOX**. Only messages that arrive *after* that
+baseline are auto-ingested (plus Message-ID dedupe). Historical backfill is **manual
+Fetch Emails + date range** only.
+
+On `feature/frontend-redesign`, local default is `AUTO_FETCH_IMAP_IDLE=true` so you can
+test live inbox progress. Set it to `false` in `.env` if you only want manual Fetch.
+Optional local AWS env file: `backend/.env.aws` (gitignored) + `ENV_FILE=.env.aws`.
 
 ### CMD example (Windows)
 

@@ -35,6 +35,8 @@ class Phase1State(TypedDict):
     error: str
     date_from: str
     date_to: str
+    min_uid: int
+    max_imap_uid: int
 
 
 class Phase2State(TypedDict):
@@ -50,16 +52,24 @@ class Phase2State(TypedDict):
 
 async def ingestion_node(state: Phase1State) -> Phase1State:
     try:
+        raw = state.get("min_uid")
+        try:
+            min_uid_val = int(raw) if raw not in (None, "") else -1
+        except (TypeError, ValueError):
+            min_uid_val = -1
+        # < 0 means unrestricted (manual Fetch). >= 0 is IDLE watermark (0 = only UID 1:*).
         result = await run_ingestion(
             state["job_id"],
             date_from=(state.get("date_from") or None),
             date_to=(state.get("date_to") or None),
+            min_uid=min_uid_val if min_uid_val >= 0 else None,
         )
         return {
             **state,
             "email_ids": result["email_ids"],
             "attachment_ids": result["attachment_ids"],
             "attachment_count": result["attachment_count"],
+            "max_imap_uid": int(result.get("max_imap_uid") or 0),
         }
     except Exception as exc:
         return {**state, "error": str(exc)}

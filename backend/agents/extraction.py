@@ -133,11 +133,131 @@ RULES:
 8. Put leftover facts that have no matching KEY into "other_info" (Extra Info), not into
    company/imo/vessel_name. For position circulars with long particulars blocks, other_info
    must include the FULL set of leftover labelled lines (not a short summary).
+9. DUPLICATE LISTS — many circulars show the same fleet twice: a short "open tonnage" teaser
+   (name + open port/date only) then a detailed particulars block (BUILT / IMO / DWT / …) that
+   restarts numbering at 1. Extract each physical ship ONCE. Prefer the detailed block. Never
+   output 14 vessels when the mail only lists 7 ships twice.
 
 TEXT TO PARSE:
 {raw_text}
 
 JSON OUTPUT:"""
+
+
+def _vessel_field(vessel: dict, *keys: str) -> str:
+    for k in keys:
+        if k in vessel and vessel[k] not in (None, ""):
+            return str(vessel[k]).strip()
+        # case-insensitive fallback
+        for vk, vv in vessel.items():
+            if str(vk).lower().replace(" ", "_") == k.lower() and vv not in (None, ""):
+                return str(vv).strip()
+    return ""
+
+
+def _vessel_richness(vessel: dict) -> int:
+    """How complete a vessel row looks (detail block >> short teaser)."""
+    score = 0
+    imo = re.sub(r"\D", "", _vessel_field(vessel, "imo", "IMO"))
+    if len(imo) == 7:
+        score += 3
+    if _vessel_field(vessel, "year_built", "Year Built"):
+        score += 2
+    if _vessel_field(vessel, "dwt_sdwt", "dwt", "DWT/SDWT"):
+        score += 1
+    if _vessel_field(vessel, "flag", "Flag"):
+        score += 1
+    if _vessel_field(vessel, "other_info", "other info"):
+        score += 1
+    if _vessel_field(vessel, "cbm", "CBM"):
+        score += 1
+    if _vessel_field(vessel, "open_location", "opening_date"):
+        score += 1
+    return score
+
+
+def _norm_vessel_name(name: str) -> str:
+    n = re.sub(r"[^a-z0-9]+", " ", (name or "").lower()).strip()
+    n = re.sub(r"\b(mv|mt|m\/v|m\/t)\b", " ", n)
+    return re.sub(r"\s+", " ", n).strip()
+
+
+def collapse_duplicate_vessel_lists(vessels_data: list[dict]) -> list[dict]:
+    """
+    Collapse short-teaser + detailed-particulars duplicates (7+7 → 7).
+
+    Pattern: even count, first half sparse (no IMO/year), second half richer —
+    or the reverse. Also soft-merge exact IMO / near-identical names.
+    """
+    if not vessels_data or len(vessels_data) < 2:
+        return vessels_data
+
+    n = len(vessels_data)
+    kept = list(vessels_data)
+
+    if n >= 4 and n % 2 == 0:
+        half = n // 2
+        first, second = vessels_data[:half], vessels_data[half:]
+
+        def avg_rich(vs: list[dict]) -> float:
+            return sum(_vessel_richness(v) for v in vs) / len(vs)
+
+        def imo_hits(vs: list[dict]) -> int:
+            c = 0
+            for v in vs:
+                imo = re.sub(r"\D", "", _vessel_field(v, "imo", "IMO"))
+                if len(imo) == 7:
+                    c += 1
+            return c
+
+        r1, r2 = avg_rich(first), avg_rich(second)
+        i1, i2 = imo_hits(first), imo_hits(second)
+        # Teaser first, detail second
+        if r1 + 1.5 <= r2 and i1 <= max(1, half // 3) and i2 >= max(1, half // 2):
+            logger.info(
+                "[Extract] Collapsing teaser+detail lists: %d → %d (kept detail half)",
+                n, half,
+            )
+            kept = second
+        # Detail first, teaser second (rarer)
+        elif r2 + 1.5 <= r1 and i2 <= max(1, half // 3) and i1 >= max(1, half // 2):
+            logger.info(
+                "[Extract] Collapsing detail+teaser lists: %d → %d (kept detail half)",
+                n, half,
+            )
+            kept = first
+
+    # Soft dedupe remaining rows by IMO, else by normalised name (keep richer).
+    out: list[dict] = []
+    by_imo: dict[str, int] = {}
+    by_name: dict[str, int] = {}
+    for v in kept:
+        imo = re.sub(r"\D", "", _vessel_field(v, "imo", "IMO"))
+        name = _norm_vessel_name(_vessel_field(v, "vessel_name", "Vessel Name"))
+        rich = _vessel_richness(v)
+        if len(imo) == 7 and imo in by_imo:
+            idx = by_imo[imo]
+            if rich > _vessel_richness(out[idx]):
+                out[idx] = v
+            continue
+        if name and name in by_name and len(imo) != 7:
+            idx = by_name[name]
+            prev_imo = re.sub(r"\D", "", _vessel_field(out[idx], "imo", "IMO"))
+            if len(prev_imo) == 7:
+                continue  # keep the IMO row
+            if rich > _vessel_richness(out[idx]):
+                out[idx] = v
+            continue
+        idx = len(out)
+        out.append(v)
+        if len(imo) == 7:
+            by_imo[imo] = idx
+        if name:
+            by_name[name] = idx
+
+    if len(out) != len(vessels_data):
+        logger.info("[Extract] Vessel dedupe %d → %d", len(vessels_data), len(out))
+    return out
 
 
 def _parse_extraction_response(text: str) -> tuple[list[str], list[dict]]:
@@ -321,6 +441,7 @@ async def _extract_single_attachment(
                 )
                 content = response.choices[0].message.content or ""
                 columns_in_email, vessels_data = _parse_extraction_response(content)
+                vessels_data = collapse_duplicate_vessel_lists(vessels_data)
                 break  # Success
 
             except Exception as exc:

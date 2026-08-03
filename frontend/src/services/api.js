@@ -23,6 +23,9 @@ export const fetchEmails = (opts = {}) =>
     date_to: opts.date_to || null,
   });
 
+/** Deployment flags (no secrets). */
+export const getRuntimeConfig = () => request("GET", "/runtime-config");
+
 /** Retry failed/pending extractions for one parent email. Returns { job_id }. */
 export const retryExtraction = (emailId) =>
   request("POST", `/emails/${emailId}/retry-extraction`);

@@ -72,8 +72,15 @@ from column_defs import (
     get_column_definitions,
     empty_standard_dynamic_data,
 )
+from imap_idle_watcher import (
+    run_phase1_exclusive,
+    start_imap_idle_watcher,
+    stop_imap_idle_watcher,
+    get_active_phase1_job_id,
+)
 
 MANUAL_ENTRIES_MESSAGE_ID = "manual-entries"
+LIVE_BUS_JOB_ID = "live"
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
 logging.config.dictConfig({
@@ -133,6 +140,10 @@ async def startup_event():
                 settings.PG_HOST, settings.PG_PORT, settings.PG_DATABASE)
     logger.info("  MAX_EMAILS/FETCH : %s",
                 settings.MAX_ATTACHMENTS if settings.MAX_ATTACHMENTS > 0 else "ALL")
+    logger.info(
+        "  AUTO_FETCH_IDLE  : %s",
+        "ON" if settings.AUTO_FETCH_IMAP_IDLE else "OFF",
+    )
     if uses_s3():
         logger.info(
             "  FILE STORAGE     : S3 s3://%s/%s/",
@@ -203,7 +214,35 @@ async def startup_event():
         logger.error("  PostgreSQL connection FAILED: %s", exc)
         logger.error("  Check that pgAdmin is running and PG_* settings in .env are correct.")
 
+    async def _notify_auto_fetch(job_id: str, data: dict) -> None:
+        await sse_manager.send(LIVE_BUS_JOB_ID, "auto_fetch_started", {
+            "job_id": job_id,
+            **data,
+        })
+
+    async def _idle_phase1(job_id: str) -> None:
+        """IDLE: only messages newer than the UID watermark (never full-inbox backfill)."""
+        from imap_client import get_inbox_max_uid
+        from imap_uid_watermark import advance_watermark, get_watermark
+
+        min_uid = get_watermark()
+        try:
+            await _run_phase1(job_id, None, None, min_uid=min_uid)
+        finally:
+            # Always advance past current inbox max so empty results still move forward.
+            try:
+                advance_watermark(await asyncio.to_thread(get_inbox_max_uid))
+            except Exception as wm_exc:  # noqa: BLE001
+                logger.warning("[AutoFetch] Could not advance UID watermark: %s", wm_exc)
+
+    await start_imap_idle_watcher(_idle_phase1, _notify_auto_fetch)
+
     logger.info("=" * 60)
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    await stop_imap_idle_watcher()
 
 
 # ── Background runner ────────────────────────────────────────────────────────
@@ -212,10 +251,11 @@ async def _run_phase1(
     job_id: str,
     date_from: str | None = None,
     date_to: str | None = None,
+    min_uid: int | None = None,
 ) -> None:
     logger.info(
-        "[Phase1] Starting job_id=%s date_from=%s date_to=%s",
-        job_id, date_from, date_to,
+        "[Phase1] Starting job_id=%s date_from=%s date_to=%s min_uid=%s",
+        job_id, date_from, date_to, min_uid,
     )
     initial_state = {
         "job_id": job_id,
@@ -226,6 +266,9 @@ async def _run_phase1(
         "error": "",
         "date_from": date_from or "",
         "date_to": date_to or "",
+        # -1 = unrestricted (manual). >=0 = IDLE UID watermark.
+        "min_uid": -1 if min_uid is None else int(min_uid),
+        "max_imap_uid": 0,
     }
     try:
         final_state = await phase1_graph.ainvoke(initial_state)
@@ -237,8 +280,9 @@ async def _run_phase1(
         email_ids = final_state.get("email_ids", []) or []
 
         # Persist active fetch window so Home AI summary scopes to it.
+        # IDLE auto-fetch passes no dates — leave the existing Home scope alone.
         try:
-            from fetch_scope import save_fetch_scope, clear_fetch_scope
+            from fetch_scope import save_fetch_scope
             if date_from or date_to:
                 scoped_ids = _email_ids_in_date_window(date_from, date_to)
                 save_fetch_scope(
@@ -246,8 +290,6 @@ async def _run_phase1(
                     date_to=date_to,
                     email_ids=scoped_ids or email_ids,
                 )
-            else:
-                clear_fetch_scope()
         except Exception as scope_exc:  # noqa: BLE001
             logger.warning("[Phase1] Could not save fetch scope: %s", scope_exc)
 
@@ -346,7 +388,21 @@ async def health():
         db_status = "ok"
     except Exception as e:
         db_status = f"error: {e}"
-    return {"status": "ok", "db": db_status}
+    return {
+        "status": "ok",
+        "db": db_status,
+        "auto_fetch_imap_idle": bool(settings.AUTO_FETCH_IMAP_IDLE),
+    }
+
+
+@app.get("/api/runtime-config")
+async def runtime_config():
+    """UI flags for the current deployment (no secrets)."""
+    return {
+        "auto_fetch_imap_idle": bool(settings.AUTO_FETCH_IMAP_IDLE),
+        # Lets the inbox attach mid-flight if it missed auto_fetch_started.
+        "active_phase1_job_id": get_active_phase1_job_id(),
+    }
 
 
 @app.post("/api/fetch-emails")
@@ -362,7 +418,14 @@ async def fetch_emails(background_tasks: BackgroundTasks, body: FetchEmailsReque
         date_from, date_to,
     )
     job_id = str(uuid.uuid4())
-    background_tasks.add_task(_run_phase1, job_id, date_from, date_to)
+
+    async def _runner(jid: str) -> None:
+        await _run_phase1(jid, date_from, date_to)
+
+    async def _locked() -> None:
+        await run_phase1_exclusive(_runner, job_id=job_id, source="manual")
+
+    background_tasks.add_task(_locked)
     return {
         "job_id": job_id,
         "message": "Phase 1 started. Connect to /api/events/{job_id} for updates.",
@@ -370,11 +433,24 @@ async def fetch_emails(background_tasks: BackgroundTasks, body: FetchEmailsReque
         "date_to": date_to,
     }
 
-
 @app.get("/api/events/{job_id}")
 async def sse_events(request: Request, job_id: str):
     logger.info("[SSE] Client connected — job_id=%s", job_id)
     queue = sse_manager.subscribe(job_id)
+    # Persistent bus for auto-fetch notifications (never closes on Phase-1 terminal).
+    is_live_bus = job_id == LIVE_BUS_JOB_ID
+
+    # Late joiners (tab refresh / SSE reconnect): if Phase-1 is already running,
+    # push auto_fetch_started so the inbox can attach to the real job stream.
+    if is_live_bus:
+        active = get_active_phase1_job_id()
+        if active:
+            resume = json.dumps({
+                "type": "auto_fetch_started",
+                "job_id": active,
+                "source": "resume",
+            })
+            queue.put_nowait(resume)
 
     async def generator():
         try:
@@ -388,7 +464,15 @@ async def sse_events(request: Request, job_id: str):
                     logger.debug("[SSE] Sending event type=%s job_id=%s", parsed.get("type"), job_id)
                     yield {"data": payload}
 
-                    if parsed.get("type") in ("phase1_complete", "phase1_failed", "drafting_done", "phase2_failed"):
+                    if (
+                        not is_live_bus
+                        and parsed.get("type") in (
+                            "phase1_complete",
+                            "phase1_failed",
+                            "drafting_done",
+                            "phase2_failed",
+                        )
+                    ):
                         logger.info("[SSE] Terminal event — closing stream job_id=%s", job_id)
                         break
 

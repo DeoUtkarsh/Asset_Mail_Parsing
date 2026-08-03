@@ -14,7 +14,7 @@ import json
 from collections import OrderedDict
 from typing import Any
 
-_MAX_EVENTS_PER_JOB = 60
+_MAX_EVENTS_PER_JOB = 500
 _MAX_BUFFERED_JOBS = 40
 
 
@@ -28,9 +28,13 @@ class SSEManager:
     def subscribe(self, job_id: str) -> asyncio.Queue:
         queue: asyncio.Queue = asyncio.Queue()
         self._subscribers.setdefault(job_id, []).append(queue)
-        # Replay any events that fired before this subscriber connected
-        for payload in self._buffer.get(job_id, []):
-            queue.put_nowait(payload)
+        # Replay buffered events for normal jobs so late subscribers catch up.
+        # The persistent "live" bus is different: stale auto_fetch_started notices
+        # would re-attach the UI to finished jobs. Live late-join is handled by
+        # injecting the *current* active job in the SSE endpoint.
+        if job_id != "live":
+            for payload in self._buffer.get(job_id, []):
+                queue.put_nowait(payload)
         return queue
 
     def unsubscribe(self, job_id: str, queue: asyncio.Queue) -> None:
@@ -41,8 +45,9 @@ class SSEManager:
                 pass
             if not self._subscribers[job_id]:
                 del self._subscribers[job_id]
-                # The buffered events have been delivered; drop them
-                self._buffer.pop(job_id, None)
+                # Do NOT drop the job buffer here. CloudFront/ALB often drops the
+                # SSE socket mid-job; the browser reconnects and needs replay,
+                # including phase1_complete. Buffers age out via _MAX_BUFFERED_JOBS.
 
     def _buffer_event(self, job_id: str, payload: str) -> None:
         buf = self._buffer.get(job_id)
