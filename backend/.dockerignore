@@ -10,3 +10,6 @@ __pycache__
 venv
 attachment_files
 attachment_files/**
+data
+data/**
+fetch_scope.json
