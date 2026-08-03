@@ -135,8 +135,9 @@ RULES:
    must include the FULL set of leftover labelled lines (not a short summary).
 9. DUPLICATE LISTS — many circulars show the same fleet twice: a short "open tonnage" teaser
    (name + open port/date only) then a detailed particulars block (BUILT / IMO / DWT / …) that
-   restarts numbering at 1. Extract each physical ship ONCE. Prefer the detailed block. Never
-   output 14 vessels when the mail only lists 7 ships twice.
+   restarts numbering at 1. Extract each physical ship ONCE. Prefer the detailed block, but
+   still include open_location / opening_date from the teaser when the detail block omits them.
+   Never output 14 vessels when the mail only lists 7 ships twice.
 
 TEXT TO PARSE:
 {raw_text}
@@ -182,12 +183,37 @@ def _norm_vessel_name(name: str) -> str:
     return re.sub(r"\s+", " ", n).strip()
 
 
+def _merge_vessel_fields(primary: dict, donor: dict) -> dict:
+    """Keep primary particulars; fill blank keys from donor (teaser open port/date)."""
+    merged = dict(primary)
+    # Normalize donor keys to lowercase_underscore for lookup
+    donor_norm: dict[str, Any] = {}
+    for k, v in donor.items():
+        if v in (None, ""):
+            continue
+        nk = str(k).lower().replace(" ", "_")
+        donor_norm[nk] = v
+
+    for k, v in list(merged.items()):
+        nk = str(k).lower().replace(" ", "_")
+        if v in (None, "") and nk in donor_norm:
+            merged[k] = donor_norm[nk]
+
+    # Also add donor keys that primary lacks entirely (common: open_location)
+    primary_norm = {str(k).lower().replace(" ", "_") for k in merged}
+    for nk, v in donor_norm.items():
+        if nk not in primary_norm:
+            merged[nk] = v
+    return merged
+
+
 def collapse_duplicate_vessel_lists(vessels_data: list[dict]) -> list[dict]:
     """
     Collapse short-teaser + detailed-particulars duplicates (7+7 → 7).
 
-    Pattern: even count, first half sparse (no IMO/year), second half richer —
-    or the reverse. Also soft-merge exact IMO / near-identical names.
+    Prefer the richer (detail) half, but MERGE open_location / opening_date
+    (and other blank fields) from the teaser half — otherwise confidence drops
+    even when the vessel count is correct.
     """
     if not vessels_data or len(vessels_data) < 2:
         return vessels_data
@@ -212,22 +238,27 @@ def collapse_duplicate_vessel_lists(vessels_data: list[dict]) -> list[dict]:
 
         r1, r2 = avg_rich(first), avg_rich(second)
         i1, i2 = imo_hits(first), imo_hits(second)
+        detail: list[dict] | None = None
+        teaser: list[dict] | None = None
         # Teaser first, detail second
         if r1 + 1.5 <= r2 and i1 <= max(1, half // 3) and i2 >= max(1, half // 2):
-            logger.info(
-                "[Extract] Collapsing teaser+detail lists: %d → %d (kept detail half)",
-                n, half,
-            )
-            kept = second
+            teaser, detail = first, second
         # Detail first, teaser second (rarer)
         elif r2 + 1.5 <= r1 and i2 <= max(1, half // 3) and i1 >= max(1, half // 2):
+            detail, teaser = first, second
+
+        if detail is not None and teaser is not None:
+            merged_rows: list[dict] = []
+            for i, rich in enumerate(detail):
+                donor = teaser[i] if i < len(teaser) else {}
+                merged_rows.append(_merge_vessel_fields(rich, donor))
             logger.info(
-                "[Extract] Collapsing detail+teaser lists: %d → %d (kept detail half)",
+                "[Extract] Collapsing teaser+detail lists: %d → %d (merged open fields into detail)",
                 n, half,
             )
-            kept = first
+            kept = merged_rows
 
-    # Soft dedupe remaining rows by IMO, else by normalised name (keep richer).
+    # Soft dedupe remaining rows by IMO, else by normalised name (merge fields).
     out: list[dict] = []
     by_imo: dict[str, int] = {}
     by_name: dict[str, int] = {}
@@ -237,16 +268,21 @@ def collapse_duplicate_vessel_lists(vessels_data: list[dict]) -> list[dict]:
         rich = _vessel_richness(v)
         if len(imo) == 7 and imo in by_imo:
             idx = by_imo[imo]
-            if rich > _vessel_richness(out[idx]):
-                out[idx] = v
+            if rich >= _vessel_richness(out[idx]):
+                out[idx] = _merge_vessel_fields(v, out[idx])
+            else:
+                out[idx] = _merge_vessel_fields(out[idx], v)
             continue
-        if name and name in by_name and len(imo) != 7:
+        if name and name in by_name:
             idx = by_name[name]
             prev_imo = re.sub(r"\D", "", _vessel_field(out[idx], "imo", "IMO"))
-            if len(prev_imo) == 7:
-                continue  # keep the IMO row
-            if rich > _vessel_richness(out[idx]):
-                out[idx] = v
+            if len(prev_imo) == 7 and len(imo) != 7:
+                out[idx] = _merge_vessel_fields(out[idx], v)
+                continue
+            if rich >= _vessel_richness(out[idx]):
+                out[idx] = _merge_vessel_fields(v, out[idx])
+            else:
+                out[idx] = _merge_vessel_fields(out[idx], v)
             continue
         idx = len(out)
         out.append(v)
