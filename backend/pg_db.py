@@ -190,6 +190,16 @@ CREATE TABLE IF NOT EXISTS open_location_aliases (
 
 CREATE INDEX IF NOT EXISTS idx_open_location_aliases_alias ON open_location_aliases(alias);
 
+-- App login users (plaintext password — same demo-style auth as demo123/123).
+CREATE TABLE IF NOT EXISTS app_users (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id      TEXT NOT NULL UNIQUE,
+    password     TEXT NOT NULL,
+    created_at   TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_app_users_user_id ON app_users(user_id);
+
 DROP VIEW IF EXISTS vessels_full;
 CREATE OR REPLACE VIEW vessels_full AS
 SELECT

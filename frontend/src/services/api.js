@@ -1,5 +1,14 @@
 const BASE = "/api";
 
+function errorDetail(err, fallback) {
+  const d = err?.detail;
+  if (typeof d === "string" && d) return d;
+  if (Array.isArray(d) && d.length) {
+    return d.map((x) => x?.msg || String(x)).filter(Boolean).join("; ") || fallback;
+  }
+  return fallback;
+}
+
 async function request(method, path, body) {
   const opts = {
     method,
@@ -9,10 +18,23 @@ async function request(method, path, body) {
   const res = await fetch(`${BASE}${path}`, opts);
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail || `HTTP ${res.status}`);
+    throw new Error(errorDetail(err, `HTTP ${res.status}`));
   }
   return res.json();
 }
+
+/** Validate user_id + password (demo admin or DB user). */
+export const login = (userId, password) =>
+  request("POST", "/auth/login", { user_id: userId, password });
+
+/** Create a login user (demo admin only). */
+export const createUser = (userId, password, actorUser, actorPassword) =>
+  request("POST", "/auth/users", {
+    user_id: userId,
+    password,
+    actor_user: actorUser,
+    actor_password: actorPassword,
+  });
 
 // ── Phase 1 ────────────────────────────────────────────────────────────────
 

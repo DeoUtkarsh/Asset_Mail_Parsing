@@ -11,7 +11,7 @@ import LoginView from "./components/Login/LoginView";
 import EmailDetail from "./components/pages/EmailDetail";
 import AiSummaryButton from "./components/AiSummary/AiSummaryButton";
 import Icon from "./components/icons";
-import { summarizeInbox } from "./services/api";
+import { summarizeInbox, createUser } from "./services/api";
 
 const FILTER_SENDER = "sanjib@iconshipbrokers.com";
 const RAIL = [
@@ -40,27 +40,48 @@ function countNeedsReviewFromEmails(emails) {
 }
 
 const AUTH_KEY = "bs_auth";
+const AUTH_USER_KEY = "bs_user";
+const DEMO_USER = "demo123";
+const DEMO_PASS = "123";
+
+function readStoredUser() {
+  try {
+    return localStorage.getItem(AUTH_USER_KEY) || "";
+  } catch {
+    return "";
+  }
+}
 
 export default function App() {
   const [authed, setAuthed] = useState(() => {
     try { return localStorage.getItem(AUTH_KEY) === "1"; } catch { return false; }
   });
+  const [authUser, setAuthUser] = useState(() => readStoredUser());
 
-  const handleLogin = useCallback(() => {
-    try { localStorage.setItem(AUTH_KEY, "1"); } catch { /* ignore */ }
+  const handleLogin = useCallback(({ userId } = {}) => {
+    const uid = (userId || "").trim();
+    try {
+      localStorage.setItem(AUTH_KEY, "1");
+      if (uid) localStorage.setItem(AUTH_USER_KEY, uid);
+    } catch { /* ignore */ }
+    setAuthUser(uid);
     setAuthed(true);
   }, []);
 
   const handleLogout = useCallback(() => {
-    try { localStorage.removeItem(AUTH_KEY); } catch { /* ignore */ }
+    try {
+      localStorage.removeItem(AUTH_KEY);
+      localStorage.removeItem(AUTH_USER_KEY);
+    } catch { /* ignore */ }
+    setAuthUser("");
     setAuthed(false);
   }, []);
 
   if (!authed) return <LoginView onLogin={handleLogin} />;
-  return <MainApp onLogout={handleLogout} />;
+  return <MainApp onLogout={handleLogout} authUser={authUser || readStoredUser()} />;
 }
 
-function MainApp({ onLogout }) {
+function MainApp({ onLogout, authUser }) {
   const [view, setView] = useState("home");
   /** Inbox sub-tab: "all" | "review" (Need to Review lives here, not on the rail). */
   const [inboxTab, setInboxTab] = useState("all");
@@ -83,6 +104,13 @@ function MainApp({ onLogout }) {
   const [draftJob, setDraftJob] = useState(null);
 
   const [sendModal, setSendModal] = useState(false);
+  const [logoutOpen, setLogoutOpen] = useState(false);
+  const [newUserId, setNewUserId] = useState("");
+  const [newUserPass, setNewUserPass] = useState("");
+  const [createBusy, setCreateBusy] = useState(false);
+  const [createMsg, setCreateMsg] = useState("");
+  const [createErr, setCreateErr] = useState("");
+  const isDemoAdmin = authUser === DEMO_USER;
   const [vesselRefreshKey, setVesselRefreshKey] = useState(0);
   const [contactRefreshKey, setContactRefreshKey] = useState(0);
   const [libraryRefreshKey, setLibraryRefreshKey] = useState(0);
@@ -94,6 +122,43 @@ function MainApp({ onLogout }) {
   const [toastMsg, setToastMsg] = useState(null);
   const toastTimer = useRef(null);
   const toast = useCallback((m) => { setToastMsg(m); clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToastMsg(null), 2400); }, []);
+
+  const openLogoutModal = useCallback(() => {
+    setNewUserId("");
+    setNewUserPass("");
+    setCreateMsg("");
+    setCreateErr("");
+    setLogoutOpen(true);
+  }, []);
+
+  const closeLogoutModal = useCallback(() => {
+    if (createBusy) return;
+    setLogoutOpen(false);
+  }, [createBusy]);
+
+  const handleCreateUser = useCallback(async (e) => {
+    e?.preventDefault?.();
+    const uid = newUserId.trim();
+    if (!uid || !newUserPass) {
+      setCreateErr("User ID and password are required.");
+      setCreateMsg("");
+      return;
+    }
+    setCreateBusy(true);
+    setCreateErr("");
+    setCreateMsg("");
+    try {
+      await createUser(uid, newUserPass, DEMO_USER, DEMO_PASS);
+      setCreateMsg(`User “${uid}” created. They can sign in now.`);
+      setNewUserId("");
+      setNewUserPass("");
+      toast(`User ${uid} created`);
+    } catch (err) {
+      setCreateErr(err?.message || "Could not create user.");
+    } finally {
+      setCreateBusy(false);
+    }
+  }, [newUserId, newUserPass, toast]);
 
   // ── Data ──
   const loadVessels = useCallback(async (emailId) => {
@@ -299,7 +364,7 @@ function MainApp({ onLogout }) {
           </div>
         </div>
         <div className="tb-right">
-          <button type="button" className="tb-logout" onClick={onLogout}>
+          <button type="button" className="tb-logout" onClick={openLogoutModal}>
             <Icon name="logout" size={16} /> Logout
           </button>
         </div>
@@ -441,6 +506,68 @@ function MainApp({ onLogout }) {
             <div className="mbtns">
               <button className="m-cancel" onClick={() => setSendModal(false)}>Cancel</button>
               <button className="m-send" onClick={() => { setSendModal(false); toast("📤 (Preview) Sent to charterer groups"); }}>📤 Send now</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {logoutOpen && (
+        <div
+          className="modal-bg"
+          onClick={(e) => e.target.classList.contains("modal-bg") && closeLogoutModal()}
+        >
+          <div className="modal logout-modal" role="dialog" aria-labelledby="logout-modal-title">
+            <h3 id="logout-modal-title">Account</h3>
+            <p>
+              {isDemoAdmin
+                ? "Create a new login, or confirm logout."
+                : "Confirm logout to leave Broker Sense."}
+            </p>
+
+            {isDemoAdmin && (
+              <form className="logout-create" onSubmit={handleCreateUser}>
+                <div className="logout-create-title">Create user</div>
+                <label className="logout-field">
+                  <span>User ID</span>
+                  <input
+                    value={newUserId}
+                    onChange={(e) => setNewUserId(e.target.value)}
+                    placeholder="newuser"
+                    autoComplete="off"
+                    disabled={createBusy}
+                  />
+                </label>
+                <label className="logout-field">
+                  <span>Password</span>
+                  <input
+                    type="password"
+                    value={newUserPass}
+                    onChange={(e) => setNewUserPass(e.target.value)}
+                    placeholder="••••"
+                    autoComplete="new-password"
+                    disabled={createBusy}
+                  />
+                </label>
+                {createErr && <div className="logout-err">{createErr}</div>}
+                {createMsg && <div className="logout-ok">{createMsg}</div>}
+                <button type="submit" className="logout-create-btn" disabled={createBusy}>
+                  {createBusy ? "Creating…" : "Create user"}
+                </button>
+              </form>
+            )}
+
+            <div className="mbtns">
+              <button type="button" className="m-cancel" onClick={closeLogoutModal} disabled={createBusy}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="m-send logout-confirm"
+                onClick={() => { setLogoutOpen(false); onLogout(); }}
+                disabled={createBusy}
+              >
+                Confirm logout
+              </button>
             </div>
           </div>
         </div>

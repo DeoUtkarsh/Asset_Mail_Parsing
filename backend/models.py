@@ -11,6 +11,20 @@ class FetchEmailsRequest(BaseModel):
     date_to: Optional[str] = None
 
 
+class LoginRequest(BaseModel):
+    """Sign in with user_id + password (demo admin or app_users row)."""
+    user_id: str
+    password: str
+
+
+class CreateUserRequest(BaseModel):
+    """Create a login user. Only the demo admin may call this."""
+    user_id: str
+    password: str
+    actor_user: str
+    actor_password: str
+
+
 class GenerateDraftRequest(BaseModel):
     """Sent by the frontend when the user approves the validation grid."""
     email_id: str
