@@ -23,7 +23,7 @@ import VesselTypeSelect, { isImoTypeValue } from "../VesselTypeSelect";
 import CellHighlightLegend from "../CellHighlightLegend";
 import DateRangePicker from "../DateRangePicker/DateRangePicker";
 
-const RECEIVED_COL = { id: "received", header: "RECEIVED", read_only: true, storage: "derived" };
+const RECEIVED_COL = { id: "received", header: "LAST UPDATED", read_only: true, storage: "derived" };
 
 function buildDraftSelectionSignature(vesselIds, columnIds) {
   const vessels = [...vesselIds].sort((a, b) => String(a).localeCompare(String(b))).join(",");

@@ -879,11 +879,16 @@ async def get_superset_columns(email_id: str):
 
 
 @app.get("/api/home/summary")
-async def home_summary():
-    """Home dashboard: pipeline counts (SQL) + short AI narrative."""
-    logger.info("[API] GET /api/home/summary")
+async def home_summary(day: str | None = None, tz: str | None = None):
+    """Home dashboard: today's pipeline counts (SQL) + short AI narrative.
+
+    Query: day=YYYY-MM-DD (optional), tz=IANA name (default UTC).
+    """
+    day_s = (day or "").strip()[:10] or None
+    tz_s = (tz or "UTC").strip() or "UTC"
+    logger.info("[API] GET /api/home/summary day=%s tz=%s", day_s, tz_s)
     try:
-        return await summarize_home()
+        return await summarize_home(day=day_s, tz_name=tz_s)
     except Exception as exc:
         logger.error("[API] home_summary failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc

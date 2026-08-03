@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { getEmails, getAllVessels, updateVessel, fetchEmails, generateDraft, getAttachments, getColumns, getHomeSummary } from "./services/api";
 import { useSSE } from "./hooks/useSSE";
 import { needsReview, confidencePct, confBand, byAttachment, deriveEmail, parseFromName, STD_COLUMNS } from "./lib/positions";
+import { calendarDayKey, homeTimeZone } from "./lib/calendarDay";
 import ValidationView from "./components/ValidationView/ValidationView";
 import InboxView from "./components/InboxView/InboxView";
 import HomeView from "./components/HomeView/HomeView";
@@ -41,6 +42,7 @@ function countNeedsReviewFromEmails(emails) {
 
 const AUTH_KEY = "bs_auth";
 const AUTH_USER_KEY = "bs_user";
+const AUTH_PASS_KEY = "bs_pass";
 const DEMO_USER = "demo123";
 const DEMO_PASS = "123";
 
@@ -52,19 +54,45 @@ function readStoredUser() {
   }
 }
 
+function readStoredPass(userId = "") {
+  try {
+    const stored = localStorage.getItem(AUTH_PASS_KEY) || "";
+    if (stored) return stored;
+  } catch { /* ignore */ }
+  // Older sessions may lack bs_pass — demo password is known.
+  if ((userId || readStoredUser()) === DEMO_USER) return DEMO_PASS;
+  return "";
+}
+
 export default function App() {
   const [authed, setAuthed] = useState(() => {
     try { return localStorage.getItem(AUTH_KEY) === "1"; } catch { return false; }
   });
   const [authUser, setAuthUser] = useState(() => readStoredUser());
+  const [authPass, setAuthPass] = useState(() => readStoredPass(readStoredUser()));
 
-  const handleLogin = useCallback(({ userId } = {}) => {
+  // Repair sessions created before we stored user/password in localStorage.
+  useEffect(() => {
+    if (!authed) return;
+    const uid = readStoredUser();
+    const pwd = readStoredPass(uid);
+    if (uid && uid !== authUser) setAuthUser(uid);
+    if (pwd && pwd !== authPass) {
+      setAuthPass(pwd);
+      try { localStorage.setItem(AUTH_PASS_KEY, pwd); } catch { /* ignore */ }
+    }
+  }, [authed, authUser, authPass]);
+
+  const handleLogin = useCallback(({ userId, password } = {}) => {
     const uid = (userId || "").trim();
+    const pwd = password ?? "";
     try {
       localStorage.setItem(AUTH_KEY, "1");
       if (uid) localStorage.setItem(AUTH_USER_KEY, uid);
+      localStorage.setItem(AUTH_PASS_KEY, pwd);
     } catch { /* ignore */ }
     setAuthUser(uid);
+    setAuthPass(pwd);
     setAuthed(true);
   }, []);
 
@@ -72,16 +100,24 @@ export default function App() {
     try {
       localStorage.removeItem(AUTH_KEY);
       localStorage.removeItem(AUTH_USER_KEY);
+      localStorage.removeItem(AUTH_PASS_KEY);
     } catch { /* ignore */ }
     setAuthUser("");
+    setAuthPass("");
     setAuthed(false);
   }, []);
 
   if (!authed) return <LoginView onLogin={handleLogin} />;
-  return <MainApp onLogout={handleLogout} authUser={authUser || readStoredUser()} />;
+  return (
+    <MainApp
+      onLogout={handleLogout}
+      authUser={authUser || readStoredUser()}
+      authPass={authPass || readStoredPass(authUser || readStoredUser())}
+    />
+  );
 }
 
-function MainApp({ onLogout, authUser }) {
+function MainApp({ onLogout, authUser, authPass }) {
   const [view, setView] = useState("home");
   /** Inbox sub-tab: "all" | "review" (Need to Review lives here, not on the rail). */
   const [inboxTab, setInboxTab] = useState("all");
@@ -105,6 +141,9 @@ function MainApp({ onLogout, authUser }) {
 
   const [sendModal, setSendModal] = useState(false);
   const [logoutOpen, setLogoutOpen] = useState(false);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const userMenuRef = useRef(null);
   const [newUserId, setNewUserId] = useState("");
   const [newUserPass, setNewUserPass] = useState("");
   const [createBusy, setCreateBusy] = useState(false);
@@ -124,16 +163,37 @@ function MainApp({ onLogout, authUser }) {
   const toast = useCallback((m) => { setToastMsg(m); clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToastMsg(null), 2400); }, []);
 
   const openLogoutModal = useCallback(() => {
+    setUserMenuOpen(false);
+    setLogoutOpen(true);
+  }, []);
+
+  const openProfile = useCallback(() => {
+    setUserMenuOpen(false);
     setNewUserId("");
     setNewUserPass("");
     setCreateMsg("");
     setCreateErr("");
-    setLogoutOpen(true);
+    setProfileOpen(true);
   }, []);
 
+  useEffect(() => {
+    if (!userMenuOpen) return undefined;
+    const onDoc = (e) => {
+      if (userMenuRef.current && !userMenuRef.current.contains(e.target)) {
+        setUserMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [userMenuOpen]);
+
   const closeLogoutModal = useCallback(() => {
-    if (createBusy) return;
     setLogoutOpen(false);
+  }, []);
+
+  const closeProfileModal = useCallback(() => {
+    if (createBusy) return;
+    setProfileOpen(false);
   }, [createBusy]);
 
   const handleCreateUser = useCallback(async (e) => {
@@ -254,20 +314,21 @@ function MainApp({ onLogout, authUser }) {
     [emails],
   );
 
-  // Home summary is cached in App so switching tabs doesn't re-fetch.
-  // Reloads when homeRefreshKey changes or via the manual Refresh button.
+  // Home summary: today's data only. Reloads when returning to Home or when
+  // other tabs bump homeRefreshKey after data changes.
   const homeReqId = useRef(0);
   const loadHome = useCallback(async () => {
     const reqId = ++homeReqId.current;
-    const keyAtStart = homeRefreshKey;
     setHomeLoading(true);
     setHomeError("");
     try {
-      const res = await getHomeSummary();
-      // Ignore outdated responses if a newer refresh started meanwhile
+      const res = await getHomeSummary({
+        day: calendarDayKey(),
+        tz: homeTimeZone(),
+      });
       if (reqId !== homeReqId.current) return;
       setHomeSummary(res);
-      homeLoadedKey.current = keyAtStart;
+      homeLoadedKey.current = homeRefreshKey;
     } catch (e) {
       if (reqId !== homeReqId.current) return;
       setHomeError(e.message || "Failed to load summary.");
@@ -276,20 +337,22 @@ function MainApp({ onLogout, authUser }) {
     }
   }, [homeRefreshKey]);
 
-  // Keep Home review count in sync with the inbox list (avoids stale "1 to check").
-  const syncHomeIfReviewCountChanged = useCallback((emailData) => {
-    const live = countNeedsReviewFromEmails(emailData);
-    const cached = homeSummary?.facts?.review_count;
-    if (cached != null && cached !== live) {
+  // Inbox list changed — refresh Home only while Home is visible.
+  // Do not compare all-mail review totals to today's Home count (caused flicker loops).
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const syncHomeIfReviewCountChanged = useCallback(() => {
+    if (viewRef.current === "home") {
       setHomeRefreshKey((k) => k + 1);
+    } else {
+      homeLoadedKey.current = -1;
     }
-  }, [homeSummary?.facts?.review_count]);
+  }, []);
 
   useEffect(() => {
-    if (view === "home" && homeLoadedKey.current !== homeRefreshKey && !homeLoading) {
-      loadHome();
-    }
-  }, [view, homeRefreshKey, homeLoading, loadHome]);
+    if (view !== "home") return;
+    loadHome();
+  }, [view, homeRefreshKey, loadHome]);
 
   const onCopy = () => {
     const tmp = document.createElement("div"); tmp.innerHTML = draft.html;
@@ -364,9 +427,29 @@ function MainApp({ onLogout, authUser }) {
           </div>
         </div>
         <div className="tb-right">
-          <button type="button" className="tb-logout" onClick={openLogoutModal}>
-            <Icon name="logout" size={16} /> Logout
-          </button>
+          <div className="tb-user" ref={userMenuRef}>
+            <button
+              type="button"
+              className={`tb-user-btn ${userMenuOpen ? "open" : ""}`}
+              onClick={() => setUserMenuOpen((o) => !o)}
+              aria-haspopup="menu"
+              aria-expanded={userMenuOpen}
+              title={authUser || "Account"}
+            >
+              <Icon name="user" size={16} />
+              <span className="tb-user-id">{authUser || "Account"}</span>
+            </button>
+            {userMenuOpen && (
+              <div className="tb-user-menu" role="menu">
+                <button type="button" role="menuitem" onClick={openProfile}>
+                  Create user
+                </button>
+                <button type="button" role="menuitem" onClick={openLogoutModal}>
+                  Logout
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
@@ -462,7 +545,7 @@ function MainApp({ onLogout, authUser }) {
             onInboxTabChange={setInboxTab}
             onEmailsLoaded={syncHomeIfReviewCountChanged}
             onVesselsUpdated={() => { setVesselRefreshKey((k) => k + 1); setHomeRefreshKey((k) => k + 1); }}
-            onContactsUpdated={() => setContactRefreshKey((k) => k + 1)}
+            onContactsUpdated={() => { setContactRefreshKey((k) => k + 1); setHomeRefreshKey((k) => k + 1); }}
           />
         </div>
         {view === "today" || view === "inbox" ? null : loading && view !== "home" && view !== "list" && view !== "library" ? (
@@ -473,7 +556,6 @@ function MainApp({ onLogout, authUser }) {
             loading={homeLoading}
             error={homeError}
             onNavigate={go}
-            onRefresh={loadHome}
           />
         ) : view === "list" ? (
           <ContactListView isActive={view === "list"} refreshKey={contactRefreshKey} />
@@ -511,60 +593,74 @@ function MainApp({ onLogout, authUser }) {
         </div>
       )}
 
+      {profileOpen && (
+        <div
+          className="modal-bg"
+          onClick={(e) => e.target.classList.contains("modal-bg") && closeProfileModal()}
+        >
+          <div className="modal profile-modal" role="dialog" aria-labelledby="profile-modal-title">
+            <h3 id="profile-modal-title">Create user</h3>
+            {isDemoAdmin ? (
+              <>
+                <p>Add a new User ID and password. They can sign in after you create them.</p>
+                <form className="logout-create" onSubmit={handleCreateUser}>
+                  <label className="logout-field">
+                    <span>New User ID</span>
+                    <input
+                      value={newUserId}
+                      onChange={(e) => setNewUserId(e.target.value)}
+                      placeholder="newuser"
+                      autoComplete="off"
+                      autoFocus
+                      disabled={createBusy}
+                    />
+                  </label>
+                  <label className="logout-field">
+                    <span>New password</span>
+                    <input
+                      type="password"
+                      value={newUserPass}
+                      onChange={(e) => setNewUserPass(e.target.value)}
+                      placeholder="••••"
+                      autoComplete="new-password"
+                      disabled={createBusy}
+                    />
+                  </label>
+                  {createErr && <div className="logout-err">{createErr}</div>}
+                  {createMsg && <div className="logout-ok">{createMsg}</div>}
+                  <button type="submit" className="logout-create-btn" disabled={createBusy}>
+                    {createBusy ? "Creating…" : "Create user"}
+                  </button>
+                </form>
+              </>
+            ) : (
+              <p>Only the demo admin can create new users.</p>
+            )}
+            <div className="mbtns">
+              <button type="button" className="m-cancel" onClick={closeProfileModal} disabled={createBusy}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {logoutOpen && (
         <div
           className="modal-bg"
           onClick={(e) => e.target.classList.contains("modal-bg") && closeLogoutModal()}
         >
           <div className="modal logout-modal" role="dialog" aria-labelledby="logout-modal-title">
-            <h3 id="logout-modal-title">Account</h3>
-            <p>
-              {isDemoAdmin
-                ? "Create a new login, or confirm logout."
-                : "Confirm logout to leave Broker Sense."}
-            </p>
-
-            {isDemoAdmin && (
-              <form className="logout-create" onSubmit={handleCreateUser}>
-                <div className="logout-create-title">Create user</div>
-                <label className="logout-field">
-                  <span>User ID</span>
-                  <input
-                    value={newUserId}
-                    onChange={(e) => setNewUserId(e.target.value)}
-                    placeholder="newuser"
-                    autoComplete="off"
-                    disabled={createBusy}
-                  />
-                </label>
-                <label className="logout-field">
-                  <span>Password</span>
-                  <input
-                    type="password"
-                    value={newUserPass}
-                    onChange={(e) => setNewUserPass(e.target.value)}
-                    placeholder="••••"
-                    autoComplete="new-password"
-                    disabled={createBusy}
-                  />
-                </label>
-                {createErr && <div className="logout-err">{createErr}</div>}
-                {createMsg && <div className="logout-ok">{createMsg}</div>}
-                <button type="submit" className="logout-create-btn" disabled={createBusy}>
-                  {createBusy ? "Creating…" : "Create user"}
-                </button>
-              </form>
-            )}
-
+            <h3 id="logout-modal-title">Logout</h3>
+            <p>Confirm logout to leave Broker Sense.</p>
             <div className="mbtns">
-              <button type="button" className="m-cancel" onClick={closeLogoutModal} disabled={createBusy}>
+              <button type="button" className="m-cancel" onClick={closeLogoutModal}>
                 Cancel
               </button>
               <button
                 type="button"
                 className="m-send logout-confirm"
                 onClick={() => { setLogoutOpen(false); onLogout(); }}
-                disabled={createBusy}
               >
                 Confirm logout
               </button>

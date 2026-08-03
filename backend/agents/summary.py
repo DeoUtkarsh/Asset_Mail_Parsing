@@ -644,29 +644,44 @@ def _match_brief_copy_text(facts: dict[str, Any]) -> str:
     return "\n".join(lines) if lines else "No vessels in scope."
 
 
-async def summarize_home() -> dict[str, Any]:
+async def summarize_home(day: str | None = None, tz_name: str = "UTC") -> dict[str, Any]:
     """Home dashboard: pipeline aggregates from DB + short AI narrative.
 
-    When a date-filtered fetch is active, stats/narrative only cover mails in that window.
+    Scoped to a single calendar day (default: today in ``tz_name``).
     """
     from collections import defaultdict
-    from datetime import datetime, timezone
-
-    from fetch_scope import load_fetch_scope
+    from datetime import datetime, timezone, tzinfo
+    from zoneinfo import ZoneInfo
 
     MANUAL_ENTRIES_MESSAGE_ID = "manual-entries"
+
+    def _resolve_tz(name: str | None) -> tuple[tzinfo, str]:
+        raw = (name or "UTC").strip() or "UTC"
+        # Windows Python often has no IANA "UTC" key unless tzdata is installed.
+        if raw.upper() in ("UTC", "GMT", "ETC/UTC", "Z"):
+            return timezone.utc, "UTC"
+        try:
+            return ZoneInfo(raw), raw
+        except Exception:
+            return timezone.utc, "UTC"
+
+    tz, tz_name = _resolve_tz(tz_name)
+
+    if day:
+        try:
+            target = datetime.strptime(day[:10], "%Y-%m-%d").date()
+        except ValueError:
+            target = datetime.now(tz).date()
+    else:
+        target = datetime.now(tz).date()
+    day_str = target.isoformat()
 
     emails = (
         supabase.table("parent_emails").select("id, status, message_id, date_received").execute()
     ).data or []
     emails = [e for e in emails if e.get("message_id") != MANUAL_ENTRIES_MESSAGE_ID]
 
-    scope = load_fetch_scope() or {}
-    scope_from = (scope.get("date_from") or "").strip() or None
-    scope_to = (scope.get("date_to") or "").strip() or None
-    scoped_ids = set(scope.get("email_ids") or [])
-
-    def _day(raw: str | None):
+    def _local_day(raw: str | None):
         if not raw:
             return None
         try:
@@ -674,33 +689,17 @@ async def summarize_home() -> dict[str, Any]:
             dt = datetime.fromisoformat(s)
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
-            return dt.date()
+            return dt.astimezone(tz).date()
         except ValueError:
             try:
                 return datetime.strptime(str(raw)[:10], "%Y-%m-%d").date()
             except ValueError:
                 return None
 
-    if scope_from or scope_to or scoped_ids:
-        df = None
-        dt = None
-        try:
-            if scope_from:
-                df = datetime.strptime(scope_from[:10], "%Y-%m-%d").date()
-            if scope_to:
-                dt = datetime.strptime(scope_to[:10], "%Y-%m-%d").date()
-        except ValueError:
-            df = dt = None
-
-        if df or dt:
-            emails = [
-                e for e in emails
-                if (d := _day(e.get("date_received"))) is not None
-                and (not df or d >= df)
-                and (not dt or d <= dt)
-            ]
-        elif scoped_ids:
-            emails = [e for e in emails if e["id"] in scoped_ids]
+    emails = [
+        e for e in emails
+        if (d := _local_day(e.get("date_received"))) is not None and d == target
+    ]
 
     email_ids = [e["id"] for e in emails]
     ready_ids = {
@@ -735,6 +734,9 @@ async def summarize_home() -> dict[str, Any]:
 
     review_count = 0
     for a in attachments:
+        # Same rule as inbox Need to review: skip already-verified mails.
+        if a.get("is_verified"):
+            continue
         vlist = v_by_att.get(a["id"], [])
         conf = compute_attachment_confidence(
             status=a.get("status") or "",
@@ -781,8 +783,8 @@ async def summarize_home() -> dict[str, Any]:
         "review_count": review_count,
         "zones": zone_count,
         "readiness_pct": readiness_pct,
-        "fetch_date_from": scope_from,
-        "fetch_date_to": scope_to,
+        "summary_day": day_str,
+        "summary_tz": tz_name,
         "headline_stats": [
             {"label": "Emails", "value": len(emails)},
             {"label": "Positions", "value": positions_parsed},
@@ -798,8 +800,7 @@ async def summarize_home() -> dict[str, Any]:
         "review_count": review_count,
         "zones": zone_count,
         "readiness_pct": readiness_pct,
-        "fetch_date_from": scope_from,
-        "fetch_date_to": scope_to,
+        "summary_day": day_str,
     }
     # Keep Home refresh snappy: don't hang the whole dashboard on a slow LLM.
     try:

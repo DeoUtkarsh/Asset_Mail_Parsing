@@ -13,7 +13,7 @@ export default function LoginView({ onLogin }) {
     setError("");
     try {
       const res = await login(userId.trim(), password);
-      onLogin({ userId: res.user_id, isDemo: !!res.is_demo });
+      onLogin({ userId: res.user_id, password, isDemo: !!res.is_demo });
     } catch (err) {
       setError(err?.message || "Invalid user ID or password.");
     } finally {

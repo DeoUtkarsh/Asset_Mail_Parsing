@@ -10,6 +10,13 @@ import { useSSE } from "../../hooks/useSSE";
 import PreviewPanel from "./PreviewPanel";
 import Icon from "../icons";
 import DateRangePicker from "../DateRangePicker/DateRangePicker";
+import {
+  calendarDayKey,
+  formatDayLabel,
+  isoToDayKey,
+  shiftDayKey,
+  useUtcCalendar,
+} from "../../lib/calendarDay";
 
 const AV_COLORS = ["#219495", "#3b82f6", "#8b5cf6", "#f59e0b", "#ef4444", "#10b981", "#ec4899", "#0ea5e9"];
 const LIVE_BUS_ID = "live";
@@ -65,6 +72,9 @@ export default function InboxView({
   const [fetching, setFetching]       = useState(false);
   const [fetchDateFrom, setFetchDateFrom] = useState("");
   const [fetchDateTo, setFetchDateTo] = useState("");
+  const useUtc = useUtcCalendar();
+  const [viewDay, setViewDay] = useState(() => calendarDayKey(new Date(), useUtcCalendar()));
+  const todayKey = calendarDayKey(new Date(), useUtc);
   const [retrying, setRetrying]       = useState(false);
   const [jobId, setJobId]             = useState(null);
   const [attStatuses, setAttStatuses] = useState({});
@@ -573,13 +583,20 @@ export default function InboxView({
     [reviewMode, reviewRows, mailRows]
   );
 
+  // Default: one calendar day (Outlook-style). Date filters override for wider ranges.
+  const dayScopedRows = useMemo(() => {
+    const filterOverridesDay = Boolean(filters.dateFrom || filters.dateTo);
+    if (filterOverridesDay) return scopedRows;
+    return scopedRows.filter((r) => isoToDayKey(r.email?.date_received, useUtc) === viewDay);
+  }, [scopedRows, filters.dateFrom, filters.dateTo, viewDay, useUtc]);
+
   const filteredRows = useMemo(() => {
     const q = search.trim().toLowerCase();
     const from = filters.from.trim().toLowerCase();
     const fromTs = filters.dateFrom ? new Date(`${filters.dateFrom}T00:00:00`).getTime() : null;
     const toTs = filters.dateTo ? new Date(`${filters.dateTo}T23:59:59`).getTime() : null;
     const tierSet = filters.tiers.length ? new Set(filters.tiers) : null;
-    return scopedRows.filter((r) => {
+    return dayScopedRows.filter((r) => {
       if (q) {
         const hay = `${r.filename || ""} ${r.email.sender || ""} ${r.email.subject || ""}`.toLowerCase();
         if (!hay.includes(q)) return false;
@@ -594,7 +611,22 @@ export default function InboxView({
       if (tierSet && !tierSet.has(r.confidence_tier)) return false;
       return true;
     });
-  }, [scopedRows, search, filters]);
+  }, [dayScopedRows, search, filters]);
+
+  const dayMailCount = useMemo(() => {
+    const filterOverridesDay = Boolean(filters.dateFrom || filters.dateTo);
+    if (filterOverridesDay) return mailRows.length;
+    return mailRows.filter((r) => isoToDayKey(r.email?.date_received, useUtc) === viewDay).length;
+  }, [mailRows, filters.dateFrom, filters.dateTo, viewDay, useUtc]);
+
+  const dayReviewCount = useMemo(() => {
+    const filterOverridesDay = Boolean(filters.dateFrom || filters.dateTo);
+    if (filterOverridesDay) return reviewRows.length;
+    return reviewRows.filter((r) => isoToDayKey(r.email?.date_received, useUtc) === viewDay).length;
+  }, [reviewRows, filters.dateFrom, filters.dateTo, viewDay, useUtc]);
+
+  const canGoNextDay = viewDay < todayKey;
+  const dayNavLabel = viewDay === todayKey ? `Today · ${formatDayLabel(viewDay, useUtc)}` : formatDayLabel(viewDay, useUtc);
 
   const activeFilterCount = useMemo(() => {
     let n = 0;
@@ -720,7 +752,7 @@ export default function InboxView({
           onClick={() => onInboxTabChange?.("all")}
         >
           <Icon name="mail" size={14} />
-          All mails ({mailRows.length})
+          All mails ({dayMailCount})
         </button>
         <button
           type="button"
@@ -730,7 +762,7 @@ export default function InboxView({
           onClick={() => onInboxTabChange?.("review")}
         >
           <Icon name="alert" size={14} />
-          Need to review ({reviewRows.length})
+          Need to review ({dayReviewCount})
         </button>
       </div>
       <p className="inbox-tab-hint">
@@ -742,6 +774,34 @@ export default function InboxView({
       <div className="inbox-split">
         {/* ── Left: mail list ── */}
         <div className="inbox-list">
+          <div className="inbox-daynav" aria-label="Mail day">
+            <button
+              type="button"
+              className="inbox-daynav-btn"
+              onClick={() => setViewDay((d) => shiftDayKey(d, -1, useUtc))}
+              title="Previous day"
+              aria-label="Previous day"
+            >
+              <Icon name="chevronLeft" size={16} />
+            </button>
+            <div className="inbox-daynav-label">
+              <Icon name="calendar" size={14} />
+              <span>{dayNavLabel}</span>
+              {filters.dateFrom || filters.dateTo ? (
+                <span className="inbox-daynav-note">Filter dates override day view</span>
+              ) : null}
+            </div>
+            <button
+              type="button"
+              className="inbox-daynav-btn"
+              onClick={() => setViewDay((d) => shiftDayKey(d, 1, useUtc))}
+              disabled={!canGoNextDay}
+              title="Next day"
+              aria-label="Next day"
+            >
+              <Icon name="chevronRight" size={16} />
+            </button>
+          </div>
           <div className="inbox-search-row">
             <div className="inbox-search">
               <Icon name="search" size={15} />

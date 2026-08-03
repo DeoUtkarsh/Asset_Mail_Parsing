@@ -26,7 +26,7 @@ import VesselTypeSelect, { isImoTypeValue, normalizeVesselType } from "../Vessel
 
 const helper = createColumnHelper();
 
-/** Checkbox (if shown), SR. NO, RECEIVED, and leading identity cols stay fixed when scrolling. */
+/** Checkbox (if shown), SR. NO, LAST UPDATED, and leading identity cols stay fixed when scrolling. */
 function buildPinnedOrder(showCheckboxes) {
   const cols = ["_num", "received", "vessel_name", "imo", "region"];
   return showCheckboxes ? ["_select", ...cols] : cols;
