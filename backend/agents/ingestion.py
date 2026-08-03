@@ -91,6 +91,48 @@ def _existing_message_ids(message_ids: list[str]) -> set[str]:
     return {r.get("message_id") for r in rows if r.get("message_id")}
 
 
+def _incomplete_existing(message_ids: list[str]) -> list[dict[str, str]]:
+    """
+    Parents that already exist for these Message-IDs but never finished Phase 1
+    (e.g. ECS redeploy mid-fetch left status=extracting / att=pending).
+
+    Returns [{email_id, attachment_id, message_id, subject}, ...] to resume.
+    """
+    if not message_ids:
+        return []
+    parents = (
+        supabase.table("parent_emails")
+        .select("id, message_id, status, subject")
+        .in_("message_id", message_ids)
+        .execute()
+    ).data or []
+    out: list[dict[str, str]] = []
+    for p in parents:
+        status = (p.get("status") or "").lower()
+        if status in ("ready_for_validation", "drafted"):
+            continue
+        atts = (
+            supabase.table("attachments")
+            .select("id, status")
+            .eq("parent_email_id", p["id"])
+            .order("created_at")
+            .execute()
+        ).data or []
+        if not atts:
+            continue
+        for a in atts:
+            att_st = (a.get("status") or "").lower()
+            # Resume anything not fully done, or done vessels with parent still stuck.
+            if att_st in ("pending", "extracting", "error") or status in ("extracting", "pending"):
+                out.append({
+                    "email_id": p["id"],
+                    "attachment_id": a["id"],
+                    "message_id": p.get("message_id") or "",
+                    "subject": p.get("subject") or "",
+                })
+    return out
+
+
 async def run_ingestion(
     job_id: str,
     date_from: str | None = None,
@@ -99,13 +141,14 @@ async def run_ingestion(
 ) -> dict[str, Any]:
     """
     Fetch broker emails (optionally date-filtered) and ingest only the NEW ones.
+    Also resumes incomplete rows (same Message-ID, still extracting/pending).
 
     min_uid: IDLE watermark — only IMAP UIDs greater than this (no history backfill).
 
     Returns:
         {
-            "email_ids": [str, ...],       # parent_email ids created this run
-            "attachment_ids": [str, ...],  # one per new email
+            "email_ids": [str, ...],       # parent_email ids created / resumed this run
+            "attachment_ids": [str, ...],  # one per email to process
             "attachment_count": int,
             "new_count": int,
             "total_found": int,
@@ -132,6 +175,9 @@ async def run_ingestion(
     seen = _existing_message_ids([e["message_id"] for e in all_emails])
     new_emails = [e for e in all_emails if e["message_id"] not in seen]
 
+    # Resume incomplete DB rows for Message-IDs we would otherwise skip.
+    incomplete = _incomplete_existing([e["message_id"] for e in all_emails if e["message_id"] in seen])
+
     # Deterministic order (oldest first) so cards read naturally, then cap.
     new_emails.reverse()
     limit = settings.MAX_ATTACHMENTS
@@ -140,8 +186,10 @@ async def run_ingestion(
                     limit, len(new_emails), limit)
         new_emails = new_emails[:limit]
 
-    logger.info("Ingestion: %d total, %d already processed, %d new to ingest",
-                total_found, len(seen), len(new_emails))
+    logger.info(
+        "Ingestion: %d total, %d already in DB, %d new, %d incomplete to resume",
+        total_found, len(seen), len(new_emails), len(incomplete),
+    )
 
     email_ids: list[str] = []
     attachment_ids: list[str] = []
@@ -205,10 +253,38 @@ async def run_ingestion(
             "filename": em["filename"],
         })
 
+    # Resume stuck rows from a previous interrupted Phase 1.
+    for row in incomplete:
+        email_id = row["email_id"]
+        att_id = row["attachment_id"]
+        if email_id in email_ids:
+            continue
+        supabase.table("parent_emails").update({"status": "extracting"}).eq("id", email_id).execute()
+        supabase.table("attachments").update({
+            "status": "pending",
+            "error_message": None,
+        }).eq("id", att_id).execute()
+        email_ids.append(email_id)
+        attachment_ids.append(att_id)
+        await sse_manager.send(job_id, "email_saved", {
+            "email_id": email_id,
+            "subject": row.get("subject") or "",
+        })
+        await sse_manager.send(job_id, "attachment_saved", {
+            "email_id": email_id,
+            "attachment_id": att_id,
+            "filename": row.get("subject") or "resume",
+        })
+        logger.info(
+            "[Ingestion] Resuming incomplete email_id=%s att=%s (%s)",
+            email_id, att_id, (row.get("subject") or "")[:50],
+        )
+
     await sse_manager.send(job_id, "ingestion_summary", {
         "total_found": total_found,
-        "already_processed": len(seen),
-        "new_count": len(email_ids),
+        "already_processed": len(seen) - len(incomplete),
+        "new_count": len(new_emails),
+        "resumed_count": len(incomplete),
         "email_ids": email_ids,
         "attachment_ids": attachment_ids,
     })
