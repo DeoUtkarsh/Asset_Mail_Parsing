@@ -675,11 +675,26 @@ def vessel_names_for_attachment(attachment_id: str) -> list[str]:
     names: list[str] = []
     seen: set[str] = set()
     for row in rows:
-        name = ((row.get("dynamic_data") or {}).get("vessel_name") or "").strip()
-        key = name.lower()
-        if name and key not in seen:
-            seen.add(key)
-            names.append(name)
+        dd = row.get("dynamic_data") or {}
+        name = (dd.get("vessel_name") or "").strip()
+        if not name:
+            continue
+        year = (dd.get("year_built") or "").strip()
+        dwt = re.sub(r"[^\d]", "", str(dd.get("dwt_sdwt") or dd.get("dwt") or ""))
+        open_pos = (dd.get("open_location") or "").strip().lower()
+        # Sister ships can share a name — keep them distinct in the contact summary.
+        key = f"{name.lower()}|{year.lower()}|{dwt}|{open_pos}"
+        if key in seen:
+            continue
+        seen.add(key)
+        plain_taken = name in names or any(n.startswith(f"{name} (") for n in names)
+        if plain_taken and year:
+            label = f"{name} ({year})"
+            if label in names and dwt:
+                label = f"{name} ({year}, {dwt} dwt)"
+        else:
+            label = name
+        names.append(label)
     return names
 
 

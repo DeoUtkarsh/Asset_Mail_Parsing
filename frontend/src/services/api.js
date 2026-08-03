@@ -144,7 +144,14 @@ export const updateAttachmentContacts = (attId, { signature_emails, signature_ph
   request("PUT", `/attachments/${attId}/contacts`, { signature_emails, signature_phones });
 
 /** Home dashboard: pipeline counts + AI narrative (numbers from SQL). */
-export const getHomeSummary = () => request("GET", "/home/summary");
+/** Home dashboard: today's counts + AI narrative. Optional { day, tz }. */
+export const getHomeSummary = (opts = {}) => {
+  const q = new URLSearchParams();
+  if (opts.day) q.set("day", opts.day);
+  if (opts.tz) q.set("tz", opts.tz);
+  const qs = q.toString();
+  return request("GET", `/home/summary${qs ? `?${qs}` : ""}`);
+};
 
 /** Fresh AI summary for the inbox tab (optional email id filter). */
 export const summarizeInbox = (emailIds) =>

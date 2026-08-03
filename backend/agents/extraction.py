@@ -137,6 +137,10 @@ RULES:
    (name + open port/date only) then a detailed particulars block (BUILT / IMO / DWT / …) that
    restarts numbering at 1. Extract each physical ship ONCE. Prefer the detailed block, but
    still include open_location / opening_date from the teaser when the detail block omits them.
+10. SISTER SHIPS / SAME NAME — if two (or more) blocks share the same vessel_name but differ in
+   year_built, DWT, open position, or direction, they are DIFFERENT ships. Emit a SEPARATE vessel
+   object for each (e.g. two "M/V CSL-7K-500TYPE" with BLT 2003 vs BLT 2005 → two vessels).
+   Never drop a block only because the name matches an earlier row.
    Never output 14 vessels when the mail only lists 7 ships twice.
 
 TEXT TO PARSE:
@@ -181,6 +185,28 @@ def _norm_vessel_name(name: str) -> str:
     n = re.sub(r"[^a-z0-9]+", " ", (name or "").lower()).strip()
     n = re.sub(r"\b(mv|mt|m\/v|m\/t)\b", " ", n)
     return re.sub(r"\s+", " ", n).strip()
+
+
+def _norm_part(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip().lower())
+
+
+def _vessel_identity_key(vessel: dict) -> str:
+    """Name alone is not unique — year / DWT / open position distinguish sister ships."""
+    name = _norm_vessel_name(_vessel_field(vessel, "vessel_name", "Vessel Name"))
+    year = _norm_part(_vessel_field(vessel, "year_built", "Year Built", "blt", "built"))
+    dwt = re.sub(r"[^\d]", "", _vessel_field(vessel, "dwt_sdwt", "dwt", "DWT"))
+    open_pos = _norm_part(
+        _vessel_field(
+            vessel,
+            "open_location",
+            "opening",
+            "position",
+            "Open Location",
+            "POSITION",
+        )
+    )
+    return f"{name}|{year}|{dwt}|{open_pos}"
 
 
 def _merge_vessel_fields(primary: dict, donor: dict) -> dict:
@@ -258,13 +284,14 @@ def collapse_duplicate_vessel_lists(vessels_data: list[dict]) -> list[dict]:
             )
             kept = merged_rows
 
-    # Soft dedupe remaining rows by IMO, else by normalised name (merge fields).
+    # Soft dedupe: same 7-digit IMO, or same name+year+dwt+open position.
+    # Same name with different year/DWT/position stays as separate rows (sister ships).
     out: list[dict] = []
     by_imo: dict[str, int] = {}
-    by_name: dict[str, int] = {}
+    by_identity: dict[str, int] = {}
     for v in kept:
         imo = re.sub(r"\D", "", _vessel_field(v, "imo", "IMO"))
-        name = _norm_vessel_name(_vessel_field(v, "vessel_name", "Vessel Name"))
+        ident = _vessel_identity_key(v)
         rich = _vessel_richness(v)
         if len(imo) == 7 and imo in by_imo:
             idx = by_imo[imo]
@@ -273,8 +300,8 @@ def collapse_duplicate_vessel_lists(vessels_data: list[dict]) -> list[dict]:
             else:
                 out[idx] = _merge_vessel_fields(out[idx], v)
             continue
-        if name and name in by_name:
-            idx = by_name[name]
+        if ident and ident != "|||" and ident in by_identity:
+            idx = by_identity[ident]
             prev_imo = re.sub(r"\D", "", _vessel_field(out[idx], "imo", "IMO"))
             if len(prev_imo) == 7 and len(imo) != 7:
                 out[idx] = _merge_vessel_fields(out[idx], v)
@@ -288,8 +315,8 @@ def collapse_duplicate_vessel_lists(vessels_data: list[dict]) -> list[dict]:
         out.append(v)
         if len(imo) == 7:
             by_imo[imo] = idx
-        if name:
-            by_name[name] = idx
+        if ident and ident != "|||":
+            by_identity[ident] = idx
 
     if len(out) != len(vessels_data):
         logger.info("[Extract] Vessel dedupe %d → %d", len(vessels_data), len(out))

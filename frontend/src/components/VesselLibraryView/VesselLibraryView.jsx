@@ -14,17 +14,17 @@ import VesselTypeSelect, {
 } from "../VesselTypeSelect";
 
 const COLS = [
-  { key: "vessel_name", label: "Vessel name", ph: "e.g. AMICO PEARL", colClass: "vlib-col-name" },
-  { key: "imo_no", label: "IMO no.", ph: "e.g. 9412233", colClass: "vlib-col-imo" },
-  { key: "call_sign", label: "Call sign", ph: "e.g. 9V1234", colClass: "vlib-col-call" },
-  { key: "vessel_type", label: "Vessel type", ph: "Select vessel type…", colClass: "vlib-col-type" },
-  { key: "year_built", label: "Year built", ph: "e.g. 2013", colClass: "vlib-col-year" },
-  { key: "imo_type", label: "IMO type", ph: "e.g. IMO II", colClass: "vlib-col-imotype" },
-  { key: "dwt", label: "Dead weight (DWT)", ph: "e.g. 74,900", colClass: "vlib-col-dwt" },
-  { key: "cbm", label: "CBM / cubic meter", ph: "e.g. 45,000", colClass: "vlib-col-cbm" },
-  { key: "flag", label: "Flag", ph: "e.g. Singapore", colClass: "vlib-col-flag" },
-  { key: "sire_date", label: "Last SIRE date", ph: "e.g. Jan 2026", colClass: "vlib-col-date" },
-  { key: "cdi_date", label: "Last CDI date", ph: "e.g. Mar 2026", colClass: "vlib-col-date" },
+  { key: "vessel_name", label: "VESSEL NAME", ph: "e.g. AMICO PEARL", colClass: "vlib-col-name" },
+  { key: "imo_no", label: "IMO NO.", ph: "e.g. 9412233", colClass: "vlib-col-imo" },
+  { key: "call_sign", label: "CALL SIGN", ph: "e.g. 9V1234", colClass: "vlib-col-call" },
+  { key: "vessel_type", label: "VESSEL TYPE", ph: "Select vessel type…", colClass: "vlib-col-type" },
+  { key: "year_built", label: "YEAR BUILT", ph: "e.g. 2013", colClass: "vlib-col-year" },
+  { key: "imo_type", label: "IMO TYPE", ph: "e.g. IMO II", colClass: "vlib-col-imotype" },
+  { key: "dwt", label: "DEAD WEIGHT (DWT)", ph: "e.g. 74,900", colClass: "vlib-col-dwt" },
+  { key: "cbm", label: "CBM / CUBIC METER", ph: "e.g. 45,000", colClass: "vlib-col-cbm" },
+  { key: "flag", label: "FLAG", ph: "e.g. Singapore", colClass: "vlib-col-flag" },
+  { key: "sire_date", label: "LAST SIRE DATE", ph: "e.g. Jan 2026", colClass: "vlib-col-date" },
+  { key: "cdi_date", label: "LAST CDI DATE", ph: "e.g. Mar 2026", colClass: "vlib-col-date" },
 ];
 
 const BLANK = COLS.reduce((acc, c) => ({ ...acc, [c.key]: "" }), {});

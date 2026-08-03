@@ -4,32 +4,32 @@ import { downloadContactsCsv } from "../../utils/exportContactsCsv";
 import CellHighlightLegend from "../CellHighlightLegend";
 
 const CONTEXT_COLUMNS = [
-  { key: "date_received", label: "Date received", readOnly: true, minW: 120 },
-  { key: "subject", label: "Subject", readOnly: true, minW: 160 },
-  { key: "sender", label: "Sender", readOnly: true, minW: 140 },
-  { key: "filename", label: "Attachment", readOnly: true, minW: 160 },
+  { key: "date_received", label: "LAST UPDATED", readOnly: true, minW: 120 },
+  { key: "subject", label: "SUBJECT", readOnly: true, minW: 160 },
+  { key: "sender", label: "SENDER", readOnly: true, minW: 140 },
+  { key: "filename", label: "ATTACHMENT", readOnly: true, minW: 160 },
 ];
 
 /** Default summary contact columns (All columns off). */
 const SUMMARY_CONTACT_COLUMNS = [
-  { key: "contact_name", label: "Contact name", minW: 120 },
-  { key: "designation", label: "Designation", minW: 110 },
-  { key: "department", label: "Department", minW: 110 },
-  { key: "company", label: "Company", minW: 130 },
-  { key: "company_type", label: "Company type", minW: 100 },
-  { key: "vessel_name", label: "Vessel name", minW: 120 },
-  { key: "email", label: "Email", minW: 150 },
-  { key: "off_phone", label: "Off phone", minW: 120 },
-  { key: "mob_phone", label: "Mob phone", minW: 120 },
+  { key: "contact_name", label: "CONTACT NAME", minW: 120 },
+  { key: "designation", label: "DESIGNATION", minW: 110 },
+  { key: "department", label: "DEPARTMENT", minW: 110 },
+  { key: "company", label: "COMPANY", minW: 130 },
+  { key: "company_type", label: "COMPANY TYPE", minW: 100 },
+  { key: "vessel_name", label: "VESSEL NAME", minW: 120 },
+  { key: "email", label: "EMAIL", minW: 150 },
+  { key: "off_phone", label: "OFF PHONE", minW: 120 },
+  { key: "mob_phone", label: "MOB PHONE", minW: 120 },
 ];
 
 const EXTRA_CONTACT_COLUMNS = [
-  { key: "wechat", label: "WeChat", minW: 90 },
-  { key: "whatsapp", label: "WhatsApp", minW: 100 },
-  { key: "website_address", label: "Website", minW: 120 },
-  { key: "office_address", label: "Office address", minW: 160 },
-  { key: "other_info", label: "Other info", minW: 120 },
-  { key: "status", label: "Status", minW: 110, type: "status" },
+  { key: "wechat", label: "WECHAT", minW: 90 },
+  { key: "whatsapp", label: "WHATSAPP", minW: 100 },
+  { key: "website_address", label: "WEBSITE", minW: 120 },
+  { key: "office_address", label: "OFFICE ADDRESS", minW: 160 },
+  { key: "other_info", label: "OTHER INFO", minW: 120 },
+  { key: "status", label: "STATUS", minW: 110, type: "status" },
 ];
 
 const ALL_CONTACT_COLUMNS = [...SUMMARY_CONTACT_COLUMNS, ...EXTRA_CONTACT_COLUMNS];
