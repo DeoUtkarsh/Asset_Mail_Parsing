@@ -162,6 +162,15 @@ async def startup_event():
         logger.info("  FILE STORAGE     : local attachment_files/")
     logger.info("=" * 60)
 
+    # Home "Fetch window" is only for the current process after a manual Fetch.
+    # Clear any leftover file (e.g. baked into an old image) so Home shows the full DB
+    # until the user actually fetches with a date range.
+    try:
+        from fetch_scope import clear_fetch_scope
+        clear_fetch_scope()
+    except Exception as scope_exc:  # noqa: BLE001
+        logger.warning("  Could not clear fetch scope: %s", scope_exc)
+
     # Verify PostgreSQL is reachable at startup
     try:
         db = get_supabase()
