@@ -267,7 +267,7 @@ export default function VesselLibraryView({
         {showEnrichSpinner && (
           <div className="vlib-enrich-banner" role="status">
             <span className="spin-ring" />
-            Enriching vessel particulars from Vessel API…
+            Enriching vessel particulars from web search…
           </div>
         )}
         {loading ? (
@@ -329,7 +329,7 @@ export default function VesselLibraryView({
                               ]
                                 .filter(Boolean)
                                 .join(" ")}
-                              title={fromApi ? "Filled from Vessel API" : undefined}
+                              title={fromApi ? "Filled from web enrichment" : undefined}
                             >
                               {empty ? "—" : display}
                             </td>
@@ -416,7 +416,7 @@ export default function VesselLibraryView({
                               ]
                                 .filter(Boolean)
                                 .join(" ")}
-                              title={fromApi ? "Filled from Vessel API" : undefined}
+                              title={fromApi ? "Filled from web enrichment" : undefined}
                             >
                               {empty ? "—" : display}
                             </td>
