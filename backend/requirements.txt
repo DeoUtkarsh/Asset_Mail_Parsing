@@ -14,10 +14,15 @@ psycopg2-binary==2.9.9
 boto3==1.35.36
 
 # ── LLM / agent framework ─────────────────────────────────────────
-anthropic==0.39.0
+# Claude Messages API + web_search server tool (vessel library enrichment)
+anthropic==0.49.0
 httpx==0.27.2
 langgraph==0.2.35
 # openai / NVIDIA NIM — removed; Claude is the only LLM client
+
+# ── Time zones (Home / inbox calendar day scope) ──────────────────
+# Needed on Windows and some slim images for ZoneInfo("Asia/Kolkata") etc.
+tzdata==2025.2
 
 # ── Attachment parsing (Claude reads images/PDF natively) ─────────
 Pillow==10.4.0          # image downscaling / format conversion
