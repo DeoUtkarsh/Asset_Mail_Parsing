@@ -162,6 +162,8 @@ Browser
 3. ECS: update service → Force new deployment (latest task def)
 4. frontend/: npm run build → aws s3 sync dist/ → CloudFront invalidation /*
 5. Smoke: /api/health → CloudWatch startup (DB + FILE STORAGE + AUTO_FETCH_IDLE : ON) → Fetch Emails
+6. After Phase-1 completes, Vessel Libraries List shows a separate enrichment spinner
+   (Claude + Anthropic web_search). No extra secrets — uses ANTHROPIC_API_KEY / CLAUDE_MODEL.
 ```
 
 ### Auto-fetch (IMAP IDLE)
