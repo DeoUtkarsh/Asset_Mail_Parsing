@@ -90,11 +90,17 @@ class VesselLibraryRequest(BaseModel):
     """Add or update a vessel in the Vessel Library."""
     vessel_name: Optional[str] = ""
     imo_no: Optional[str] = ""
+    call_sign: Optional[str] = ""
+    vessel_type: Optional[str] = ""
+    year_built: Optional[str] = ""
     imo_type: Optional[str] = ""
     dwt: Optional[str] = ""
-    year_built: Optional[str] = ""
+    cbm: Optional[str] = ""
+    flag: Optional[str] = ""
+    sire_date: Optional[str] = ""
+    cdi_date: Optional[str] = ""
     tank_coating: Optional[str] = ""
-    vessel_type: Optional[str] = ""
+    api_sourced: Optional[list[str]] = None
 
 
 # ── API response shapes ───────────────────────────────────────────

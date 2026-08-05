@@ -71,6 +71,11 @@ from vessel_library import (
     normalize_library_formats,
     rematch_library,
 )
+from vessel_enrichment import (
+    run_vessel_library_enrichment,
+    get_enrichment_status,
+    merge_cache_into_rows,
+)
 from column_defs import (
     ensure_column_definitions,
     sync_column_definitions,
@@ -341,6 +346,12 @@ async def _run_phase1(
             logger.info("[Phase1] Vessel library review queue: %d new vessel(s)", len(pending))
         except Exception as lib_exc:
             logger.exception("[Phase1] Vessel library review detect failed: %s", lib_exc)
+
+        # Library-tab enrichment (does not block inbox / vessel position UI).
+        try:
+            await run_vessel_library_enrichment(job_id, supabase)
+        except Exception as enrich_exc:
+            logger.exception("[Phase1] Vessel library enrichment failed: %s", enrich_exc)
     except Exception as exc:
         logger.exception("[Phase1] Crashed: %s", exc)
         await sse_manager.send(job_id, "phase1_failed", {"error": str(exc)})
@@ -1237,9 +1248,12 @@ async def get_vessel_library():
     """Vessel Library master list + vessels newly detected in position data."""
     logger.info("[API] GET /api/vessel-library")
     try:
+        vessels = merge_cache_into_rows(supabase, list_library(supabase))
+        new_vessels = merge_cache_into_rows(supabase, detect_new_vessels(supabase))
         return {
-            "vessels": list_library(supabase),
-            "new_vessels": detect_new_vessels(supabase),
+            "vessels": vessels,
+            "new_vessels": new_vessels,
+            "enrichment": get_enrichment_status(),
         }
     except Exception as exc:
         logger.error("[API] get_vessel_library failed: %s", exc)

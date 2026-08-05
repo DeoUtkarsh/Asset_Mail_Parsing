@@ -74,3 +74,6 @@ desktop.ini
 logs/
 *.bak
 *.tmp
+
+# Vessel enrichment research script outputs
+backend/scripts/out/

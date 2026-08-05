@@ -52,6 +52,12 @@ class Settings(BaseSettings):
     # (unseen Message-IDs) are ever processed regardless of this cap.
     MAX_ATTACHMENTS: int = 0
 
+    # Vessel Library enrichment uses ANTHROPIC_API_KEY + Claude web_search.
+    # Legacy keys kept optional / ignored by enrichment:
+    VESSELAPI_API_KEY: str = ""
+    MYSHIPTRACKING_API_KEY: str = ""
+    MYSHIPTRACKING_SECRET: str = ""
+
     # Attachment files: leave ATTACHMENTS_S3_BUCKET empty → local attachment_files/
     # On AWS ECS set the bucket name; credentials come from the task IAM role.
     ATTACHMENTS_S3_BUCKET: str = ""

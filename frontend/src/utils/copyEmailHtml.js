@@ -7,7 +7,7 @@ import {
 
 const MAX_COLS_PER_TABLE = 11;
 
-/** Match Broker Sense UI tokens (index.css) — inline for Gmail/Outlook. */
+/** Match Shipbroker Sense UI tokens (index.css) — inline for Gmail/Outlook. */
 const FONT = "Poppins,Inter,Arial,Helvetica,sans-serif";
 const BRAND = "#219495";
 const BRAND_D = "#1a7a7b";

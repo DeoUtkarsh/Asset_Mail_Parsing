@@ -1,4 +1,4 @@
-# AWS deployment — Broker Sense (Email Parser)
+# AWS deployment — Shipbroker Sense (Email Parser)
 
 Track progress and **production handoff** here. Work **one phase at a time** for a fresh
 deploy; use **[Deployed resources](#deployed-resources-dev)** and **[Troubleshooting](#troubleshooting)** when debugging.

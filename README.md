@@ -1,4 +1,4 @@
-# AI-Powered Shipbroking Email Parser (Broker Sense)
+# AI-Powered Shipbroking Email Parser (Shipbroker Sense)
 
 An agentic system that fetches owner **position-list emails** from Gmail (IMAP), extracts
 vessel data with **Anthropic Claude** (text + vision + PDF), lets you review/verify it in an
@@ -42,7 +42,7 @@ Gmail (IMAP)
 PostgreSQL  (parent_emails · attachments · vessels · broker_contacts · vessel_library · …)
    │
    ▼
-React workspace (Broker Sense)
+React workspace (Shipbroker Sense)
    │  review / verify / position list
    ▼
 [Phase 2 — LangGraph]  drafter → zone-grouped HTML/grid draft → copy / PDF

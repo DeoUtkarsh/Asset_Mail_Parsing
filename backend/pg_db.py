@@ -146,9 +146,20 @@ ALTER TABLE vessel_library ADD COLUMN IF NOT EXISTS flag TEXT NOT NULL DEFAULT '
 ALTER TABLE vessel_library ADD COLUMN IF NOT EXISTS sire_date TEXT NOT NULL DEFAULT '';
 ALTER TABLE vessel_library ADD COLUMN IF NOT EXISTS cdi_date TEXT NOT NULL DEFAULT '';
 ALTER TABLE vessel_library ADD COLUMN IF NOT EXISTS ai_normalized TEXT NOT NULL DEFAULT '';
+ALTER TABLE vessel_library ADD COLUMN IF NOT EXISTS api_sourced JSONB NOT NULL DEFAULT '[]'::jsonb;
 
 CREATE INDEX IF NOT EXISTS idx_vessel_library_match_key
     ON vessel_library(match_key);
+
+-- Cache of API enrichment for pending "New to review" rows (not yet in library).
+CREATE TABLE IF NOT EXISTS vessel_enrichment_cache (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    match_key    TEXT NOT NULL UNIQUE,
+    payload      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    api_sourced  JSONB NOT NULL DEFAULT '[]'::jsonb,
+    provider     TEXT NOT NULL DEFAULT '',
+    updated_at   TIMESTAMPTZ DEFAULT NOW()
+);
 
 -- Trade region reference data (cloned from Region-Country-Port Excel).
 -- Resolver reads these tables; edit rows in DB to change mapping.
