@@ -739,6 +739,12 @@ label.vgrid-stat{cursor:pointer}
 }
 .vgrid-delete-label{display:inline-block;min-width:5.5ch;text-align:left;white-space:nowrap}
 .vlib-search{margin-top:0;min-width:230px;padding:7px 12px;background:#fff}
+.vlib-add-col{display:flex;flex-direction:column;align-items:flex-end;gap:6px}
+.vlib-api-legend{display:inline-flex;align-items:center;gap:7px;font-size:11px;font-weight:500;color:#9a9158;background:#fffef5;border:1px solid #efe6b0;border-radius:999px;padding:4px 10px;white-space:nowrap}
+.vlib-api-swatch{width:11px;height:11px;border-radius:3px;border:1px solid #e8d98a;background:#fff9d6;flex-shrink:0}
+.vlib-enrich-banner{display:flex;align-items:center;gap:10px;margin:0 0 12px;padding:10px 14px;border-radius:10px;background:#fffef5;border:1px solid #efe6b0;color:#8a8250;font-size:13px;font-weight:600}
+.vlib-enrich-banner .spin-ring{width:16px;height:16px;border-width:2px;border-top-color:#e0d080}
+.vessel-grid tbody td.vlib-api-cell{border:1.5px solid #e8d98a!important;background:#fffef5;box-shadow:none}
 .vlib-body{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
 .vlib-grid{table-layout:auto;width:max-content;min-width:100%;font-family:var(--font-body)}
 .vlib-grid thead th{white-space:nowrap;overflow:visible;word-break:normal;vertical-align:middle}
@@ -1219,7 +1225,7 @@ label.vgrid-stat{cursor:pointer}
 .login-brand-logo{height:40px;width:auto;max-width:min(280px,68vw);object-fit:contain;display:block}
 .login-mark{width:46px;height:46px;object-fit:contain;display:block;background:transparent;
   flex-shrink:0}
-.login-wm{font-weight:800;letter-spacing:1.4px;font-size:19px}
+.login-wm{display:flex;flex-direction:row;align-items:center;gap:6px;font-family:var(--font-head);font-weight:800;letter-spacing:1.4px;font-size:18px;line-height:1}
 .login-wm .l1{color:#fff}
 .login-wm .l2{color:#7fe3e6}
 .login-title{margin:6px 0 0;text-align:center;font-size:23px;font-weight:800;color:#fff}

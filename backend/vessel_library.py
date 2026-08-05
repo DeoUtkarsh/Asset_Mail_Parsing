@@ -498,6 +498,25 @@ def autofill_library(supabase) -> dict[str, int]:
 
         payload = dict(particulars)
         payload["match_key"] = key
+        # Carry API enrichment (yellow-cell fields) when promoting via Review all.
+        try:
+            from vessel_enrichment import _cache_load_all, ENRICH_FIELDS, _clean as _eclean
+
+            hit = (_cache_load_all(supabase) or {}).get(key)
+            if hit:
+                sourced = []
+                for f in ENRICH_FIELDS:
+                    val = _eclean((hit.get("payload") or {}).get(f))
+                    if val and not _clean(payload.get(f)):
+                        payload[f] = val
+                        sourced.append(f)
+                for f in hit.get("api_sourced") or []:
+                    if f in ENRICH_FIELDS and _clean(payload.get(f)) and f not in sourced:
+                        sourced.append(f)
+                if sourced:
+                    payload["api_sourced"] = sourced
+        except Exception:  # noqa: BLE001
+            pass
         result = supabase.table("vessel_library").insert(payload).execute()
         inserted += 1
         if result.data:
@@ -602,7 +621,7 @@ def normalize_library_formats(supabase) -> int:
 def list_library(supabase) -> list[dict[str, Any]]:
     rows = (
         supabase.table("vessel_library")
-        .select("id, " + ", ".join(LIBRARY_FIELDS) + ", created_at, updated_at")
+        .select("id, " + ", ".join(LIBRARY_FIELDS) + ", match_key, api_sourced, created_at, updated_at")
         .execute()
     ).data or []
     rows.sort(key=lambda r: (r.get("vessel_name") or "").upper())
@@ -641,10 +660,13 @@ def add_library_vessel(supabase, fields: dict[str, Any]) -> dict[str, Any]:
     payload = _payload_from_fields(fields)
     key = match_key_from_particulars(payload)
     payload["match_key"] = key
+    sourced = fields.get("api_sourced")
+    if isinstance(sourced, list):
+        payload["api_sourced"] = [str(x) for x in sourced if str(x)]
 
     existing_rows = (
         supabase.table("vessel_library")
-        .select("id, match_key, " + ", ".join(LIBRARY_FIELDS))
+        .select("id, match_key, api_sourced, " + ", ".join(LIBRARY_FIELDS))
         .execute()
     ).data or []
     by_key, by_name = _index_library_rows(existing_rows)
@@ -657,6 +679,10 @@ def add_library_vessel(supabase, fields: dict[str, Any]) -> dict[str, Any]:
             payload,
         )
         merged["match_key"] = match_key_from_particulars(merged)
+        # Keep union of API-sourced markers for fields still filled from API values.
+        prev_src = existing.get("api_sourced") if isinstance(existing.get("api_sourced"), list) else []
+        new_src = payload.get("api_sourced") if isinstance(payload.get("api_sourced"), list) else []
+        merged["api_sourced"] = sorted({*map(str, prev_src), *map(str, new_src)})
         merged["updated_at"] = datetime.utcnow()
         result = (
             supabase.table("vessel_library")

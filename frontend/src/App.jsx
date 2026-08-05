@@ -153,6 +153,7 @@ function MainApp({ onLogout, authUser, authPass }) {
   const [vesselRefreshKey, setVesselRefreshKey] = useState(0);
   const [contactRefreshKey, setContactRefreshKey] = useState(0);
   const [libraryRefreshKey, setLibraryRefreshKey] = useState(0);
+  const [libraryEnriching, setLibraryEnriching] = useState(false);
   const [homeRefreshKey, setHomeRefreshKey] = useState(0);
   const [homeSummary, setHomeSummary] = useState(null);
   const [homeLoading, setHomeLoading] = useState(false);
@@ -253,9 +254,39 @@ function MainApp({ onLogout, authUser, authPass }) {
     catch (e) { setSyncing(false); toast("Fetch failed: " + e.message); }
   };
   useSSE(fetchJob, useCallback((evt) => {
-    if (evt.type === "phase1_complete") { setSyncing(false); setFetchJob(null); loadEmails(); setHomeRefreshKey((k) => k + 1); setLibraryRefreshKey((k) => k + 1); toast("Synced — owner emails updated"); }
-    else if (evt.type === "phase1_failed") { setSyncing(false); setFetchJob(null); toast("Fetch failed: " + (evt.error || "unknown")); }
+    if (evt.type === "phase1_complete") {
+      setSyncing(false);
+      setFetchJob(null);
+      loadEmails();
+      setHomeRefreshKey((k) => k + 1);
+      setLibraryRefreshKey((k) => k + 1);
+      setLibraryEnriching(true);
+      toast("Synced — owner emails updated");
+    } else if (evt.type === "phase1_failed") {
+      setSyncing(false);
+      setFetchJob(null);
+      toast("Fetch failed: " + (evt.error || "unknown"));
+    }
   }, [loadEmails, toast]));
+
+  // Vessel Library enrichment runs after phase1; listen on live bus (fetch job already cleared).
+  useSSE(
+    "live",
+    useCallback((evt) => {
+      if (evt.type === "vessel_library_enrichment_started") {
+        setLibraryEnriching(true);
+        setLibraryRefreshKey((k) => k + 1);
+      } else if (evt.type === "vessel_library_enrichment_done") {
+        setLibraryEnriching(false);
+        setLibraryRefreshKey((k) => k + 1);
+        if (!evt.skipped && (evt.matched || 0) > 0) {
+          toast(`Vessel library enriched — ${evt.matched}/${evt.total || evt.matched} matched`);
+        }
+      }
+    }, [toast]),
+    undefined,
+    { reconnect: true }
+  );
 
   // ── Draft ──
   const runDraft = useCallback(async () => {
@@ -421,8 +452,8 @@ function MainApp({ onLogout, authUser, authPass }) {
       <header className="topbar">
         <div className="logo">
           <img className="mark" src="/logo-mark.png?v=3" alt="" aria-hidden="true" />
-          <div className="wm" aria-label="Broker Sense">
-            <span className="l1">BROKER</span>
+          <div className="wm" aria-label="Shipbroker Sense">
+            <span className="l1">SHIPBROKER</span>
             <span className="l2">SENSE</span>
           </div>
         </div>
@@ -563,6 +594,7 @@ function MainApp({ onLogout, authUser, authPass }) {
           <VesselLibraryView
             isActive={view === "library"}
             refreshKey={libraryRefreshKey}
+            enriching={libraryEnriching}
             onLibraryUpdated={() => setLibraryRefreshKey((k) => k + 1)}
           />
         ) : selectedAtt ? (
@@ -652,7 +684,7 @@ function MainApp({ onLogout, authUser, authPass }) {
         >
           <div className="modal logout-modal" role="dialog" aria-labelledby="logout-modal-title">
             <h3 id="logout-modal-title">Logout</h3>
-            <p>Confirm logout to leave Broker Sense.</p>
+            <p>Confirm logout to leave Shipbroker Sense.</p>
             <div className="mbtns">
               <button type="button" className="m-cancel" onClick={closeLogoutModal}>
                 Cancel

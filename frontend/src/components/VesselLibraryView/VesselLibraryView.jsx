@@ -29,7 +29,12 @@ const COLS = [
 
 const BLANK = COLS.reduce((acc, c) => ({ ...acc, [c.key]: "" }), {});
 
-export default function VesselLibraryView({ isActive = false, refreshKey = 0, onLibraryUpdated }) {
+export default function VesselLibraryView({
+  isActive = false,
+  refreshKey = 0,
+  enriching = false,
+  onLibraryUpdated,
+}) {
   const [rows, setRows] = useState([]);
   const [newRows, setNewRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -39,6 +44,7 @@ export default function VesselLibraryView({ isActive = false, refreshKey = 0, on
   const [saving, setSaving] = useState(false);
   const [reviewAllSaving, setReviewAllSaving] = useState(false);
   const [savedMsg, setSavedMsg] = useState(false);
+  const [enrichingLocal, setEnrichingLocal] = useState(false);
   const savedTimer = useRef(null);
 
   // modal: { mode: "add" | "edit" | "review", data }
@@ -58,6 +64,8 @@ export default function VesselLibraryView({ isActive = false, refreshKey = 0, on
       const data = await getVesselLibrary();
       setRows(data.vessels || []);
       setNewRows(data.new_vessels || []);
+      if (data.enrichment?.running) setEnrichingLocal(true);
+      else if (data.enrichment && data.enrichment.running === false) setEnrichingLocal(false);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -68,6 +76,30 @@ export default function VesselLibraryView({ isActive = false, refreshKey = 0, on
   useEffect(() => {
     if (isActive) load();
   }, [isActive, refreshKey, load]);
+
+  useEffect(() => {
+    setEnrichingLocal(!!enriching);
+  }, [enriching]);
+
+  const showEnrichSpinner = enriching || enrichingLocal;
+
+  // Soft-refresh while enrichment runs so yellow cells appear without full-page spinner.
+  useEffect(() => {
+    if (!isActive || !showEnrichSpinner) return undefined;
+    const soft = async () => {
+      try {
+        const data = await getVesselLibrary();
+        setRows(data.vessels || []);
+        setNewRows(data.new_vessels || []);
+        if (data.enrichment?.running) setEnrichingLocal(true);
+        else setEnrichingLocal(false);
+      } catch {
+        /* ignore poll errors */
+      }
+    };
+    const t = setInterval(soft, 2500);
+    return () => clearInterval(t);
+  }, [isActive, showEnrichSpinner]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -201,17 +233,28 @@ export default function VesselLibraryView({ isActive = false, refreshKey = 0, on
               onChange={(e) => setQuery(e.target.value)}
             />
           </div>
-          <button
-            type="button"
-            className="tb-btn tb-btn-primary"
-            onClick={() => setModal({ mode: "add", data: { ...BLANK } })}
-          >
-            <Icon name="plus" size={15} /> Add a vessel
-          </button>
+          <div className="vlib-add-col">
+            <button
+              type="button"
+              className="tb-btn tb-btn-primary"
+              onClick={() => setModal({ mode: "add", data: { ...BLANK } })}
+            >
+              <Icon name="plus" size={15} /> Add a vessel
+            </button>
+            {(rows.length > 0 || newRows.length > 0 || showEnrichSpinner) && (
+              <span
+                className="vlib-api-legend"
+                title="Light yellow cells mark particulars filled by web enrichment"
+              >
+                <span className="vlib-api-swatch" aria-hidden="true" />
+                Yellow cells = from web enrichment
+              </span>
+            )}
+          </div>
         </div>
       </div>
 
-      {(rows.length > 0 || newRows.length > 0) && (
+      {(rows.length > 0 || newRows.length > 0 || showEnrichSpinner) && (
         <div className="vgrid-stats">
           <LibStat label="Vessels in library" value={rows.length} />
           {newRows.length > 0 && <LibStat label="New to review" value={newRows.length} />}
@@ -221,6 +264,12 @@ export default function VesselLibraryView({ isActive = false, refreshKey = 0, on
       {error && <div className="vgrid-err">{error}</div>}
 
       <div className="vgrid-body vlib-body">
+        {showEnrichSpinner && (
+          <div className="vlib-enrich-banner" role="status">
+            <span className="spin-ring" />
+            Enriching vessel particulars from Vessel API…
+          </div>
+        )}
         {loading ? (
           <div className="center-load"><span className="spin-ring" /> Loading vessel library…</div>
         ) : (
@@ -238,7 +287,7 @@ export default function VesselLibraryView({ isActive = false, refreshKey = 0, on
                 type="button"
                 className="tb-btn tb-btn-primary vlib-review-all-btn"
                 onClick={handleReviewAll}
-                disabled={reviewAllSaving}
+                disabled={reviewAllSaving || showEnrichSpinner}
                 title="Add every new vessel to the library without reviewing one by one"
               >
                 {reviewAllSaving
@@ -269,12 +318,18 @@ export default function VesselLibraryView({ isActive = false, refreshKey = 0, on
                               ? (isImoTypeValue(rawVal) ? "" : String(rawVal || "").trim())
                               : formatLibCell(c.key, rawVal);
                           const empty = !display || display === "—";
+                          const fromApi = isApiSourced(row, c.key);
                           return (
                             <td
                               key={c.key}
-                              className={[c.colClass || "", empty ? "vlib-blank" : ""]
+                              className={[
+                                c.colClass || "",
+                                empty ? "vlib-blank" : "",
+                                fromApi ? "vlib-api-cell" : "",
+                              ]
                                 .filter(Boolean)
                                 .join(" ")}
+                              title={fromApi ? "Filled from Vessel API" : undefined}
                             >
                               {empty ? "—" : display}
                             </td>
@@ -284,6 +339,7 @@ export default function VesselLibraryView({ isActive = false, refreshKey = 0, on
                           <button
                             type="button"
                             className="tb-btn tb-btn-primary vlib-review-btn"
+                            disabled={showEnrichSpinner}
                             onClick={() =>
                               setModal({ mode: "review", data: { ...BLANK, ...row } })
                             }
@@ -349,12 +405,18 @@ export default function VesselLibraryView({ isActive = false, refreshKey = 0, on
                               ? (isImoTypeValue(rawVal) ? "" : String(rawVal || "").trim())
                               : formatLibCell(c.key, rawVal);
                           const empty = !display || display === "—";
+                          const fromApi = isApiSourced(row, c.key);
                           return (
                             <td
                               key={c.key}
-                              className={[c.colClass || "", empty ? "vlib-blank" : ""]
+                              className={[
+                                c.colClass || "",
+                                empty ? "vlib-blank" : "",
+                                fromApi ? "vlib-api-cell" : "",
+                              ]
                                 .filter(Boolean)
                                 .join(" ")}
+                              title={fromApi ? "Filled from Vessel API" : undefined}
                             >
                               {empty ? "—" : display}
                             </td>
@@ -408,6 +470,11 @@ function formatLibCell(key, value) {
   return formatted || "—";
 }
 
+function isApiSourced(row, key) {
+  const src = row?.api_sourced;
+  return Array.isArray(src) && src.includes(key);
+}
+
 function LibStat({ label, value }) {
   return (
     <div className="vgrid-stat">
@@ -437,7 +504,9 @@ function VesselModal({ mode, initial, saving, nameSuggestions = [], onClose, onS
         }
         acc[c.key] = formatStandardField(c.key, raw) || raw;
         return acc;
-      }, {})
+      }, {
+        api_sourced: Array.isArray(initial?.api_sourced) ? initial.api_sourced : [],
+      })
     );
   };
 

@@ -636,20 +636,26 @@ export default function InboxView({
     return n;
   }, [filters]);
 
-  // Header KPIs stay global (all mails) so tab switches don't resize the header.
+  // Header KPIs follow the selected calendar day (or date-filter range), not all-time.
+  const kpiRows = useMemo(() => {
+    const filterOverridesDay = Boolean(filters.dateFrom || filters.dateTo);
+    if (filterOverridesDay) return mailRows;
+    return mailRows.filter((r) => isoToDayKey(r.email?.date_received, useUtc) === viewDay);
+  }, [mailRows, filters.dateFrom, filters.dateTo, viewDay, useUtc]);
+
   const inboxStats = useMemo(() => {
     let downloaded = 0;
     let vessels = 0;
-    for (const row of mailRows) {
+    for (const row of kpiRows) {
       if (resolveAttStatus(row) === "downloaded") downloaded += 1;
       vessels += row.vessel_count || 0;
     }
     return {
-      emails: emails.length,
+      emails: kpiRows.length,
       downloaded,
       vessels,
     };
-  }, [mailRows, emails, attStatuses]);
+  }, [kpiRows, attStatuses]);
 
   // Retry control: count across all mails so the header action doesn't appear/disappear per tab.
   const retryTarget = useMemo(() => {
