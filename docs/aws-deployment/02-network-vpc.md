@@ -32,7 +32,8 @@ Internet → ALB (public subnets, alb-sg :80/:443 from 0.0.0.0/0)
               → S3 / Anthropic / Gmail IMAP (ECS outbound)
 ```
 
-ECS **public IP = on** so tasks reach Gmail + Anthropic without NAT.
+ECS **public IP = on** so tasks reach Gmail + Anthropic (including **web_search** for
+vessel-library enrichment) without NAT. No extra SG rules for enrichment — same HTTPS egress.
 
 ---
 

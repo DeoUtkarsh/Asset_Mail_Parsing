@@ -4,7 +4,10 @@ Track progress and **production handoff** here. Work **one phase at a time** for
 deploy; use **[Deployed resources](#deployed-resources-dev)** and **[Troubleshooting](#troubleshooting)** when debugging.
 
 **App:** FastAPI (port 8000) + React/Vite (static) + PostgreSQL (RDS) + Gmail IMAP +
-**Anthropic Claude** + attachment files on **S3** + in-memory SSE → **1 ECS task**.
+**Anthropic Claude** (extraction + **web_search** vessel-library enrichment) + attachment
+files on **S3** + in-memory SSE → **1 ECS task**.
+
+**Deploy branch:** `aws-deployment` only.
 
 ---
 
@@ -54,7 +57,7 @@ deploy; use **[Deployed resources](#deployed-resources-dev)** and **[Troubleshoo
 | RDS endpoint | `email-parser-db.cnc8ykk0yjwb.ap-southeast-1.rds.amazonaws.com` |
 | ECS cluster | `email-parser-cluster` |
 | ECS service | `email-parser-api-service-khf6bfgk` |
-| Task definition | `email-parser-api` — use **latest** revision (e.g. `:5+`) |
+| Task definition | `email-parser-api` — use **latest** revision (currently **`:6`**) |
 | Task **execution** role | `ecsTaskExecutionRole-email-parser` (ECR + secrets + logs) |
 | Task **role** (runtime) | `ecsTaskRole-email-parser` (S3 Get/Put on attachments bucket) |
 | CloudWatch logs | `/ecs/email-parser-api` |
@@ -71,12 +74,25 @@ deploy; use **[Deployed resources](#deployed-resources-dev)** and **[Troubleshoo
 ```text
 Browser
   → CloudFront (HTTPS)
-       ├─ /*          → S3 UI bucket
+       ├─ /*          → S3 UI (Shipbroker Sense)
        └─ /api/*      → ALB :80 → ECS Fargate (1 task) :8000
                             ├─ Secrets Manager (emaildev)
                             ├─ RDS Postgres (email_parser)
-                            └─ S3 email-parser-mail (attachment files)
-                            └─ IMAP (Gmail) + Anthropic API (outbound)
+                            │     + vessel_enrichment_cache / api_sourced
+                            ├─ S3 email-parser-mail (attachment files)
+                            └─ IMAP (Gmail) + Anthropic API
+                                 (extract + web_search enrichment)
+```
+
+### Runtime pipeline (after Fetch / IDLE)
+
+```text
+Phase 1 (extract + contacts) → SSE phase1_complete  ← inbox / sync done
+     ↓
+Vessel library enrichment (Claude + web_search)
+     → spinner only on Vessel Libraries List
+     → light yellow cells = web-filled blanks (IMO / call sign / type / flag)
+Home Morning Brief = today only (day + tz via /api/home/summary)
 ```
 
 ---
@@ -94,6 +110,8 @@ Browser
 
 ### Phase 6 — Hardening
 - [x] E2E Fetch / Validate / Draft on CloudFront (dev)
+- [x] Vessel library enrichment after Phase-1 (Claude web_search; yellow cells)
+- [x] Home Morning Brief today-scoped
 - [ ] Remove temporary RDS “My IP” when not using pgAdmin
 - [ ] WAF tuned for prod POSTs
 - [ ] Auth before wide public use
@@ -117,11 +135,14 @@ Browser
 | Item | Choice |
 |------|--------|
 | LLM | Anthropic Claude (`ANTHROPIC_API_KEY`, `CLAUDE_MODEL`) |
+| Vessel enrichment | Same Anthropic keys + **`web_search`** server tool — **no** VesselAPI / MyShip secrets |
 | App DB name | `email_parser` (**underscore**, not hyphen) |
 | Attachment storage | S3 `email-parser-mail` / `attachment_files/` |
 | Local attachment storage | `backend/attachment_files/` when bucket unset |
 | Fetch cap | `MAX_ATTACHMENTS=0` (all **new** Message-IDs) |
+| Auto-fetch | `AUTO_FETCH_IMAP_IDLE=true` on ECS; **`false` locally on this branch** |
 | SSE | In-memory → **desired count = 1** |
+| Python pins | `anthropic==0.49.0`, `httpx==0.27.2`, `tzdata==2025.2` |
 
 ---
 
@@ -134,6 +155,7 @@ Browser
 | DB | Laptop Postgres | RDS `email_parser` |
 | Secrets | `backend/.env` | Secrets Manager `emaildev` |
 | Attachment files | `attachment_files/` | S3 `email-parser-mail` |
+| `AUTO_FETCH_IMAP_IDLE` | **`false`** (this branch `.env`) | **`true`** in `emaildev` |
 | SSE | 1 process | **1 ECS task** |
 
 ---
@@ -145,11 +167,13 @@ Browser
 | ECS: `AccessDenied` on secret | Execution role | `GetSecretValue` on `emaildev-*` |
 | ECS: `ResourceNotFound` secret | Wrong ARN suffix | Copy exact suffix from Secrets console |
 | ECS: `connection timed out` to RDS | RDS SG | Inbound **5432** from **`email-parser-ecs-sg`** (not only My IP) |
-| ECS: `unexpected keyword argument 'proxies'` | httpx vs anthropic | Image must pin `httpx==0.27.2` (see `requirements.txt`) |
+| ECS: `unexpected keyword argument 'proxies'` | httpx vs anthropic | Pin `httpx==0.27.2` + `anthropic==0.49.0` |
 | CloudFront `/api/health` **504**, ALB OK | ALB SG locked to My IP | `email-parser-alb-sg`: **80/443** from `0.0.0.0/0` |
 | UI shows old emails after DB cutover | Task still on old secret / old DB | Force new deployment; confirm logs `PG_DATABASE=email_parser` |
 | Empty `email_parser` (0 tables) | App never started on that DB | Fix SG / crash, redeploy; startup creates tables |
 | `/api/home/summary` **404** flicker | Old image without route | Push latest image + force deploy |
+| Enrichment never starts / errors in logs | Anthropic web_search not enabled, or old image | Confirm image has `vessel_enrichment.py`; API key allows web_search |
+| Library blanks stay empty, no yellow | Misses / already filled / not on Library tab | Enrichment only fills blanks; spinner is Library-tab only |
 | Draft **403** | WAF | Monitor mode or allow POST |
 
 ---
@@ -179,27 +203,34 @@ IMAP UID and **ignores mail already in INBOX**. Only messages that arrive *after
 baseline are auto-ingested (plus Message-ID dedupe). Historical backfill is **manual
 Fetch Emails + date range** only.
 
-Local `feature/frontend-redesign` / `.env` should keep `AUTO_FETCH_IMAP_IDLE=false`.
+On this branch locally, keep `AUTO_FETCH_IMAP_IDLE=false` in `.env` (default).
 Optional local AWS env file: `backend/.env.aws` (gitignored) + `ENV_FILE=.env.aws`.
+(`feature/frontend-redesign` defaults IDLE **on** for local testing — do not deploy that branch.)
 
 ### CMD example (Windows)
 
 ```cmd
-cd /d D:\Asset_Modules\Email_Parser_Two\backend
+cd /d D:\Asset_Modules\Email_Parser_Two
+git checkout aws-deployment
+git pull origin aws-deployment
+
+cd backend
 aws sso login --profile emailparser-dev
 docker build -t email-parser-api:local .
 aws ecr get-login-password --region ap-southeast-1 --profile emailparser-dev | docker login --username AWS --password-stdin 867492128821.dkr.ecr.ap-southeast-1.amazonaws.com
 docker tag email-parser-api:local 867492128821.dkr.ecr.ap-southeast-1.amazonaws.com/email-parser-api:latest
 docker push 867492128821.dkr.ecr.ap-southeast-1.amazonaws.com/email-parser-api:latest
-aws ecs update-service --cluster email-parser-cluster --service email-parser-api-service-khf6bfgk --task-definition email-parser-api:5 --force-new-deployment --region ap-southeast-1 --profile emailparser-dev
+aws ecs update-service --cluster email-parser-cluster --service email-parser-api-service-khf6bfgk --force-new-deployment --region ap-southeast-1 --profile emailparser-dev
 
-cd /d D:\Asset_Modules\Email_Parser_Two\frontend
+cd ..\frontend
 npm run build
 aws s3 sync dist/ s3://email-parser-ui-867492128821/ --delete --profile emailparser-dev
 aws cloudfront create-invalidation --distribution-id E2Q4F6X2F4IA27 --paths "/*" --profile emailparser-dev
 ```
 
-Bump `:5` to the current task definition revision after you create a new one.
+If you registered a **new** task definition revision (new env keys), pass
+`--task-definition email-parser-api:N` (currently **`:6`**). Otherwise `--force-new-deployment`
+pulls the new `:latest` image on the existing revision.
 
 ---
 

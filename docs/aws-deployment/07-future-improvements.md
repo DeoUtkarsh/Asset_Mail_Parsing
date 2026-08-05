@@ -8,6 +8,7 @@
 
 - [ ] Amazon Cognito (or IdP) in front of CloudFront / ALB
 - [ ] Block anonymous `/api/fetch-emails` and `/api/generate-draft` (LLM + IMAP cost)
+- [ ] Protect Fetch / IDLE / vessel enrichment paths (web_search also burns Anthropic tokens)
 
 ---
 
@@ -72,6 +73,7 @@ Dev uses **monitor mode** because core rules blocked `POST /api/generate-draft`.
 - [ ] Right-size Fargate after observing Fetch peak memory
 - [ ] Review WAF + CloudFront request charges
 - [ ] NAT vs public-IP ECS tradeoff
+- [ ] Monitor Anthropic spend: extraction + draft + **web_search enrichment** (same API key)
 
 ---
 

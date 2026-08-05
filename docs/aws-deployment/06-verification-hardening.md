@@ -1,8 +1,8 @@
 # Phase 6 — Verification, hardening, production cutover
 
-**Goal:** Confirm full pipeline on AWS; document gaps before **prod**.
+**Goal:** Confirm full Shipbroker Sense pipeline on AWS; document gaps before **prod**.
 
-**Status:** 🔄 Dev E2E verified (Fetch, Validate, Draft on CloudFront); prod hardening open.
+**Status:** 🔄 Dev E2E verified (Fetch, Validate, Draft, library enrichment, Morning Brief on CloudFront); prod hardening open.
 
 ---
 
@@ -10,10 +10,12 @@
 
 | # | Action | Result |
 |---|--------|--------|
-| 1 | https://d2bt5vx8sl8jq9.cloudfront.net | UI loads |
-| 2 | Validate grid | 140 vessels (RDS data) |
+| 1 | https://d2bt5vx8sl8jq9.cloudfront.net | UI loads (Shipbroker Sense) |
+| 2 | Validate grid | Vessels from RDS |
 | 3 | Generate Draft | Works after WAF monitor mode + `/api/*` behavior fix |
 | 4 | ALB `/api/health` direct | `db: ok` |
+| 5 | Home `/api/home/summary` | Today-scoped Morning Brief |
+| 6 | Vessel library enrichment | After Phase-1; yellow cells from Claude web_search |
 
 ---
 
@@ -23,6 +25,7 @@
 - [x] E2E on CloudFront URL (dev)
 - [ ] E2E after each release (runbook below)
 - [ ] Long **Fetch** job (many attachments) — ALB idle timeout 300–600 s
+- [ ] Confirm enrichment after Fetch (Library tab spinner + yellow cells)
 
 ### Security
 - [ ] Remove pgAdmin **My IP** from `email-parser-rds-sg`
@@ -32,6 +35,7 @@
 - [ ] No secrets in git / Docker image
 - [ ] Auth or IP allowlist before public launch
 - [ ] Attachments bucket + task role verified ([08-attachments-s3.md](./08-attachments-s3.md))
+- [ ] Anthropic account allows **web_search** (enrichment cost / quota)
 
 ### CloudFront / API
 - [ ] Re-add **404 → index.html (200)** only (not 403)
@@ -65,10 +69,11 @@ allow_origins=[
 | Task stops, `AccessDenied` secret | IAM `emaildev-*` on **execution** role |
 | Task stops, `ResourceNotFound` | Fix secret ARN suffix in task def |
 | Task stops, RDS **connection timed out** | `email-parser-rds-sg`: allow **5432** from **`email-parser-ecs-sg`** |
-| Task stops, `proxies` TypeError | Rebuild image with `httpx==0.27.2` |
+| Task stops, `proxies` TypeError | Rebuild with `httpx==0.27.2` + `anthropic==0.49.0` |
 | 0/1 running | CloudWatch logs; stopped reason |
 | Old emails after DB cutover | Confirm secret `PG_DATABASE=email_parser` + force new deployment |
 | S3 AccessDenied on attachments | Set **task role** `ecsTaskRole-email-parser` (not only execution role) |
+| Enrichment errors / no yellow cells | Confirm image includes `vessel_enrichment.py`; Anthropic web_search enabled |
 
 ### CloudFront / UI
 
@@ -81,6 +86,7 @@ allow_origins=[
 | Draft: `Unexpected token '<'` | API returned HTML — error pages or POST to S3 |
 | Draft: HTTP 403 | WAF monitor mode or allow POST |
 | `generate-draft` Server AmazonS3 | `/api/*` not ALB; allow POST; CachingDisabled |
+| Old UI after deploy | Wait for invalidation; hard-refresh (`Ctrl+Shift+R`) |
 
 ### ALB DNS
 
@@ -92,12 +98,14 @@ Copy from **EC2 → Load balancers**. Dev suffix: **`656767385`**.
 
 | # | Action | Expected |
 |---|--------|----------|
-| 1 | Open CloudFront URL | React app |
-| 2 | Fetch Mails | `job_id`; SSE in Inbox |
-| 3 | Validate | Grid + signatures |
-| 4 | Edit cell | PUT saves |
-| 5 | Generate Draft | `job_id`; Draft tab + map |
-| 6 | Copy draft | Clipboard |
+| 1 | Open CloudFront URL | Shipbroker Sense UI |
+| 2 | Home | Morning Brief for **today** |
+| 3 | Fetch Mails | `job_id`; SSE in Inbox; sync done at **`phase1_complete`** |
+| 4 | Vessel Libraries List | Enrichment spinner (separate); light yellow cells fill blanks |
+| 5 | Validate | Grid + signatures |
+| 6 | Edit cell | PUT saves |
+| 7 | Generate Draft | `job_id`; Draft tab + map |
+| 8 | Copy draft | Clipboard |
 
 ---
 
@@ -105,11 +113,13 @@ Copy from **EC2 → Load balancers**. Dev suffix: **`656767385`**.
 
 Log group: **`/ecs/email-parser-api`**
 
-Filter: `ERROR`, `Phase1`, `Phase2`, `PostgreSQL`, `IMAP`
+Filter: `ERROR`, `Phase1`, `Phase2`, `phase1_complete`, `Enrich`, `web_search`, `AutoFetch`, `PostgreSQL`, `IMAP`
 
 ---
 
 ## Release runbook
+
+Deploy from **`aws-deployment`** only.
 
 ```text
 1. backend/
@@ -117,7 +127,8 @@ Filter: `ERROR`, `Phase1`, `Phase2`, `PostgreSQL`, `IMAP`
    docker tag ... email-parser-api:latest
    docker push 867492128821.dkr.ecr.ap-southeast-1.amazonaws.com/email-parser-api:latest
 
-2. ECS → task definition new revision (if env changed) OR Update service → Force new deployment
+2. ECS → Force new deployment (task def currently email-parser-api:6)
+   --force-new-deployment pulls new :latest image
 
 3. frontend/
    npm run build
@@ -127,7 +138,9 @@ Filter: `ERROR`, `Phase1`, `Phase2`, `PostgreSQL`, `IMAP`
 
 5. Smoke:
    https://d2bt5vx8sl8jq9.cloudfront.net/api/health
-   Optional: one Fetch + Generate Draft (5 rows)
+   Home Morning Brief
+   Fetch → inbox done → Library enrichment spinner / yellow cells
+   Optional: Generate Draft (few rows)
 ```
 
 ---
@@ -147,6 +160,7 @@ Use **new** resources in `emailparsing-prod` — do not copy dev secrets.
 [ ] Remove all dev temporary SG rules
 [ ] AWS Budgets / alarms
 [ ] Document on-call / rollback (previous task definition revision)
+[ ] Confirm Anthropic web_search enabled for library enrichment
 ```
 
 ---

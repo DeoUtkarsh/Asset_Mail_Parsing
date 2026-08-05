@@ -110,12 +110,16 @@ You should see a message like **"Hello from Docker!"**.
 
 **Do this in Phase 1**, not before the `Dockerfile` exists in the repo.
 
-From repo root (`Email_Parser_Two`):
+Build context is **`backend/`** (recommended) so `requirements.txt` installs
+`anthropic==0.49.0`, `httpx==0.27.2`, and `tzdata==2025.2` (Claude + web_search enrichment
+and Home calendar day zones).
+
+From `backend/`:
 
 ```powershell
-cd D:\Asset_Modules\Email_Parser_Two
-docker build -f backend/Dockerfile -t email-parser-api:local .
-docker run --rm -p 8000:8000 --env-file backend\.env email-parser-api:local
+cd D:\Asset_Modules\Email_Parser_Two\backend
+docker build -t email-parser-api:local .
+docker run --rm -p 8000:8000 --env-file .env -e PG_HOST=host.docker.internal email-parser-api:local
 ```
 
 In another terminal:

@@ -101,23 +101,26 @@ docker push "$ACCOUNT.dkr.ecr.$REGION.amazonaws.com/email-parser-api:latest"
 | `IMAP_SERVER` | `imap.gmail.com` |
 | `IMAP_PORT` | `993` |
 | `BLOCKED_SENDER_PATTERNS` | Optional; defaults in code if omitted |
-| `ANTHROPIC_API_KEY` | **Required** |
-| `CLAUDE_MODEL` | e.g. `claude-haiku-4-5` |
+| `ANTHROPIC_API_KEY` | **Required** — extraction/draft **and** Vessel Library enrichment (`web_search`) |
+| `CLAUDE_MODEL` | e.g. `claude-haiku-4-5` (same model used for enrichment) |
 | `PG_HOST` | RDS endpoint (**not** `localhost`) |
 | `PG_PORT` | `5432` |
 | `PG_DATABASE` | **`email_parser`** (underscore) |
 | `PG_USER` | e.g. `postgres` |
 | `PG_PASSWORD` | RDS master password |
 | `MAX_ATTACHMENTS` | `0` = all new emails |
-| `AUTO_FETCH_IMAP_IDLE` | **`true` on ECS** — IMAP IDLE auto-runs Phase 1 when new mail arrives. Leave `false` locally |
+| `AUTO_FETCH_IMAP_IDLE` | **`true` on ECS** — IMAP IDLE auto-runs Phase 1 when new mail arrives. On **`aws-deployment`** local `.env` keep **`false`** |
 | `AUTO_FETCH_IDLE_RECONNECT_SEC` | Optional; default `30` — wait before reconnecting IDLE after errors |
 | `ATTACHMENTS_S3_BUCKET` | `email-parser-mail` |
 | `ATTACHMENTS_S3_PREFIX` | `attachment_files` |
 | `AWS_REGION` | `ap-southeast-1` |
 
+> **No VesselAPI / MyShipTracking keys.** Enrichment is Claude + Anthropic `web_search` only.
+> The Anthropic account must allow the web_search server tool; otherwise enrichment logs errors and blanks stay empty.
+
 ### Optional / legacy (ignored by current code)
 
-`FILTER_SENDER`, `TARGET_SUBJECT`, `NVIDIA_*` — may remain in the secret for compatibility with older task definitions.
+`FILTER_SENDER`, `TARGET_SUBJECT`, `NVIDIA_*`, `VESSELAPI_*`, `MYSHIPTRACKING_*` — may remain in the secret for compatibility; the app ignores them.
 
 ---
 

@@ -52,10 +52,25 @@ CREATE DATABASE email_parser;
 ```
 
 You normally **do not** need to run `schema.sql` by hand. When ECS starts with
-`PG_DATABASE=email_parser`, the API runs idempotent DDL (including
-`broker_contacts.match_key`), seeds column definitions, and rematches vessel-library /
-contact identity keys (soft-duplicate merge). Autofill insert into the library still
-waits for **Review all** in the UI.
+`PG_DATABASE=email_parser`, the API runs idempotent DDL via `pg_db.py`, including:
+
+- Core tables (`parent_emails`, `attachments`, `vessels`, `broker_contacts`, `vessel_library`, …)
+- `broker_contacts.match_key`
+- **`vessel_library.api_sourced` JSONB** (tracks which particulars came from web enrichment → yellow UI cells)
+- **`vessel_enrichment_cache`** (match_key → enriched payload / provider)
+
+It also seeds column definitions and rematches vessel-library / contact identity keys
+(soft-duplicate merge). Autofill insert into the library still waits for **Review all**
+in the UI.
+
+Verify after a deploy (optional):
+
+```sql
+SELECT column_name FROM information_schema.columns
+ WHERE table_name = 'vessel_library' AND column_name = 'api_sourced';
+
+SELECT COUNT(*) FROM vessel_enrichment_cache;
+```
 
 Optional manual apply:
 

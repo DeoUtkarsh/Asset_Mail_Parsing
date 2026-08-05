@@ -45,6 +45,7 @@ EMAIL_USER       : …
 CLAUDE_MODEL     : …
 DB               : … / email_parser
 FILE STORAGE     : S3 s3://email-parser-mail/attachment_files/
+AUTO_FETCH_IDLE  : ON
 PostgreSQL connection: OK
 Application startup complete.
 ```
@@ -86,6 +87,7 @@ PG_DATABASE
 PG_USER
 PG_PASSWORD
 MAX_ATTACHMENTS
+AUTO_FETCH_IMAP_IDLE
 ATTACHMENTS_S3_BUCKET
 ATTACHMENTS_S3_PREFIX
 AWS_REGION
@@ -95,6 +97,7 @@ AWS_REGION
 
 ```text
 BLOCKED_SENDER_PATTERNS
+AUTO_FETCH_IDLE_RECONNECT_SEC
 ```
 
 **Legacy (optional; unused by current code):**
@@ -106,6 +109,9 @@ NVIDIA_API_BASE_URL
 NVIDIA_API_KEY
 NVIDIA_LLM_MODEL
 NVIDIA_PARSE_MODEL
+VESSELAPI_API_KEY
+MYSHIPTRACKING_API_KEY
+MYSHIPTRACKING_SECRET
 ```
 
 Example:
@@ -132,10 +138,14 @@ arn:aws:secretsmanager:ap-southeast-1:867492128821:secret:emaildev-4sFMnJ:ANTHRO
 | Health check grace | **180** s |
 
 ```cmd
-aws ecs update-service --cluster email-parser-cluster --service email-parser-api-service-khf6bfgk --task-definition email-parser-api:N --force-new-deployment --region ap-southeast-1 --profile emailparser-dev
+aws ecs update-service --cluster email-parser-cluster --service email-parser-api-service-khf6bfgk --force-new-deployment --region ap-southeast-1 --profile emailparser-dev
 ```
 
-Replace `N` with the latest revision number.
+To pin a revision explicitly (currently **`:6`**):
+
+```cmd
+aws ecs update-service --cluster email-parser-cluster --service email-parser-api-service-khf6bfgk --task-definition email-parser-api:6 --force-new-deployment --region ap-southeast-1 --profile emailparser-dev
+```
 
 ---
 
@@ -162,11 +172,18 @@ GET https://d2bt5vx8sl8jq9.cloudfront.net/api/health
 GET https://d2bt5vx8sl8jq9.cloudfront.net/api/home/summary
 ```
 
+After **Fetch Emails**:
+
+1. Inbox / sync completes at SSE **`phase1_complete`** (do not wait on enrichment).
+2. Open **Vessel Libraries List** — enrichment banner/spinner may run separately.
+3. Light yellow cells = blanks filled by Claude **web_search** (`api_sourced`).
+4. Home Morning Brief stays **today-scoped** (`day` + `tz` query params).
+
 ---
 
 ## Known image dependency
 
-Pin **`httpx==0.27.2`** with `anthropic==0.39.0` or the container crashes:
+Pin **`httpx==0.27.2`** with **`anthropic==0.49.0`** (and **`tzdata==2025.2`** for calendar day scope) or the container can crash:
 
 ```text
 TypeError: AsyncClient.__init__() got an unexpected keyword argument 'proxies'

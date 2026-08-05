@@ -1,6 +1,6 @@
-# Phase 5 — React build, S3, CloudFront
+# Phase 5 — React build, S3, CloudFront (Shipbroker Sense UI)
 
-**Goal:** UI on **S3 + CloudFront**; **`/api/*`** → ALB (same-origin `/api` as local Vite proxy).
+**Goal:** **Shipbroker Sense** UI on **S3 + CloudFront**; **`/api/*`** → ALB (same-origin `/api` as local Vite proxy).
 
 **Status:** ✅ Done (dev)
 
@@ -133,6 +133,16 @@ For prod: work with security team to tune rules or exclude `/api/*` POST bodies.
 https://d2bt5vx8sl8jq9.cloudfront.net/
 https://d2bt5vx8sl8jq9.cloudfront.net/api/health
 ```
+
+Product checks (hard-refresh after invalidation):
+
+| Check | Expected |
+|-------|----------|
+| Branding | **Shipbroker Sense** (title / login / top bar) |
+| Home | Morning Brief for **today**; review / positions-ready cards |
+| Fetch Emails | Inbox sync completes at Phase-1; toast when done |
+| Vessel Libraries List | Separate enrichment spinner **after** Phase-1; light yellow cells = web enrichment |
+| Generate Draft | Network: 200 JSON from uvicorn (not S3 HTML) |
 
 **Generate Draft** — Network tab on `generate-draft`:
 

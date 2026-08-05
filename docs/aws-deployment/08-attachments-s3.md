@@ -101,3 +101,5 @@ Local `.env`: leave `ATTACHMENTS_S3_BUCKET` empty.
 - Metadata (filenames, sizes) stays in Postgres `attachments.files` JSONB.
 - Preview images may also be stored as data URLs in DB for inline UI.
 - Docker image does **not** include local `attachment_files/` (`.dockerignore`).
+- Vessel-library enrichment is unrelated to this bucket — it uses Anthropic web_search and
+  stores results in Postgres (`vessel_enrichment_cache` / `api_sourced`). See [README](./README.md).
