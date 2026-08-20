@@ -9,6 +9,24 @@ function errorDetail(err, fallback) {
   return fallback;
 }
 
+/** Wait until the FastAPI backend is up (e.g. after uvicorn restart). */
+export async function waitForBackend({ maxMs = 45000, intervalMs = 600 } = {}) {
+  const deadline = Date.now() + maxMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${BASE}/health`, { signal: AbortSignal.timeout(2500) });
+      if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        if (data?.status === "ok") return true;
+      }
+    } catch {
+      /* backend still starting */
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  return false;
+}
+
 async function requestOnce(method, path, body, timeoutMs) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -37,11 +55,11 @@ async function requestOnce(method, path, body, timeoutMs) {
 
 function isRetryable(err) {
   const msg = String(err?.message || err);
-  return /timed out|Failed to fetch|NetworkError|Backend unavailable|ECONNRESET|Executor shutdown|502/i.test(msg);
+  return /timed out|Failed to fetch|NetworkError|Backend unavailable|ECONNREFUSED|ECONNRESET|Executor shutdown|502|503/i.test(msg);
 }
 
 async function request(method, path, body, { timeoutMs = 20000 } = {}) {
-  const attempts = method === "GET" ? 4 : 1;
+  const attempts = method === "GET" ? 8 : 1;
   let lastErr;
   for (let i = 1; i <= attempts; i += 1) {
     try {
@@ -49,7 +67,7 @@ async function request(method, path, body, { timeoutMs = 20000 } = {}) {
     } catch (e) {
       lastErr = e;
       if (i === attempts || !isRetryable(e)) throw e;
-      await new Promise((r) => setTimeout(r, 400 * i));
+      await new Promise((r) => setTimeout(r, 500 * i));
     }
   }
   throw lastErr;
@@ -214,6 +232,13 @@ export const summarizeContacts = (contactIds) =>
 /** Returns { vessels: [...], new_vessels: [...] } for the Vessel Libraries List tab. */
 export const getVesselLibrary = () => request("GET", "/vessel-library");
 
+/** Hide a pending review vessel from the New to review list (persists across restart). */
+export const skipVesselReview = (matchKey, vesselName = "") =>
+  request("POST", "/vessel-library/skip-review", {
+    match_key: matchKey,
+    vessel_name: vesselName || "",
+  });
+
 /** Add a vessel to the library (manual entry or promotion from review). */
 export const addVesselLibrary = (fields) => request("POST", "/vessel-library", fields);
 
@@ -228,6 +253,13 @@ export const deleteVesselLibrary = (id) => request("DELETE", `/vessel-library/${
 
 /** Latest Q88 extract for one library vessel. */
 export const getVesselQ88 = (vesselId) => request("GET", `/vessel-library/${vesselId}/q88`);
+
+/** Download URL for the stored Q88 PDF. */
+export const vesselQ88DownloadUrl = (vesselId) =>
+  `${BASE}/vessel-library/${encodeURIComponent(vesselId)}/q88/download`;
+
+/** Create a contact manually. */
+export const createBrokerContact = (fields) => request("POST", "/contacts", fields);
 
 /** Upload a Q88 PDF. Replaces any previous extract for that vessel. */
 export async function uploadVesselQ88(vesselId, file, { ignoreMismatch = false } = {}) {

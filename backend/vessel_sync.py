@@ -165,6 +165,29 @@ def backfill_positions_from_library(
     return {"updated": total_updated, "library_rows": len(library_rows), "checked": vessels_checked}
 
 
+def fill_position_from_library(
+    supabase,
+    dynamic_data: dict[str, Any],
+) -> dict[str, Any]:
+    """Fill empty position particulars from a matching vessel_library row."""
+    dd = dict(dynamic_data or {})
+    particulars = _particulars_from_dynamic(dd)
+    if not _clean(particulars.get("vessel_name")) and not match_key_from_particulars(particulars):
+        return dd
+    by_key, by_name = _load_library_index(supabase)
+    matched = _find_match(particulars, by_key, by_name)
+    if not matched:
+        return dd
+    merged, changed = _apply_library_to_dynamic(dd, matched, only_empty=True)
+    if changed:
+        logger.info(
+            "Position filled from library: vessel=%s fields=%s",
+            _clean(particulars.get("vessel_name"))[:40],
+            changed,
+        )
+    return merged
+
+
 def sync_position_to_library(
     supabase,
     dynamic_data: dict[str, Any],

@@ -5,6 +5,7 @@ import {
   getRuntimeConfig,
   retryExtraction,
   retryAttachment,
+  waitForBackend,
 } from "../../services/api";
 import { useSSE } from "../../hooks/useSSE";
 import PreviewPanel from "./PreviewPanel";
@@ -99,7 +100,12 @@ export default function InboxView({
   const finishJobRef = useRef(null);
   const sawInflightRef = useRef(false);
 
-  useEffect(() => { loadEmails(); }, []);
+  useEffect(() => {
+    (async () => {
+      await waitForBackend();
+      loadEmails();
+    })();
+  }, []);
 
   useEffect(() => { jobIdRef.current = jobId; }, [jobId]);
 

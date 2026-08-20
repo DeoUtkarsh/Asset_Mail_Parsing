@@ -78,6 +78,30 @@ class UpdateBrokerContactRequest(BaseModel):
     source: Optional[str] = None
 
 
+class CreateBrokerContactRequest(BaseModel):
+    """Manually add a contact to the Contact List."""
+    contact_name: Optional[str] = ""
+    designation: Optional[str] = ""
+    department: Optional[str] = ""
+    company: Optional[str] = ""
+    company_type: Optional[str] = ""
+    vessel_name: Optional[str] = ""
+    email: Optional[str] = ""
+    off_phone: Optional[str] = ""
+    mob_phone: Optional[str] = ""
+    wechat: Optional[str] = ""
+    whatsapp: Optional[str] = ""
+    website_address: Optional[str] = ""
+    office_address: Optional[str] = ""
+    other_info: Optional[str] = ""
+    status: Optional[str] = "Active"
+    country: Optional[str] = ""
+    city: Optional[str] = ""
+    trade: Optional[str] = ""
+    role: Optional[str] = ""
+    fax: Optional[str] = ""
+
+
 class UpdateVesselRequest(BaseModel):
     """Single-cell or full-row update from the validation grid."""
     vessel_id: str
@@ -107,6 +131,11 @@ class VesselLibraryRequest(BaseModel):
     cdi_date: Optional[str] = ""
     tank_coating: Optional[str] = ""
     api_sourced: Optional[list[str]] = None
+
+
+class SkipVesselReviewRequest(BaseModel):
+    match_key: str
+    vessel_name: Optional[str] = ""
 
 
 # ── API response shapes ───────────────────────────────────────────

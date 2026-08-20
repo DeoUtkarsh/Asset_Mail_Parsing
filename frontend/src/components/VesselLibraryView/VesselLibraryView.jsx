@@ -6,6 +6,8 @@ import {
   updateVesselLibrary,
   deleteVesselLibrary,
   autofillVesselLibrary,
+  skipVesselReview,
+  waitForBackend,
 } from "../../services/api";
 import Icon from "../icons";
 import { formatStandardField } from "../../utils/fieldFormat";
@@ -53,6 +55,9 @@ export default function VesselLibraryView({
   // modal: { mode: "add" | "edit" | "review", data }
   const [modal, setModal] = useState(null);
   const [q88, setQ88] = useState(null);
+  const [libPage, setLibPage] = useState(1);
+  const [newPage, setNewPage] = useState(1);
+  const PAGE_SIZE = 50;
 
   const flashSaved = () => {
     setSavedMsg(true);
@@ -82,7 +87,11 @@ export default function VesselLibraryView({
   }, []);
 
   useEffect(() => {
-    if (isActive) load();
+    if (!isActive) return;
+    (async () => {
+      await waitForBackend();
+      load();
+    })();
   }, [isActive, refreshKey, load]);
 
   useEffect(() => {
@@ -152,6 +161,17 @@ export default function VesselLibraryView({
     return arr;
   }, [filtered, sort]);
 
+  useEffect(() => { setLibPage(1); }, [query, sort, rows.length]);
+  useEffect(() => { setNewPage(1); }, [newRows.length]);
+
+  const libTotalPages = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE));
+  const libSafePage = Math.min(libPage, libTotalPages);
+  const pagedLibrary = sorted.slice((libSafePage - 1) * PAGE_SIZE, libSafePage * PAGE_SIZE);
+
+  const newTotalPages = Math.max(1, Math.ceil(newRows.length / PAGE_SIZE));
+  const newSafePage = Math.min(newPage, newTotalPages);
+  const pagedNewRows = newRows.slice((newSafePage - 1) * PAGE_SIZE, newSafePage * PAGE_SIZE);
+
   const toggleSort = useCallback((key) => {
     setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "asc" }));
   }, []);
@@ -185,6 +205,20 @@ export default function VesselLibraryView({
       onLibraryUpdated?.();
     } catch (e) {
       setError("Delete failed: " + e.message);
+    }
+  };
+
+  const handleSkipReview = async (row) => {
+    const name = row.vessel_name || "this vessel";
+    if (!window.confirm(`Skip "${name}"?\n\nIt will stay hidden from New to review until you add it manually.`)) {
+      return;
+    }
+    setError("");
+    try {
+      await skipVesselReview(row.match_key, row.vessel_name);
+      await load();
+    } catch (e) {
+      setError("Skip failed: " + e.message);
     }
   };
 
@@ -336,13 +370,13 @@ export default function VesselLibraryView({
                       {COLS.map((c) => (
                         <th key={c.key} className={c.colClass || ""}>{c.label}</th>
                       ))}
-                      <th style={{ width: 148 }}>Review</th>
+                      <th style={{ width: 210 }}>Review</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {newRows.map((row, i) => (
+                    {pagedNewRows.map((row, i) => (
                       <tr key={row.match_key || i} className="vlib-new-row">
-                        <td className="vlib-sr">{i + 1}</td>
+                        <td className="vlib-sr">{(newSafePage - 1) * PAGE_SIZE + i + 1}</td>
                         {COLS.map((c) => {
                           const ready = row.enrichment_ready !== false;
                           const rawVal = row[c.key];
@@ -371,7 +405,7 @@ export default function VesselLibraryView({
                             </td>
                           );
                         })}
-                        <td className="vlib-actions">
+                        <td className="vlib-actions vlib-review-actions">
                           <button
                             type="button"
                             className="tb-btn tb-btn-primary vlib-review-btn"
@@ -382,6 +416,15 @@ export default function VesselLibraryView({
                           >
                             {row.enrichment_ready === false ? "Enriching…" : "Review & add"}
                           </button>
+                          <button
+                            type="button"
+                            className="tb-btn vlib-skip-btn"
+                            disabled={row.enrichment_ready === false}
+                            onClick={() => handleSkipReview(row)}
+                            title="Hide from New to review (does not add to library)"
+                          >
+                            Skip
+                          </button>
                         </td>
                       </tr>
                     ))}
@@ -389,6 +432,13 @@ export default function VesselLibraryView({
                 </table>
               </div>
             </div>
+            {newTotalPages > 1 && (
+              <div className="list-pager">
+                <button type="button" className="tb-btn" disabled={newSafePage <= 1} onClick={() => setNewPage((p) => Math.max(1, p - 1))}>Previous</button>
+                <span>Page {newSafePage} of {newTotalPages} · {newRows.length} new</span>
+                <button type="button" className="tb-btn" disabled={newSafePage >= newTotalPages} onClick={() => setNewPage((p) => p + 1)}>Next</button>
+              </div>
+            )}
           </div>
           )}
 
@@ -431,9 +481,9 @@ export default function VesselLibraryView({
                       </td>
                     </tr>
                   ) : (
-                    sorted.map((row, i) => (
+                    pagedLibrary.map((row, i) => (
                       <tr key={row.id}>
-                        <td className="vlib-sr">{i + 1}</td>
+                        <td className="vlib-sr">{(libSafePage - 1) * PAGE_SIZE + i + 1}</td>
                         {COLS.map((c) => {
                           const rawVal = row[c.key];
                           const display =
@@ -492,6 +542,13 @@ export default function VesselLibraryView({
                 </tbody>
               </table>
             </div>
+            {libTotalPages > 1 && (
+              <div className="list-pager">
+                <button type="button" className="tb-btn" disabled={libSafePage <= 1} onClick={() => setLibPage((p) => Math.max(1, p - 1))}>Previous</button>
+                <span>Page {libSafePage} of {libTotalPages} · {sorted.length} vessels</span>
+                <button type="button" className="tb-btn" disabled={libSafePage >= libTotalPages} onClick={() => setLibPage((p) => p + 1)}>Next</button>
+              </div>
+            )}
           </div>
           </>
         )}

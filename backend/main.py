@@ -45,8 +45,10 @@ from models import (
     SetAttachmentVerifiedRequest,
     UpdateVesselRequest,
     UpdateBrokerContactRequest,
+    CreateBrokerContactRequest,
     UpdateAttachmentContactsRequest,
     VesselLibraryRequest,
+    SkipVesselReviewRequest,
     ManualVesselRequest,
 )
 
@@ -73,6 +75,7 @@ from vessel_library import (
     delete_library_vessel,
     normalize_library_formats,
     rematch_library,
+    skip_review_vessel,
 )
 from vessel_sync import (
     backfill_positions_from_library,
@@ -83,6 +86,7 @@ from vessel_enrichment import (
     run_vessel_library_enrichment,
     get_enrichment_status,
     merge_cache_into_rows,
+    library_enrichment_pending,
 )
 from column_defs import (
     ensure_column_definitions,
@@ -1118,6 +1122,42 @@ async def upload_owners_csv(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@app.post("/api/contacts")
+async def create_broker_contact(body: CreateBrokerContactRequest):
+    """Manually add a contact (stored as owners-list / manual)."""
+    logger.info("[API] POST /api/contacts")
+    try:
+        from datetime import datetime, timezone
+        from agents.contact_extract import CONTACT_FIELD_KEYS, contact_match_key, normalize_contact_status
+
+        payload: dict[str, Any] = {}
+        for key in CONTACT_FIELD_KEYS:
+            val = getattr(body, key, None)
+            if val is None:
+                payload[key] = ""
+            elif key == "status":
+                payload[key] = normalize_contact_status(val)
+            else:
+                payload[key] = str(val).strip()
+        if not any(payload.get(k) for k in ("contact_name", "email", "company", "off_phone", "mob_phone")):
+            raise HTTPException(
+                status_code=400,
+                detail="Enter at least a name, email, company, or phone.",
+            )
+        payload["match_key"] = contact_match_key(payload) or ""
+        payload["source"] = "owners-list"
+        payload["excel_sourced"] = [k for k in CONTACT_FIELD_KEYS if payload.get(k) and k != "status"]
+        payload["used_fallback"] = False
+        payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+        result = supabase.table("broker_contacts").insert(payload).execute()
+        return result.data[0] if result.data else payload
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("[API] create_broker_contact failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @app.put("/api/contacts/{contact_id}")
 async def update_broker_contact(contact_id: str, body: UpdateBrokerContactRequest):
     logger.info("[API] PUT /api/contacts/%s", contact_id)
@@ -1381,7 +1421,8 @@ async def get_vessel_library():
     try:
         data = await asyncio.to_thread(_get_vessel_library_sync)
         try:
-            await run_vessel_library_enrichment("live", supabase)
+            if library_enrichment_pending(supabase):
+                await run_vessel_library_enrichment("live", supabase)
         except Exception as enrich_exc:  # noqa: BLE001
             logger.warning("[API] get_vessel_library enrichment queue failed: %s", enrich_exc)
         data["enrichment"] = get_enrichment_status()
@@ -1409,9 +1450,24 @@ def _get_vessel_library_sync() -> dict:
 
 
 def _q88_payload(row: dict) -> dict:
+    stored = (row.get("stored_file") or "").strip()
+    vessel_id = str(row.get("vessel_id") or "")
+    # Older extracts may have PDF on disk but empty stored_file — treat as downloadable.
+    if not stored and vessel_id:
+        from file_storage import exists
+
+        if exists(f"q88-{vessel_id}", "q88.pdf"):
+            stored = "q88.pdf"
+            try:
+                supabase.table("vessel_q88").update({"stored_file": stored}).eq(
+                    "vessel_id", vessel_id
+                ).execute()
+            except Exception:  # noqa: BLE001
+                pass
     return {
-        "vessel_id": str(row.get("vessel_id") or ""),
+        "vessel_id": vessel_id,
         "filename": row.get("filename") or "",
+        "has_file": bool(stored),
         "fields": row.get("fields") if isinstance(row.get("fields"), list) else [],
         "mismatch": bool(row.get("mismatch")),
         "pdf_imo": row.get("pdf_imo") or "",
@@ -1458,7 +1514,9 @@ async def upload_vessel_q88(
     if len(raw) > 20_000_000:
         raise HTTPException(status_code=400, detail="File is too large (max 20 MB).")
 
-    from agents.q88_extract import extract_q88_pdf, mismatch_against_library
+    from agents.q88_extract import extract_q88_pdf, mismatch_against_library, library_patch_from_q88_fields
+    from file_storage import save_bytes
+    from datetime import datetime, timezone
 
     plog.info(
         "Q88",
@@ -1505,10 +1563,19 @@ async def upload_vessel_q88(
             },
         )
 
+    stored_name = "q88.pdf"
+    storage_id = f"q88-{vessel_id}"
+    try:
+        save_bytes(storage_id, stored_name, raw)
+    except Exception as exc:  # noqa: BLE001
+        plog.exception("Q88", "Could not store PDF bytes", vessel=vessel_id[:8])
+        raise HTTPException(status_code=500, detail=f"Could not store PDF: {exc}") from exc
+
     supabase.table("vessel_q88").delete().eq("vessel_id", vessel_id).execute()
     saved = supabase.table("vessel_q88").insert({
         "vessel_id": vessel_id,
         "filename": name,
+        "stored_file": stored_name,
         "fields": fields,
         "mismatch": bool(check["mismatch"]),
         "pdf_imo": check["pdf_imo"],
@@ -1517,10 +1584,42 @@ async def upload_vessel_q88(
     row = (saved.data or [{}])[0]
     row.setdefault("fields", fields)
     row.setdefault("filename", name)
+    row.setdefault("stored_file", stored_name)
     row.setdefault("vessel_id", vessel_id)
     row.setdefault("mismatch", check["mismatch"])
     row.setdefault("pdf_imo", check["pdf_imo"])
     row.setdefault("pdf_name", check["pdf_name"])
+
+    # Refresh library grid from Q88 where present; keep existing web values otherwise.
+    lib_patch = library_patch_from_q88_fields(fields)
+    if lib_patch:
+        full = (
+            supabase.table("vessel_library")
+            .select("id, api_sourced, " + ", ".join(lib_patch.keys()))
+            .eq("id", vessel_id)
+            .limit(1)
+            .execute()
+        ).data or []
+        if full:
+            existing = full[0]
+            api_src = existing.get("api_sourced") if isinstance(existing.get("api_sourced"), list) else []
+            # Fields overwritten by Q88 are no longer "web enrichment".
+            api_src = [f for f in api_src if f not in lib_patch]
+            update = dict(lib_patch)
+            update["api_sourced"] = api_src
+            update["updated_at"] = datetime.now(timezone.utc).isoformat()
+            updated = (
+                supabase.table("vessel_library")
+                .update(update)
+                .eq("id", vessel_id)
+                .execute()
+            )
+            lib_row = (updated.data or [None])[0]
+            if lib_row:
+                sync_library_row_to_positions(
+                    supabase, lib_row, fields=set(lib_patch.keys()), only_empty=False
+                )
+
     filled = sum(1 for f in fields if (f.get("value") or "").strip())
     plog.info(
         "Q88",
@@ -1529,8 +1628,36 @@ async def upload_vessel_q88(
         file=name,
         filled=filled,
         mismatch=check["mismatch"],
+        library_fields=sorted(lib_patch.keys()),
     )
     return _q88_payload(row)
+
+
+@app.get("/api/vessel-library/{vessel_id}/q88/download")
+async def download_vessel_q88(vessel_id: str):
+    from fastapi.responses import Response
+    from file_storage import read_bytes
+
+    hit = (
+        supabase.table("vessel_q88")
+        .select("filename, stored_file")
+        .eq("vessel_id", vessel_id)
+        .limit(1)
+        .execute()
+    ).data or []
+    if not hit or not hit[0].get("stored_file"):
+        raise HTTPException(status_code=404, detail="No Q88 PDF stored for this vessel.")
+    filename = hit[0].get("filename") or "q88.pdf"
+    stored = hit[0]["stored_file"]
+    try:
+        raw = read_bytes(f"q88-{vessel_id}", stored)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Q88 PDF file is missing on disk.") from exc
+    return Response(
+        content=raw,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.post("/api/vessel-library")
@@ -1575,6 +1702,20 @@ async def remove_vessel_library(vessel_id: str):
         return {"deleted": vessel_id}
     except Exception as exc:
         logger.error("[API] remove_vessel_library failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/vessel-library/skip-review")
+async def skip_vessel_library_review(body: SkipVesselReviewRequest):
+    """Hide a pending review vessel (stays out of New to review after restart)."""
+    logger.info("[API] POST /api/vessel-library/skip-review — %s", body.match_key)
+    try:
+        skip_review_vessel(supabase, body.match_key, body.vessel_name or "")
+        return {"skipped": body.match_key}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("[API] skip_vessel_library_review failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
@@ -1648,6 +1789,9 @@ async def create_manual_vessel(body: ManualVesselRequest):
         for key, val in (body.dynamic_data or {}).items():
             if key in dd:
                 dd[key] = str(val or "").strip()
+        from vessel_sync import fill_position_from_library
+
+        dd = fill_position_from_library(supabase, dd)
         standardized, reg = map_raw_to_standard(dd, body.region)
         result = (
             supabase.table("vessels")

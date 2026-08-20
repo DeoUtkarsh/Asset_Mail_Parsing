@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { getEmails, getAllVessels, updateVessel, fetchEmails, generateDraft, getAttachments, getColumns, getHomeSummary } from "./services/api";
+import { getEmails, getAllVessels, updateVessel, fetchEmails, generateDraft, getAttachments, getColumns, getHomeSummary, waitForBackend } from "./services/api";
 import { useSSE } from "./hooks/useSSE";
 import { needsReview, confidencePct, confBand, byAttachment, deriveEmail, parseFromName, STD_COLUMNS } from "./lib/positions";
 import { calendarDayKey, homeTimeZone } from "./lib/calendarDay";
@@ -246,7 +246,18 @@ function MainApp({ onLogout, authUser, authPass }) {
       } catch { /* raw text is best-effort */ }
     } else { setActiveEmailId(null); setVessels([]); }
   }, [loadVessels]);
-  useEffect(() => { (async () => { try { await loadEmails(); } finally { setLoading(false); } })(); }, [loadEmails]);
+  useEffect(() => {
+    (async () => {
+      try {
+        await waitForBackend();
+        await loadEmails();
+      } catch {
+        /* loadEmails surfaces errors via empty state */
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [loadEmails]);
 
   // ── Sync (fetch) ──
   const onSync = async () => {

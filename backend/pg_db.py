@@ -200,12 +200,14 @@ CREATE TABLE IF NOT EXISTS vessel_q88 (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     vessel_id    UUID NOT NULL UNIQUE REFERENCES vessel_library(id) ON DELETE CASCADE,
     filename     TEXT NOT NULL DEFAULT '',
+    stored_file  TEXT NOT NULL DEFAULT '',
     fields       JSONB NOT NULL DEFAULT '[]'::jsonb,
     mismatch     BOOLEAN NOT NULL DEFAULT FALSE,
     pdf_imo      TEXT NOT NULL DEFAULT '',
     pdf_name     TEXT NOT NULL DEFAULT '',
     updated_at   TIMESTAMPTZ DEFAULT NOW()
 );
+ALTER TABLE vessel_q88 ADD COLUMN IF NOT EXISTS stored_file TEXT NOT NULL DEFAULT '';
 
 -- Cache of API enrichment for pending "New to review" rows (not yet in library).
 CREATE TABLE IF NOT EXISTS vessel_enrichment_cache (
@@ -215,6 +217,13 @@ CREATE TABLE IF NOT EXISTS vessel_enrichment_cache (
     api_sourced  JSONB NOT NULL DEFAULT '[]'::jsonb,
     provider     TEXT NOT NULL DEFAULT '',
     updated_at   TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- User skipped "New to review" rows (stay hidden until deleted from here).
+CREATE TABLE IF NOT EXISTS vessel_library_skipped (
+    match_key    TEXT PRIMARY KEY,
+    vessel_name  TEXT NOT NULL DEFAULT '',
+    skipped_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- Trade region reference data (cloned from Region-Country-Port Excel).

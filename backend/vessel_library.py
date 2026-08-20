@@ -628,9 +628,38 @@ def list_library(supabase) -> list[dict[str, Any]]:
     return rows
 
 
+def _skipped_keys(supabase) -> set[str]:
+    rows = (
+        supabase.table("vessel_library_skipped")
+        .select("match_key")
+        .execute()
+    ).data or []
+    return {r["match_key"] for r in rows if r.get("match_key")}
+
+
+def skip_review_vessel(supabase, match_key: str, vessel_name: str = "") -> None:
+    """Hide a pending review vessel until the user adds it to the library."""
+    key = (match_key or "").strip()
+    if not key:
+        raise ValueError("match_key is required")
+    supabase.table("vessel_library_skipped").upsert({
+        "match_key": key,
+        "vessel_name": (vessel_name or "").strip(),
+        "skipped_at": datetime.utcnow().isoformat(),
+    }).execute()
+
+
+def _clear_skip(supabase, match_key: str) -> None:
+    key = (match_key or "").strip()
+    if not key:
+        return
+    supabase.table("vessel_library_skipped").delete().eq("match_key", key).execute()
+
+
 def detect_new_vessels(supabase) -> list[dict[str, Any]]:
     """Vessels present in position data but not yet in the library."""
     candidates = _candidates_from_vessels(supabase)
+    skipped = _skipped_keys(supabase)
     existing_rows = (
         supabase.table("vessel_library")
         .select("id, match_key, " + ", ".join(LIBRARY_FIELDS))
@@ -639,6 +668,8 @@ def detect_new_vessels(supabase) -> list[dict[str, Any]]:
     by_key, by_name = _index_library_rows(existing_rows)
     new_rows: list[dict[str, Any]] = []
     for key, particulars in candidates.items():
+        if key in skipped:
+            continue
         if _find_match(particulars, by_key, by_name):
             continue
         row = dict(particulars)
@@ -690,9 +721,11 @@ def add_library_vessel(supabase, fields: dict[str, Any]) -> dict[str, Any]:
             .eq("id", existing["id"])
             .execute()
         )
+        _clear_skip(supabase, merged["match_key"])
         return result.data[0] if result.data else existing
 
     result = supabase.table("vessel_library").insert(payload).execute()
+    _clear_skip(supabase, key)
     return result.data[0]
 
 

@@ -568,6 +568,13 @@ async def _extract_single_attachment(
             standardized, reg = map_raw_to_standard(normalised, region)
             mark_bare_dwt_ai_flag(standardized, raw_text)
             mark_bare_year_ai_flag(standardized, raw_text)
+            try:
+                from vessel_sync import fill_position_from_library
+
+                standardized = fill_position_from_library(supabase, standardized)
+                standardized, reg = map_raw_to_standard(standardized, reg)
+            except Exception as fill_exc:  # noqa: BLE001
+                logger.warning("[Extract] Library fill skipped: %s", fill_exc)
             supabase.table("vessels").insert({
                 "attachment_id": attachment_id,
                 "dynamic_data": standardized,

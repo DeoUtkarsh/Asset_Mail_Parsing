@@ -321,8 +321,17 @@ async def _emit(job_id: str, event_type: str, data: dict[str, Any]) -> None:
 def _collect_targets(db, *, missing_only: bool = True) -> list[dict[str, Any]]:
     from vessel_library import detect_new_vessels, list_library, match_key_from_particulars
 
+    q88_ids = {
+        str(r.get("vessel_id"))
+        for r in (db.table("vessel_q88").select("vessel_id").execute().data or [])
+        if r.get("vessel_id")
+    }
+
     targets: list[dict[str, Any]] = []
     for r in list_library(db):
+        # Q88 is source of truth for that vessel — skip web enrichment.
+        if str(r.get("id") or "") in q88_ids:
+            continue
         item = dict(r)
         item["_source"] = "library"
         item["match_key"] = _clean(item.get("match_key")) or match_key_from_particulars(item)
@@ -543,6 +552,19 @@ def enrich_targets_sync(
         "total": len(targets),
         "rows": rows_out,
     }
+
+
+def library_enrichment_pending(db) -> bool:
+    """True when at least one library/review row still needs web enrichment."""
+    cache = _cache_load_all(db)
+    for src in _collect_targets(db, missing_only=True):
+        key = _clean(src.get("match_key"))
+        payload = (cache.get(key) or {}).get("payload") or {}
+        if _cache_payload_status(payload) in {"done", "miss", "error"}:
+            continue
+        if _needs_enrichment(src):
+            return True
+    return False
 
 
 async def run_vessel_library_enrichment(job_id: str, db=None) -> dict[str, Any]:

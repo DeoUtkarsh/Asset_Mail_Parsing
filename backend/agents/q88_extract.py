@@ -245,6 +245,40 @@ def merge_values(values: dict[str, Any]) -> list[dict[str, str]]:
     return rows
 
 
+# Q88 field id → vessel_library column. Overwrite when Q88 has a value;
+# leave existing web-enrichment values when Q88 is blank for that field.
+_Q88_TO_LIBRARY: dict[str, str] = {
+    "imo_number": "imo_no",
+    "vessel_name": "vessel_name",
+    "flag": "flag",
+    "summer_deadweight": "dwt",
+}
+
+
+def library_patch_from_q88_fields(fields: list[dict[str, Any]]) -> dict[str, str]:
+    """Map filled Q88 fields onto vessel_library columns."""
+    by_id = {
+        str(f.get("id") or ""): str(f.get("value") or "").strip()
+        for f in (fields or [])
+    }
+    patch: dict[str, str] = {}
+    for qid, lib_key in _Q88_TO_LIBRARY.items():
+        val = by_id.get(qid) or ""
+        if not val:
+            continue
+        if lib_key == "dwt":
+            digits = re.sub(r"[^\d]", "", val)
+            if digits:
+                patch[lib_key] = digits
+            continue
+        patch[lib_key] = val
+    delivered = by_id.get("date_delivered") or ""
+    year_m = re.search(r"(19|20)\d{2}", delivered)
+    if year_m:
+        patch["year_built"] = year_m.group(0)
+    return patch
+
+
 def mismatch_against_library(
     fields: list[dict[str, str]],
     library_name: str,
