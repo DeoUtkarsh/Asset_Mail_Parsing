@@ -20,6 +20,8 @@ from sse_manager import sse_manager
 from agents.contact_extract import clean_subject
 from file_storage import save_bytes
 
+import pipeline_log as plog
+
 logger = logging.getLogger(__name__)
 
 
@@ -186,9 +188,14 @@ async def run_ingestion(
                     limit, len(new_emails), limit)
         new_emails = new_emails[:limit]
 
-    logger.info(
-        "Ingestion: %d total, %d already in DB, %d new, %d incomplete to resume",
-        total_found, len(seen), len(new_emails), len(incomplete),
+    plog.info(
+        "Ingestion",
+        "IMAP fetch complete",
+        total=total_found,
+        already_in_db=len(seen),
+        new=len(new_emails),
+        resume=len(incomplete),
+        max_uid=max_imap_uid,
     )
 
     email_ids: list[str] = []
@@ -252,6 +259,13 @@ async def run_ingestion(
             "attachment_id": att_id,
             "filename": em["filename"],
         })
+        plog.info(
+            "Ingestion",
+            "Saved email",
+            email_id=email_id[:8],
+            subject=subject[:60],
+            files=len(em.get("files") or []),
+        )
 
     # Resume stuck rows from a previous interrupted Phase 1.
     for row in incomplete:
@@ -275,9 +289,11 @@ async def run_ingestion(
             "attachment_id": att_id,
             "filename": row.get("subject") or "resume",
         })
-        logger.info(
-            "[Ingestion] Resuming incomplete email_id=%s att=%s (%s)",
-            email_id, att_id, (row.get("subject") or "")[:50],
+        plog.info(
+            "Ingestion",
+            "Resuming incomplete email",
+            email_id=email_id[:8],
+            subject=(row.get("subject") or "")[:50],
         )
 
     await sse_manager.send(job_id, "ingestion_summary", {

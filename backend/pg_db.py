@@ -86,8 +86,8 @@ CREATE INDEX IF NOT EXISTS idx_vessels_dynamic_data
 
 CREATE TABLE IF NOT EXISTS broker_contacts (
     id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    attachment_id     UUID NOT NULL REFERENCES attachments(id) ON DELETE CASCADE,
-    parent_email_id   UUID REFERENCES parent_emails(id) ON DELETE CASCADE,
+    attachment_id     UUID REFERENCES attachments(id) ON DELETE SET NULL,
+    parent_email_id   UUID REFERENCES parent_emails(id) ON DELETE SET NULL,
     contact_name      TEXT NOT NULL DEFAULT '',
     designation       TEXT NOT NULL DEFAULT '',
     department        TEXT NOT NULL DEFAULT '',
@@ -109,6 +109,14 @@ CREATE TABLE IF NOT EXISTS broker_contacts (
     updated_at        TIMESTAMPTZ DEFAULT NOW()
 );
 
+ALTER TABLE broker_contacts ADD COLUMN IF NOT EXISTS country TEXT NOT NULL DEFAULT '';
+ALTER TABLE broker_contacts ADD COLUMN IF NOT EXISTS city TEXT NOT NULL DEFAULT '';
+ALTER TABLE broker_contacts ADD COLUMN IF NOT EXISTS trade TEXT NOT NULL DEFAULT '';
+ALTER TABLE broker_contacts ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT '';
+ALTER TABLE broker_contacts ADD COLUMN IF NOT EXISTS fax TEXT NOT NULL DEFAULT '';
+ALTER TABLE broker_contacts ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT '';
+ALTER TABLE broker_contacts ADD COLUMN IF NOT EXISTS excel_sourced JSONB NOT NULL DEFAULT '[]'::jsonb;
+
 CREATE INDEX IF NOT EXISTS idx_broker_contacts_attachment_id
     ON broker_contacts(attachment_id);
 
@@ -119,6 +127,42 @@ ALTER TABLE broker_contacts ADD COLUMN IF NOT EXISTS match_key TEXT NOT NULL DEF
 
 CREATE INDEX IF NOT EXISTS idx_broker_contacts_match_key
     ON broker_contacts(match_key);
+
+-- Excel-imported contacts are not tied to a real inbox email. Allow null FKs
+-- so deleting a leftover placeholder parent cannot cascade-wipe contact rows.
+ALTER TABLE broker_contacts ALTER COLUMN attachment_id DROP NOT NULL;
+DO $$
+DECLARE
+  con TEXT;
+BEGIN
+  FOR con IN
+    SELECT c.conname
+    FROM pg_constraint c
+    JOIN pg_class t ON t.oid = c.conrelid
+    WHERE t.relname = 'broker_contacts'
+      AND c.contype = 'f'
+      AND pg_get_constraintdef(c.oid) LIKE '%attachment_id%'
+  LOOP
+    EXECUTE format('ALTER TABLE broker_contacts DROP CONSTRAINT %I', con);
+  END LOOP;
+  FOR con IN
+    SELECT c.conname
+    FROM pg_constraint c
+    JOIN pg_class t ON t.oid = c.conrelid
+    WHERE t.relname = 'broker_contacts'
+      AND c.contype = 'f'
+      AND pg_get_constraintdef(c.oid) LIKE '%parent_email_id%'
+  LOOP
+    EXECUTE format('ALTER TABLE broker_contacts DROP CONSTRAINT %I', con);
+  END LOOP;
+  ALTER TABLE broker_contacts
+    ADD CONSTRAINT broker_contacts_attachment_id_fkey
+    FOREIGN KEY (attachment_id) REFERENCES attachments(id) ON DELETE SET NULL;
+  ALTER TABLE broker_contacts
+    ADD CONSTRAINT broker_contacts_parent_email_id_fkey
+    FOREIGN KEY (parent_email_id) REFERENCES parent_emails(id) ON DELETE SET NULL;
+  DELETE FROM parent_emails WHERE message_id = 'owners-list-import';
+END $$;
 
 -- Master list of vessels (static particulars, deduplicated) — the Vessel Library.
 CREATE TABLE IF NOT EXISTS vessel_library (
@@ -150,6 +194,18 @@ ALTER TABLE vessel_library ADD COLUMN IF NOT EXISTS api_sourced JSONB NOT NULL D
 
 CREATE INDEX IF NOT EXISTS idx_vessel_library_match_key
     ON vessel_library(match_key);
+
+-- Latest Q88 extract per library vessel (does not overwrite library grid columns).
+CREATE TABLE IF NOT EXISTS vessel_q88 (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    vessel_id    UUID NOT NULL UNIQUE REFERENCES vessel_library(id) ON DELETE CASCADE,
+    filename     TEXT NOT NULL DEFAULT '',
+    fields       JSONB NOT NULL DEFAULT '[]'::jsonb,
+    mismatch     BOOLEAN NOT NULL DEFAULT FALSE,
+    pdf_imo      TEXT NOT NULL DEFAULT '',
+    pdf_name     TEXT NOT NULL DEFAULT '',
+    updated_at   TIMESTAMPTZ DEFAULT NOW()
+);
 
 -- Cache of API enrichment for pending "New to review" rows (not yet in library).
 CREATE TABLE IF NOT EXISTS vessel_enrichment_cache (
@@ -319,9 +375,12 @@ class QueryBuilder:
                 clauses.append(f"{col} <> %s")
                 params.append(val)
             elif op == "in":
-                placeholders = ", ".join(["%s"] * len(val))
-                clauses.append(f"{col} IN ({placeholders})")
-                params.extend(val)
+                if not val:
+                    clauses.append("FALSE")
+                else:
+                    placeholders = ", ".join(["%s"] * len(val))
+                    clauses.append(f"{col} IN ({placeholders})")
+                    params.extend(val)
         return " WHERE " + " AND ".join(clauses)
 
     # ── Execute ───────────────────────────────────────────────────────────────

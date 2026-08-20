@@ -39,10 +39,10 @@ export default function HomeView({ data, loading = false, error = "", onNavigate
 
             {/* Fixed-height slot so KPI cards never jump when narrative loads */}
             <div className="home-brief-summary" aria-live="polite">
-              {loading || showBootLoading ? (
+              {showBootLoading ? (
                 <div className="home-brief-summary-loading">
                   <span className="spin-ring" aria-hidden="true" />
-                  <span>{refreshing ? "Updating today’s brief…" : "Crunching today’s numbers…"}</span>
+                  <span>Crunching today’s numbers…</span>
                 </div>
               ) : (
                 <p className="home-brief-narrative">{narrative}</p>

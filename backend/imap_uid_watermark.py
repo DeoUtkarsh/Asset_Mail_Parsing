@@ -9,12 +9,27 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-WATERMARK_PATH = Path(__file__).resolve().parent / "data" / "imap_uid_watermark.json"
+_LEGACY_WATERMARK = Path(__file__).resolve().parent / "data" / "imap_uid_watermark.json"
+
+
+def _watermark_path() -> Path:
+    override = (os.environ.get("IMAP_WATERMARK_PATH") or "").strip()
+    if override:
+        return Path(override)
+    # Keep this file off the uvicorn --reload tree (backend/). Writing it
+    # inside backend/data used to restart the API and freeze every UI spinner.
+    root = os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_DATA_HOME")
+    base = Path(root) if root else Path.home() / ".local" / "share"
+    return base / "ShipbrokerSense" / "imap_uid_watermark.json"
+
+
+WATERMARK_PATH = _watermark_path()
 
 
 def _save(uid: int) -> None:
@@ -26,10 +41,13 @@ def _save(uid: int) -> None:
 
 
 def get_watermark() -> int:
-    if not WATERMARK_PATH.exists():
+    path = WATERMARK_PATH if WATERMARK_PATH.exists() else (
+        _LEGACY_WATERMARK if _LEGACY_WATERMARK.exists() else None
+    )
+    if path is None:
         return 0
     try:
-        data = json.loads(WATERMARK_PATH.read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
         return int(data.get("max_uid") or 0)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[IdleUID] failed to load watermark: %s", exc)
@@ -38,6 +56,9 @@ def get_watermark() -> int:
 
 def set_watermark(uid: int) -> int:
     uid = max(0, int(uid))
+    # Avoid rewriting the same file — uvicorn --reload watches backend/data.
+    if WATERMARK_PATH.exists() and get_watermark() == uid:
+        return uid
     _save(uid)
     return uid
 

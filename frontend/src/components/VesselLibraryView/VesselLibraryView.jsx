@@ -12,6 +12,7 @@ import { formatStandardField } from "../../utils/fieldFormat";
 import VesselTypeSelect, {
   isImoTypeValue,
 } from "../VesselTypeSelect";
+import Q88Popover from "./Q88Popover";
 
 const COLS = [
   { key: "vessel_name", label: "VESSEL NAME", ph: "e.g. AMICO PEARL", colClass: "vlib-col-name" },
@@ -37,7 +38,8 @@ export default function VesselLibraryView({
 }) {
   const [rows, setRows] = useState([]);
   const [newRows, setNewRows] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const rowsRef = useRef([]);
   const [error, setError] = useState("");
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState({ key: null, dir: "asc" });
@@ -45,10 +47,12 @@ export default function VesselLibraryView({
   const [reviewAllSaving, setReviewAllSaving] = useState(false);
   const [savedMsg, setSavedMsg] = useState(false);
   const [enrichingLocal, setEnrichingLocal] = useState(false);
+  const [enrichmentMeta, setEnrichmentMeta] = useState({ running: false, done: 0, total: 0, matched: 0, pending: 0 });
   const savedTimer = useRef(null);
 
   // modal: { mode: "add" | "edit" | "review", data }
   const [modal, setModal] = useState(null);
+  const [q88, setQ88] = useState(null);
 
   const flashSaved = () => {
     setSavedMsg(true);
@@ -57,13 +61,17 @@ export default function VesselLibraryView({
   };
 
   const load = useCallback(async () => {
-    setLoading(true);
+    const firstPaint = rowsRef.current.length === 0;
+    if (firstPaint) setLoading(true);
     setError("");
     setSort({ key: null, dir: "asc" });
     try {
       const data = await getVesselLibrary();
-      setRows(data.vessels || []);
+      const next = data.vessels || [];
+      rowsRef.current = next;
+      setRows(next);
       setNewRows(data.new_vessels || []);
+      setEnrichmentMeta(data.enrichment || { running: false, done: 0, total: 0, matched: 0, pending: 0 });
       if (data.enrichment?.running) setEnrichingLocal(true);
       else if (data.enrichment && data.enrichment.running === false) setEnrichingLocal(false);
     } catch (e) {
@@ -82,6 +90,9 @@ export default function VesselLibraryView({
   }, [enriching]);
 
   const showEnrichSpinner = enriching || enrichingLocal;
+  const enrichDone = Number(enrichmentMeta?.done || 0);
+  const enrichTotal = Number(enrichmentMeta?.total || 0);
+  const enrichPct = enrichTotal > 0 ? Math.min(100, Math.round((enrichDone / enrichTotal) * 100)) : 0;
 
   // Soft-refresh while enrichment runs so yellow cells appear without full-page spinner.
   useEffect(() => {
@@ -91,6 +102,7 @@ export default function VesselLibraryView({
         const data = await getVesselLibrary();
         setRows(data.vessels || []);
         setNewRows(data.new_vessels || []);
+        setEnrichmentMeta(data.enrichment || { running: false, done: 0, total: 0, matched: 0, pending: 0 });
         if (data.enrichment?.running) setEnrichingLocal(true);
         else setEnrichingLocal(false);
       } catch {
@@ -222,8 +234,21 @@ export default function VesselLibraryView({
   return (
     <div className="vgrid-root">
       <div className="vgrid-head">
-        <h2>Vessel Libraries List</h2>
-        <div className="vgrid-actions">
+        <div className="vgrid-title">
+          <div className="vgrid-title-row">
+            <h2>Vessel Libraries List</h2>
+            {(rows.length > 0 || newRows.length > 0 || showEnrichSpinner) && (
+              <div className="vgrid-stats inline">
+                <LibStat label="Vessels in library" value={rows.length} />
+                {newRows.length > 0 && <LibStat label="New to review" value={newRows.length} />}
+              </div>
+            )}
+          </div>
+          <span className="vgrid-sub">
+            Master vessel directory — particulars enriched from web when added from position lists
+          </span>
+        </div>
+        <div className="vgrid-actions vlib-head-actions">
           <span className={`vgrid-saved ${savedMsg ? "show" : ""}`}>✓ Saved</span>
           <div className="lp-search vlib-search">
             <Icon name="search" size={15} />
@@ -233,15 +258,8 @@ export default function VesselLibraryView({
               onChange={(e) => setQuery(e.target.value)}
             />
           </div>
-          <div className="vlib-add-col">
-            <button
-              type="button"
-              className="tb-btn tb-btn-primary"
-              onClick={() => setModal({ mode: "add", data: { ...BLANK } })}
-            >
-              <Icon name="plus" size={15} /> Add a vessel
-            </button>
-            {(rows.length > 0 || newRows.length > 0 || showEnrichSpinner) && (
+          {(rows.length > 0 || newRows.length > 0 || showEnrichSpinner) && (
+            <div className="vlib-head-trail">
               <span
                 className="vlib-api-legend"
                 title="Light yellow cells mark particulars filled by web enrichment"
@@ -249,25 +267,39 @@ export default function VesselLibraryView({
                 <span className="vlib-api-swatch" aria-hidden="true" />
                 Yellow cells = from web enrichment
               </span>
-            )}
-          </div>
+              <button
+                type="button"
+                className="tb-btn tb-btn-primary"
+                onClick={() => setModal({ mode: "add", data: { ...BLANK } })}
+              >
+                <Icon name="plus" size={15} /> Add a vessel
+              </button>
+            </div>
+          )}
+          {!(rows.length > 0 || newRows.length > 0 || showEnrichSpinner) && (
+            <button
+              type="button"
+              className="tb-btn tb-btn-primary"
+              onClick={() => setModal({ mode: "add", data: { ...BLANK } })}
+            >
+              <Icon name="plus" size={15} /> Add a vessel
+            </button>
+          )}
         </div>
       </div>
 
-      {(rows.length > 0 || newRows.length > 0 || showEnrichSpinner) && (
-        <div className="vgrid-stats">
-          <LibStat label="Vessels in library" value={rows.length} />
-          {newRows.length > 0 && <LibStat label="New to review" value={newRows.length} />}
-        </div>
-      )}
-
       {error && <div className="vgrid-err">{error}</div>}
 
-      <div className="vgrid-body vlib-body">
+      <div className={`vgrid-body vlib-body${newRows.length > 0 ? " vlib-body--split" : ""}`}>
         {showEnrichSpinner && (
           <div className="vlib-enrich-banner" role="status">
             <span className="spin-ring" />
-            Enriching vessel particulars from web search…
+            <div className="vlib-enrich-copy">
+              <span>Enriching vessel particulars from web search…</span>
+              {enrichTotal > 0 && (
+                <span className="vlib-enrich-meta">{enrichDone}/{enrichTotal} complete ({enrichPct}%)</span>
+              )}
+            </div>
           </div>
         )}
         {loading ? (
@@ -275,7 +307,7 @@ export default function VesselLibraryView({
         ) : (
           <>
           {!loading && newRows.length > 0 && (
-          <div className="vlib-new" style={{ marginBottom: 14 }}>
+          <div className="vlib-new vlib-new--expanded">
             <div className="vlib-new-head">
               <div className="vlib-new-head-text">
                 <span className="vlib-new-badge">New vessels to review</span>
@@ -295,8 +327,8 @@ export default function VesselLibraryView({
                   : `Review all (${newRows.length})`}
               </button>
             </div>
-            <div className="vessel-grid-wrap">
-              <div className="vessel-grid-scroll">
+            <div className="vessel-grid-wrap vlib-new-grid">
+              <div className="vessel-grid-scroll stretch">
                 <table className="vessel-grid vlib-grid">
                   <thead>
                     <tr>
@@ -304,7 +336,7 @@ export default function VesselLibraryView({
                       {COLS.map((c) => (
                         <th key={c.key} className={c.colClass || ""}>{c.label}</th>
                       ))}
-                      <th style={{ width: 120 }}>Review</th>
+                      <th style={{ width: 148 }}>Review</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -312,7 +344,11 @@ export default function VesselLibraryView({
                       <tr key={row.match_key || i} className="vlib-new-row">
                         <td className="vlib-sr">{i + 1}</td>
                         {COLS.map((c) => {
+                          const ready = row.enrichment_ready !== false;
                           const rawVal = row[c.key];
+                          if (!ready && c.key !== "vessel_name") {
+                            return <td key={c.key} className={`${c.colClass || ""} vlib-blank`}>—</td>;
+                          }
                           const display =
                             c.key === "vessel_type"
                               ? (isImoTypeValue(rawVal) ? "" : String(rawVal || "").trim())
@@ -339,12 +375,12 @@ export default function VesselLibraryView({
                           <button
                             type="button"
                             className="tb-btn tb-btn-primary vlib-review-btn"
-                            disabled={showEnrichSpinner}
+                            disabled={row.enrichment_ready === false}
                             onClick={() =>
                               setModal({ mode: "review", data: { ...BLANK, ...row } })
                             }
                           >
-                            Review &amp; add
+                            {row.enrichment_ready === false ? "Enriching…" : "Review & add"}
                           </button>
                         </td>
                       </tr>
@@ -356,7 +392,7 @@ export default function VesselLibraryView({
           </div>
           )}
 
-          <div className="vessel-grid-wrap">
+          <div className={`vessel-grid-wrap vlib-library-pane${newRows.length > 0 ? " vlib-library-pane--compact" : ""}`}>
             <div className="vessel-grid-scroll">
               <table className="vessel-grid vlib-grid">
                 <thead>
@@ -406,6 +442,7 @@ export default function VesselLibraryView({
                               : formatLibCell(c.key, rawVal);
                           const empty = !display || display === "—";
                           const fromApi = isApiSourced(row, c.key);
+                          const isName = c.key === "vessel_name" && row.id;
                           return (
                             <td
                               key={c.key}
@@ -418,7 +455,16 @@ export default function VesselLibraryView({
                                 .join(" ")}
                               title={fromApi ? "Filled from web enrichment" : undefined}
                             >
-                              {empty ? "—" : display}
+                              {isName && !empty ? (
+                                <button
+                                  type="button"
+                                  className={`vlib-q88-name${row.has_q88 ? " has" : ""}`}
+                                  title="Open Q88"
+                                  onClick={(e) => setQ88({ row, anchor: e.currentTarget })}
+                                >
+                                  {display}
+                                </button>
+                              ) : empty ? "—" : display}
                             </td>
                           );
                         })}
@@ -451,6 +497,18 @@ export default function VesselLibraryView({
         )}
       </div>
 
+      {q88 && (
+        <Q88Popover
+          row={q88.row}
+          anchorEl={q88.anchor}
+          onClose={() => setQ88(null)}
+          onSaved={() => {
+            setRows((prev) =>
+              prev.map((r) => (r.id === q88.row.id ? { ...r, has_q88: true } : r))
+            );
+          }}
+        />
+      )}
       {modal && (
         <VesselModal
           mode={modal.mode}

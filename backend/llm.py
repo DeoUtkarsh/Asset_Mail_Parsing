@@ -32,7 +32,11 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-_client = AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY, max_retries=2)
+_client = AsyncAnthropic(
+    api_key=settings.ANTHROPIC_API_KEY,
+    max_retries=1,
+    timeout=20.0,
+)
 
 # Anthropic-supported image media types (others are converted to PNG).
 _IMAGE_MEDIA = {"image/jpeg", "image/png", "image/gif", "image/webp"}
@@ -70,7 +74,7 @@ class _Completions:
         messages: list[dict[str, Any]],
         temperature: float = 0.2,
         max_tokens: int = 1024,
-        timeout: float | None = None,
+        timeout: float | None = 20.0,
         **_ignored: Any,
     ) -> _Response:
         system_parts: list[str] = []

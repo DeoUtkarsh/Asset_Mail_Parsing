@@ -623,6 +623,7 @@ export default function EditableGrid({
     else if (columnId === "vessel_name") parts.push("cell-vname");
     else if (columnId === "region") parts.push("cell-region");
     else if (columnId === "vessel_type") parts.push("cell-vessel-type");
+    else if (columnId === "imo") parts.push("cell-imo");
     if (SINGLE_LINE_COLUMN_IDS.has(columnId)) parts.push("cell-compact");
     if (hasDraftCheck(columnId)) parts.push("has-draft-check");
     return parts.join(" ");

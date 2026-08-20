@@ -9,18 +9,50 @@ function errorDetail(err, fallback) {
   return fallback;
 }
 
-async function request(method, path, body) {
+async function requestOnce(method, path, body, timeoutMs) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   const opts = {
     method,
     headers: { "Content-Type": "application/json" },
+    signal: ctrl.signal,
   };
   if (body !== undefined) opts.body = JSON.stringify(body);
-  const res = await fetch(`${BASE}${path}`, opts);
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(errorDetail(err, `HTTP ${res.status}`));
+  try {
+    const res = await fetch(`${BASE}${path}`, opts);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(errorDetail(err, `HTTP ${res.status}`));
+    }
+    return await res.json();
+  } catch (e) {
+    if (e?.name === "AbortError") {
+      throw new Error("Request timed out. Refresh the page — the backend may still be starting.");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
   }
-  return res.json();
+}
+
+function isRetryable(err) {
+  const msg = String(err?.message || err);
+  return /timed out|Failed to fetch|NetworkError|Backend unavailable|ECONNRESET|Executor shutdown|502/i.test(msg);
+}
+
+async function request(method, path, body, { timeoutMs = 20000 } = {}) {
+  const attempts = method === "GET" ? 4 : 1;
+  let lastErr;
+  for (let i = 1; i <= attempts; i += 1) {
+    try {
+      return await requestOnce(method, path, body, timeoutMs);
+    } catch (e) {
+      lastErr = e;
+      if (i === attempts || !isRetryable(e)) throw e;
+      await new Promise((r) => setTimeout(r, 400 * i));
+    }
+  }
+  throw lastErr;
 }
 
 /** Validate user_id + password (demo admin or DB user). */
@@ -139,6 +171,18 @@ export const getContacts = () => request("GET", "/contacts");
 export const updateBrokerContact = (contactId, fields) =>
   request("PUT", `/contacts/${contactId}`, fields);
 
+/** Upload CSV / Excel / JSON / PDF into Owners directory. Does not change email contacts. */
+export async function uploadOwnersCsv(file) {
+  const body = new FormData();
+  body.append("file", file);
+  const res = await fetch(`${BASE}/contacts/owners-csv`, { method: "POST", body });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(errorDetail(err, `HTTP ${res.status}`));
+  }
+  return res.json();
+}
+
 /** Update broker emails/phones for one attachment (vessel grid). */
 export const updateAttachmentContacts = (attId, { signature_emails, signature_phones }) =>
   request("PUT", `/attachments/${attId}/contacts`, { signature_emails, signature_phones });
@@ -181,3 +225,38 @@ export const updateVesselLibrary = (id, fields) => request("PUT", `/vessel-libra
 
 /** Delete one vessel from the library. */
 export const deleteVesselLibrary = (id) => request("DELETE", `/vessel-library/${id}`);
+
+/** Latest Q88 extract for one library vessel. */
+export const getVesselQ88 = (vesselId) => request("GET", `/vessel-library/${vesselId}/q88`);
+
+/** Upload a Q88 PDF. Replaces any previous extract for that vessel. */
+export async function uploadVesselQ88(vesselId, file, { ignoreMismatch = false } = {}) {
+  const body = new FormData();
+  body.append("file", file);
+  const q = ignoreMismatch ? "?ignore_mismatch=true" : "";
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 180000);
+  try {
+    const res = await fetch(`${BASE}/vessel-library/${encodeURIComponent(vesselId)}/q88${q}`, {
+      method: "POST",
+      body,
+      signal: ctrl.signal,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 409) {
+      const detail = data.detail && typeof data.detail === "object" ? data.detail : { message: data.detail };
+      const err = new Error(detail.message || "This PDF may be for a different vessel.");
+      err.mismatch = detail;
+      throw err;
+    }
+    if (!res.ok) throw new Error(errorDetail(data, `HTTP ${res.status}`));
+    return data;
+  } catch (e) {
+    if (e?.name === "AbortError") {
+      throw new Error("Q88 extract timed out. Try again.");
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}

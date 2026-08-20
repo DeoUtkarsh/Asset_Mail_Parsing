@@ -192,12 +192,13 @@ export default function ValidationView({ draftEmailId, refreshKey = 0, isActive 
       setEditMode(false);
       editSnapshot.current = null;
       flashSaved();
+      await load();
     } catch (e) {
       setError("Failed to save: " + e.message);
     } finally {
       setEditSaving(false);
     }
-  }, []);
+  }, [load]);
 
   const handleAddPosition = useCallback(async (form) => {
     setAddSaving(true);

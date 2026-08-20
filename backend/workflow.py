@@ -22,6 +22,8 @@ from agents.contact_extract import run_parent_contact_extraction
 from database import supabase
 from sse_manager import sse_manager
 
+import pipeline_log as plog
+
 import logging
 logger = logging.getLogger(__name__)
 
@@ -57,12 +59,27 @@ async def ingestion_node(state: Phase1State) -> Phase1State:
             min_uid_val = int(raw) if raw not in (None, "") else -1
         except (TypeError, ValueError):
             min_uid_val = -1
-        # < 0 means unrestricted (manual Fetch). >= 0 is IDLE watermark (0 = only UID 1:*).
-        result = await run_ingestion(
-            state["job_id"],
-            date_from=(state.get("date_from") or None),
-            date_to=(state.get("date_to") or None),
-            min_uid=min_uid_val if min_uid_val >= 0 else None,
+        with plog.step(
+            "Phase1",
+            "IMAP ingestion",
+            job=state["job_id"][:8],
+            date_from=state.get("date_from") or "any",
+            date_to=state.get("date_to") or "any",
+            min_uid=min_uid_val if min_uid_val >= 0 else "off",
+        ):
+            result = await run_ingestion(
+                state["job_id"],
+                date_from=(state.get("date_from") or None),
+                date_to=(state.get("date_to") or None),
+                min_uid=min_uid_val if min_uid_val >= 0 else None,
+            )
+        plog.info(
+            "Phase1",
+            "Ingestion result",
+            emails=len(result["email_ids"]),
+            attachments=result["attachment_count"],
+            new=result.get("new_count", 0),
+            found=result.get("total_found", 0),
         )
         return {
             **state,
@@ -72,6 +89,7 @@ async def ingestion_node(state: Phase1State) -> Phase1State:
             "max_imap_uid": int(result.get("max_imap_uid") or 0),
         }
     except Exception as exc:
+        plog.exception("Phase1", "Ingestion failed", job=state["job_id"][:8])
         return {**state, "error": str(exc)}
 
 
@@ -86,23 +104,29 @@ async def process_emails_node(state: Phase1State) -> Phase1State:
     email_ids = state.get("email_ids") or []
     attachment_ids = state.get("attachment_ids") or []
     if not email_ids:
-        logger.info("[Phase1] No new emails — skipping processing.")
+        plog.info("Phase1", "No new emails — skipping processing", job=state["job_id"][:8])
         return state
 
     columns: list[str] = []
     seen: set[str] = set()
 
     try:
-        # ── 1) Vessels for every new attachment (parallel inside run_extraction)
         if attachment_ids:
+            plog.info(
+                "Phase1",
+                "Vessel extraction starting",
+                job=state["job_id"][:8],
+                attachments=len(attachment_ids),
+            )
             await sse_manager.send(state["job_id"], "vessels_phase_started", {
                 "email_ids": email_ids,
                 "attachment_ids": attachment_ids,
                 "message": "Extracting vessels…",
             })
-            await run_extraction(state["job_id"], attachment_ids)
+            total_v = await run_extraction(state["job_id"], attachment_ids)
+            plog.info("Phase1", "Vessel extraction done", vessels=total_v)
 
-        # ── 2) Normalize column schema per parent
+        plog.info("Phase1", "Normalization", emails=len(email_ids))
         for email_id in email_ids:
             try:
                 superset = await run_normalization(state["job_id"], email_id)
@@ -113,7 +137,7 @@ async def process_emails_node(state: Phase1State) -> Phase1State:
             except Exception as norm_exc:
                 logger.exception("[Phase1] Normalization failed for %s: %s", email_id, norm_exc)
 
-        # ── 3) Signature + contacts per mail; only then mark ready / openable
+        plog.info("Phase1", "Contact extraction", emails=len(email_ids))
         await sse_manager.send(state["job_id"], "contacts_phase_started", {
             "email_ids": email_ids,
             "message": "Vessel extraction done — extracting contacts…",
@@ -132,10 +156,12 @@ async def process_emails_node(state: Phase1State) -> Phase1State:
                 "email_id": email_id,
                 "attachment_ids": att_ids,
             })
+            plog.info("Phase1", "Processing email", email_id=email_id[:8], attachments=len(att_ids))
             try:
                 await run_parent_signature_extraction(state["job_id"], email_id)
                 await run_parent_contact_extraction(state["job_id"], email_id)
             except Exception as sig_exc:
+                plog.exception("Phase1", "Signature/contact failed", email_id=email_id[:8])
                 logger.exception(
                     "[Phase1] Signature/contact extraction failed for %s: %s",
                     email_id,
@@ -150,7 +176,7 @@ async def process_emails_node(state: Phase1State) -> Phase1State:
                 "email_id": email_id,
                 "attachment_ids": att_ids,
             })
-            logger.info("[Phase1] Email ready (vessels + contacts) — %s", email_id)
+            plog.info("Phase1", "Email ready", email_id=email_id[:8])
 
         return {**state, "superset_columns": columns}
     except Exception as exc:
@@ -161,18 +187,22 @@ async def drafter_node(state: Phase2State) -> Phase2State:
     if state.get("error"):
         return state
     try:
-        logger.info(
-            "[Phase2] Generating consolidated draft for %d vessels",
-            len(state["vessels"]),
-        )
-        draft_html, zones = await run_drafter(
-            state["job_id"],
-            state["email_id"],
-            state["vessels"],
-            state.get("grid_columns") or None,
-        )
+        with plog.step(
+            "Phase2",
+            "Draft email",
+            job=state["job_id"][:8],
+            vessels=len(state["vessels"]),
+        ):
+            draft_html, zones = await run_drafter(
+                state["job_id"],
+                state["email_id"],
+                state["vessels"],
+                state.get("grid_columns") or None,
+            )
+        plog.info("Phase2", "Draft ready", zones=len(zones), chars=len(draft_html))
         return {**state, "draft_html": draft_html, "zones": zones}
     except Exception as exc:
+        plog.exception("Phase2", "Draft failed", job=state["job_id"][:8])
         return {**state, "error": str(exc)}
 
 

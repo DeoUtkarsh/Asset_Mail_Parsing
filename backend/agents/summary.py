@@ -17,6 +17,7 @@ from database import supabase
 from llm import claude_client
 from agents.drafter import REGION_TO_ZONE, ZONE_ORDER
 from agents.confidence_score import attachment_needs_review, compute_attachment_confidence
+import pipeline_log as plog
 
 logger = logging.getLogger(__name__)
 
@@ -379,6 +380,7 @@ def _load_vessels_by_ids(vessel_ids: list[str] | None) -> list[dict[str, Any]]:
 
 
 async def summarize_inbox(email_ids: list[str] | None = None) -> dict[str, Any]:
+    plog.info("Summary", "▶ inbox summary", emails=len(email_ids) if email_ids else "all")
     emails_q = supabase.table("parent_emails").select("id, status, subject, sender, date_received")
     if email_ids:
         if not email_ids:
@@ -455,15 +457,18 @@ async def summarize_inbox(email_ids: list[str] | None = None) -> dict[str, Any]:
         "email_status": facts["email_status"],
     }
     narrative = await _generate_narrative(brief, "inbox")
+    plog.info("Summary", "✓ inbox summary", emails=len(emails), vessels=len(vessels))
     return _pack("inbox", narrative, facts)
 
 
 async def summarize_vessels(vessel_ids: list[str] | None = None) -> dict[str, Any]:
     """Position List match brief — ranked hot list + incomplete rows (no LLM fluff)."""
+    plog.info("Summary", "▶ vessels summary", vessels=len(vessel_ids) if vessel_ids else "all")
     vessels = _load_vessels_by_ids(vessel_ids)
     scope = "selected_vessels" if vessel_ids else "all_vessels"
     facts = _build_match_brief(vessels, scope)
     narrative = _match_brief_copy_text(facts)
+    plog.info("Summary", "✓ vessels summary", count=len(vessels))
     return _pack("vessels", narrative, facts)
 
 
@@ -654,6 +659,8 @@ async def summarize_home(day: str | None = None, tz_name: str = "UTC") -> dict[s
     from zoneinfo import ZoneInfo
 
     MANUAL_ENTRIES_MESSAGE_ID = "manual-entries"
+    OWNERS_LIST_MESSAGE_ID = "owners-list-import"
+    HIDDEN_INBOX_MESSAGE_IDS = frozenset({MANUAL_ENTRIES_MESSAGE_ID, OWNERS_LIST_MESSAGE_ID})
 
     def _resolve_tz(name: str | None) -> tuple[tzinfo, str]:
         raw = (name or "UTC").strip() or "UTC"
@@ -675,11 +682,12 @@ async def summarize_home(day: str | None = None, tz_name: str = "UTC") -> dict[s
     else:
         target = datetime.now(tz).date()
     day_str = target.isoformat()
+    plog.info("Summary", "▶ home summary", day=day_str, tz=tz_name)
 
     emails = (
         supabase.table("parent_emails").select("id, status, message_id, date_received").execute()
     ).data or []
-    emails = [e for e in emails if e.get("message_id") != MANUAL_ENTRIES_MESSAGE_ID]
+    emails = [e for e in emails if e.get("message_id") not in HIDDEN_INBOX_MESSAGE_IDS]
 
     def _local_day(raw: str | None):
         if not raw:
@@ -802,16 +810,26 @@ async def summarize_home(day: str | None = None, tz_name: str = "UTC") -> dict[s
         "readiness_pct": readiness_pct,
         "summary_day": day_str,
     }
-    # Keep Home refresh snappy: don't hang the whole dashboard on a slow LLM.
+    # Home KPIs must never wait on Claude — a hung LLM used to freeze every tab.
+    narrative = _fallback_narrative(brief, "home")
     try:
-        narrative = await asyncio.wait_for(_generate_narrative(brief, "home"), timeout=4.0)
-    except asyncio.TimeoutError:
-        logger.warning("[Summary] home narrative timed out — using fallback")
+        narrative = await asyncio.wait_for(_generate_narrative(brief, "home"), timeout=3.0)
+    except Exception:
+        plog.warn("Summary", "Home narrative skipped — using fallback", day=day_str)
         narrative = _fallback_narrative(brief, "home")
+    plog.info(
+        "Summary",
+        "✓ home summary",
+        day=day_str,
+        emails=len(emails),
+        positions=positions_parsed,
+        review=review_count,
+    )
     return _pack("home", narrative, facts)
 
 
 async def summarize_contacts(contact_ids: list[str] | None = None) -> dict[str, Any]:
+    plog.info("Summary", "▶ contacts summary", contacts=len(contact_ids) if contact_ids else "all")
     q = supabase.table("broker_contacts").select(
         "id, company, contact_name, email, off_phone, mob_phone, vessel_name, used_fallback"
     )
@@ -857,6 +875,7 @@ async def summarize_contacts(contact_ids: list[str] | None = None) -> dict[str, 
         "top_companies": [{"name": n, "count": c} for n, c in companies.most_common(5)],
     }
     narrative = await _generate_narrative(brief, "contacts")
+    plog.info("Summary", "✓ contacts summary", count=len(rows))
     return _pack("contacts", narrative, facts)
 
 
@@ -966,7 +985,8 @@ async def _generate_narrative(brief: dict[str, Any], context: str) -> str:
     system = system_prompts.get(context, system_prompts["vessels"])
     fallback = _fallback_narrative(brief, context)
     try:
-        resp = await claude_client.chat.completions.create(
+        with plog.step("Summary", f"LLM narrative ({context})"):
+            resp = await claude_client.chat.completions.create(
             model=settings.CLAUDE_MODEL,
             messages=[
                 {"role": "system", "content": system},
@@ -981,7 +1001,7 @@ async def _generate_narrative(brief: dict[str, Any], context: str) -> str:
         text = (resp.choices[0].message.content or "").strip()
         return _sanitize_narrative(text, fallback)
     except Exception as exc:
-        logger.warning("[Summary] LLM failed (%s), using fallback", exc)
+        plog.warn("Summary", "LLM failed — using fallback", context=context, error=str(exc)[:80])
         return fallback
 
 

@@ -671,6 +671,17 @@ export default function InboxView({
     [mailRows, selectedId]
   );
 
+  const visibleSelectedRow = useMemo(() => {
+    if (!selectedId) return null;
+    return filteredRows.find((r) => r.id === selectedId) || null;
+  }, [filteredRows, selectedId]);
+
+  // Clear right pane when the selected mail isn't on the current day / filter view.
+  useEffect(() => {
+    if (!selectedId) return;
+    if (!visibleSelectedRow) setSelectedId(null);
+  }, [viewDay, visibleSelectedRow, selectedId, setSelectedId]);
+
   // Close preview if selected mail is no longer openable (still downloading)
   useEffect(() => {
     if (!selectedRow) return;
@@ -952,18 +963,18 @@ export default function InboxView({
 
         {/* ── Right: detail pane ── */}
         <div className="inbox-detail">
-          {selectedRow && isOpenable(resolveAttStatus(selectedRow)) ? (
+          {visibleSelectedRow && isOpenable(resolveAttStatus(visibleSelectedRow)) ? (
             <PreviewPanel
-              key={selectedRow.id}
-              attachmentId={selectedRow.id}
-              filename={selectedRow.filename}
-              emailId={selectedRow.email.id}
-              initialVerified={Boolean(selectedRow.is_verified)}
-              vesselCount={selectedRow.vessel_count || 0}
+              key={visibleSelectedRow.id}
+              attachmentId={visibleSelectedRow.id}
+              filename={visibleSelectedRow.filename}
+              emailId={visibleSelectedRow.email.id}
+              initialVerified={Boolean(visibleSelectedRow.is_verified)}
+              vesselCount={visibleSelectedRow.vessel_count || 0}
               showVerify
               showEdit
               onVerifiedChange={(isVerified) => {
-                patchAttachmentVerified(selectedRow.id, isVerified);
+                patchAttachmentVerified(visibleSelectedRow.id, isVerified);
                 onVesselsUpdated?.();
                 loadEmails();
               }}

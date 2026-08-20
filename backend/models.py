@@ -70,6 +70,12 @@ class UpdateBrokerContactRequest(BaseModel):
     office_address: Optional[str] = None
     other_info: Optional[str] = None
     status: Optional[str] = None
+    country: Optional[str] = None
+    city: Optional[str] = None
+    trade: Optional[str] = None
+    role: Optional[str] = None
+    fax: Optional[str] = None
+    source: Optional[str] = None
 
 
 class UpdateVesselRequest(BaseModel):

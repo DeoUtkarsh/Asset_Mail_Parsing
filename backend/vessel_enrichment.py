@@ -14,6 +14,7 @@ import json
 import logging
 import re
 import time
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any
 
@@ -21,6 +22,8 @@ from anthropic import Anthropic
 
 from config import settings
 from sse_manager import sse_manager
+
+import pipeline_log as plog
 
 logger = logging.getLogger(__name__)
 
@@ -45,11 +48,18 @@ _STATUS: dict[str, Any] = {
     "done": 0,
     "total": 0,
     "matched": 0,
+    "pending": 0,
     "provider": PROVIDER,
     "error": "",
     "started_at": "",
     "finished_at": "",
 }
+
+_QUEUE: deque[tuple[Any, dict[str, Any], str]] = deque()
+_QUEUED_KEYS: set[str] = set()
+_ACTIVE_KEYS: set[str] = set()
+_ACTIVE_ROW_STATUS: dict[str, str] = {}
+_WORKER_TASK: asyncio.Task | None = None
 
 _PROMPT = """You are looking up ship particulars for a shipbroker vessel library.
 
@@ -83,7 +93,10 @@ Rules:
 
 
 def get_enrichment_status() -> dict[str, Any]:
-    return dict(_STATUS)
+    out = dict(_STATUS)
+    out["pending"] = len(_QUEUED_KEYS) + len(_ACTIVE_KEYS)
+    out["running"] = bool(_WORKER_TASK and not _WORKER_TASK.done()) or bool(out["pending"])
+    return out
 
 
 def _clean(val: Any) -> str:
@@ -113,6 +126,11 @@ def _parse_api_sourced(raw: Any) -> list[str]:
         except Exception:  # noqa: BLE001
             return []
     return []
+
+
+def _cache_payload_status(payload: dict[str, Any]) -> str:
+    status = _clean(payload.get("_status"))
+    return status or ""
 
 
 def _extract_json(text: str) -> dict[str, Any]:
@@ -192,13 +210,23 @@ def apply_enrichment_to_row(row: dict[str, Any], flat: dict[str, Any]) -> dict[s
     return out
 
 
-def _cache_upsert(db, match_key: str, row: dict[str, Any], provider: str) -> None:
+def _cache_upsert(
+    db,
+    match_key: str,
+    row: dict[str, Any],
+    provider: str,
+    *,
+    status: str = "done",
+    error: str = "",
+) -> None:
     if not match_key:
         return
     payload = {f: _clean(row.get(f)) for f in ENRICH_FIELDS}
     payload["vessel_name"] = _clean(row.get("vessel_name"))
     payload["year_built"] = _clean(row.get("year_built"))
     payload["dwt"] = _clean(row.get("dwt"))
+    payload["_status"] = status
+    payload["_error"] = error[:300] if error else ""
     data = {
         "match_key": match_key,
         "payload": payload,
@@ -237,6 +265,14 @@ def _cache_load_all(db) -> dict[str, dict[str, Any]]:
     return out
 
 
+def _row_runtime_status(key: str) -> str:
+    if key in _ACTIVE_KEYS:
+        return _ACTIVE_ROW_STATUS.get(key) or "running"
+    if key in _QUEUED_KEYS:
+        return "pending"
+    return ""
+
+
 def merge_cache_into_rows(db, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Apply enrichment cache onto pending / library rows for API responses."""
     if not rows:
@@ -249,9 +285,12 @@ def merge_cache_into_rows(db, rows: list[dict[str, Any]]) -> list[dict[str, Any]
         row = dict(r)
         row["api_sourced"] = _parse_api_sourced(row.get("api_sourced"))
         key = _clean(row.get("match_key")) or match_key_from_particulars(row)
+        row["match_key"] = key
         hit = cache.get(key)
+        cache_status = ""
         if hit:
             payload = hit.get("payload") or {}
+            cache_status = _cache_payload_status(payload)
             sourced = set(row["api_sourced"])
             for f in ENRICH_FIELDS:
                 val = _clean(payload.get(f))
@@ -264,6 +303,10 @@ def merge_cache_into_rows(db, rows: list[dict[str, Any]]) -> list[dict[str, Any]
             row["api_sourced"] = sorted(sourced)
             if hit.get("provider"):
                 row["enrichment_provider"] = hit["provider"]
+        live_status = _row_runtime_status(key)
+        status = cache_status or live_status or ("done" if not _needs_enrichment(row) else "pending")
+        row["enrichment_status"] = status
+        row["enrichment_ready"] = status in {"done", "miss", "error"}
         merged.append(row)
     return merged
 
@@ -304,6 +347,32 @@ def _collect_targets(db, *, missing_only: bool = True) -> list[dict[str, Any]]:
     return out
 
 
+def _enqueue_targets(db, targets: list[dict[str, Any]], job_id: str) -> int:
+    cache = _cache_load_all(db)
+    added = 0
+    for src in targets:
+        key = _clean(src.get("match_key"))
+        if not key:
+            continue
+        payload = (cache.get(key) or {}).get("payload") or {}
+        if _cache_payload_status(payload) in {"done", "miss", "error"}:
+            continue
+        if key in _QUEUED_KEYS or key in _ACTIVE_KEYS:
+            continue
+        _QUEUE.append((db, dict(src), job_id))
+        _QUEUED_KEYS.add(key)
+        added += 1
+    return added
+
+
+def _ensure_worker_started() -> None:
+    global _WORKER_TASK
+    if _WORKER_TASK and not _WORKER_TASK.done():
+        return
+    loop = asyncio.get_running_loop()
+    _WORKER_TASK = loop.create_task(_drain_enrichment_queue(), name="vessel-enrichment-queue")
+
+
 def _persist_library_row(db, row: dict[str, Any]) -> None:
     row_id = row.get("id")
     if not row_id:
@@ -312,6 +381,40 @@ def _persist_library_row(db, row: dict[str, Any]) -> None:
     patch["api_sourced"] = row.get("api_sourced") or []
     patch["updated_at"] = datetime.now(timezone.utc).isoformat()
     db.table("vessel_library").update(patch).eq("id", row_id).execute()
+
+
+def _enrich_one_target_sync(db, client: "_WebSearchClient", src: dict[str, Any]) -> dict[str, Any]:
+    name = _clean(src.get("vessel_name")) or "?"
+    flat = search_claude_web(client, src)
+    match_key = _clean(src.get("match_key"))
+    if flat.get("matched"):
+        updated = apply_enrichment_to_row(src, flat)
+        if updated.get("id"):
+            _persist_library_row(db, updated)
+        _cache_upsert(db, match_key, updated, PROVIDER, status="done")
+        status = "HIT"
+    else:
+        updated = dict(src)
+        _cache_upsert(db, match_key, updated, PROVIDER, status="miss", error=flat.get("notes") or "")
+        status = "MISS"
+    return {
+        "matched": bool(flat.get("matched")),
+        "row": {
+            "vessel_name": name,
+            "year_built": _clean(src.get("year_built")),
+            "dwt": _clean(src.get("dwt")),
+            "source": src.get("_source"),
+            "status": status,
+            "imo_no": flat.get("imo_no") or "",
+            "call_sign": flat.get("call_sign") or "",
+            "vessel_type": flat.get("vessel_type") or "",
+            "flag": flat.get("flag") or "",
+            "matched_name": flat.get("matched_name") or "",
+            "confidence": flat.get("confidence") or "",
+            "notes": flat.get("notes") or "",
+            "web_search_requests": flat.get("web_search_requests"),
+        },
+    }
 
 
 class _WebSearchClient:
@@ -397,33 +500,12 @@ def enrich_targets_sync(
     for i, src in enumerate(targets, 1):
         name = _clean(src.get("vessel_name")) or "?"
         try:
-            flat = search_claude_web(client, src)
-            if flat.get("matched"):
-                updated = apply_enrichment_to_row(src, flat)
-                if updated.get("id"):
-                    _persist_library_row(db, updated)
-                _cache_upsert(db, updated.get("match_key") or "", updated, PROVIDER)
+            result = _enrich_one_target_sync(db, client, src)
+            row_result = result["row"]
+            if result["matched"]:
                 matched += 1
-                status = "HIT"
             else:
                 misses += 1
-                status = "MISS"
-                updated = dict(src)
-            row_result = {
-                "vessel_name": name,
-                "year_built": _clean(src.get("year_built")),
-                "dwt": _clean(src.get("dwt")),
-                "source": src.get("_source"),
-                "status": status,
-                "imo_no": flat.get("imo_no") or "",
-                "call_sign": flat.get("call_sign") or "",
-                "vessel_type": flat.get("vessel_type") or "",
-                "flag": flat.get("flag") or "",
-                "matched_name": flat.get("matched_name") or "",
-                "confidence": flat.get("confidence") or "",
-                "notes": flat.get("notes") or "",
-                "web_search_requests": flat.get("web_search_requests"),
-            }
             rows_out.append(row_result)
             if on_progress:
                 on_progress(i, len(targets), matched, row_result)
@@ -432,6 +514,14 @@ def enrich_targets_sync(
         except Exception as exc:  # noqa: BLE001
             errors += 1
             logger.warning("[Enrich] %s failed: %s", name, exc)
+            _cache_upsert(
+                db,
+                _clean(src.get("match_key")),
+                src,
+                PROVIDER,
+                status="error",
+                error=str(exc),
+            )
             _STATUS["done"] = i
             _STATUS["error"] = str(exc)
             rows_out.append({
@@ -456,7 +546,7 @@ def enrich_targets_sync(
 
 
 async def run_vessel_library_enrichment(job_id: str, db=None) -> dict[str, Any]:
-    """Look up missing particulars via Claude web search after phase1_complete."""
+    """Queue missing vessel particulars for incremental Claude web enrichment."""
     from database import supabase as default_db
 
     db = db or default_db
@@ -472,64 +562,115 @@ async def run_vessel_library_enrichment(job_id: str, db=None) -> dict[str, Any]:
         return {"skipped": True, "matched": 0, "total": 0}
 
     if _STATUS.get("running"):
-        logger.info("[Enrich] Already running — skip overlapping job")
-        return {"skipped": True, "reason": "already_running"}
+        targets = _collect_targets(db, missing_only=True)
+        added = _enqueue_targets(db, targets, job_id)
+        if added:
+            _STATUS["total"] += added
+        return {"queued": added, "running": True}
 
     targets = _collect_targets(db, missing_only=True)
+    if not targets:
+        return {"matched": 0, "total": 0}
+    added = _enqueue_targets(db, targets, job_id)
+    if not added:
+        return {"queued": 0, "total": 0}
     _STATUS.update({
         "running": True,
-        "job_id": job_id or "",
-        "done": 0,
-        "total": len(targets),
-        "matched": 0,
+        "job_id": job_id or _STATUS.get("job_id") or "",
+        "done": 0 if not _STATUS.get("pending") else _STATUS.get("done", 0),
+        "total": added if not _STATUS.get("pending") else _STATUS.get("total", 0) + added,
+        "matched": 0 if not _STATUS.get("pending") else _STATUS.get("matched", 0),
+        "pending": len(_QUEUED_KEYS) + len(_ACTIVE_KEYS),
         "provider": PROVIDER,
         "error": "",
-        "started_at": datetime.now(timezone.utc).isoformat(),
+        "started_at": _STATUS.get("started_at") or datetime.now(timezone.utc).isoformat(),
         "finished_at": "",
     })
+    plog.info("Enrich", "▶ library enrichment", job=job_id[:8] if job_id else "", targets=_STATUS["total"])
     await _emit(job_id, "vessel_library_enrichment_started", {
-        "total": len(targets),
+        "total": _STATUS["total"],
+        "done": _STATUS["done"],
         "message": "Enriching vessel library via Claude web search…",
     })
+    _ensure_worker_started()
+    return {"queued": added, "total": _STATUS["total"], "running": True}
 
-    if not targets:
+
+async def _drain_enrichment_queue() -> None:
+    from database import supabase as default_db
+
+    api_key = (getattr(settings, "ANTHROPIC_API_KEY", None) or "").strip()
+    if not api_key:
         _STATUS["running"] = False
-        _STATUS["finished_at"] = datetime.now(timezone.utc).isoformat()
-        await _emit(job_id, "vessel_library_enrichment_done", {
-            "matched": 0, "total": 0, "message": "Nothing to enrich",
-        })
-        return {"matched": 0, "total": 0}
-
-    matched = 0
-    errors = 0
+        return
+    model = (getattr(settings, "CLAUDE_MODEL", None) or "claude-haiku-4-5").strip()
+    client = _WebSearchClient(api_key, model)
     try:
-        def _on_progress(i, total, m, row):
-            _STATUS["done"] = i
-            _STATUS["matched"] = m
-
-        result = await asyncio.to_thread(
-            enrich_targets_sync, db, targets, on_progress=_on_progress
-        )
-        matched = int(result.get("matched") or 0)
-        errors = int(result.get("errors") or 0)
+        client.ensure_tool()
+        while _QUEUE:
+            db, src, job_id = _QUEUE.popleft()
+            db = db or default_db
+            key = _clean(src.get("match_key"))
+            if key:
+                _QUEUED_KEYS.discard(key)
+                _ACTIVE_KEYS.add(key)
+                _ACTIVE_ROW_STATUS[key] = "running"
+            try:
+                result = await asyncio.to_thread(_enrich_one_target_sync, db, client, src)
+                if result.get("matched"):
+                    _STATUS["matched"] = int(_STATUS.get("matched") or 0) + 1
+                await _emit(job_id, "vessel_library_enrichment_progress", {
+                    "done": int(_STATUS.get("done") or 0) + 1,
+                    "total": _STATUS.get("total") or 0,
+                    "matched": _STATUS.get("matched") or 0,
+                    "row": result.get("row") or {},
+                })
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[Enrich] %s failed: %s", _clean(src.get("vessel_name")) or "?", exc)
+                _cache_upsert(
+                    db,
+                    key,
+                    src,
+                    PROVIDER,
+                    status="error",
+                    error=str(exc),
+                )
+                _STATUS["error"] = str(exc)
+            finally:
+                _STATUS["done"] = int(_STATUS.get("done") or 0) + 1
+                if key:
+                    _ACTIVE_KEYS.discard(key)
+                    _ACTIVE_ROW_STATUS.pop(key, None)
+                _STATUS["pending"] = len(_QUEUED_KEYS) + len(_ACTIVE_KEYS)
+                time.sleep(0.05)
     except Exception as exc:  # noqa: BLE001
         logger.exception("[Enrich] Crashed: %s", exc)
         _STATUS["error"] = str(exc)
-        errors += 1
     finally:
         _STATUS["running"] = False
+        _STATUS["pending"] = 0
         _STATUS["finished_at"] = datetime.now(timezone.utc).isoformat()
-        _STATUS["matched"] = matched
-        await _emit(job_id, "vessel_library_enrichment_done", {
-            "matched": matched,
-            "total": len(targets),
-            "errors": errors,
+        await _emit(_STATUS.get("job_id") or "live", "vessel_library_enrichment_done", {
+            "matched": _STATUS.get("matched") or 0,
+            "total": _STATUS.get("total") or 0,
             "provider": PROVIDER,
-            "message": f"Vessel library enrichment done ({matched}/{len(targets)} matched)",
+            "message": f"Vessel library enrichment done ({_STATUS.get('matched') or 0}/{_STATUS.get('total') or 0} matched)",
         })
-        logger.info(
-            "[Enrich] Done matched=%d total=%d errors=%d",
-            matched, len(targets), errors,
+        plog.info(
+            "Enrich",
+            "✓ library enrichment done",
+            matched=_STATUS.get("matched") or 0,
+            total=_STATUS.get("total") or 0,
+            errors=1 if _STATUS.get("error") else 0,
         )
+        try:
+            from vessel_sync import backfill_positions_from_library
 
-    return {"matched": matched, "total": len(targets), "errors": errors}
+            sync_stats = backfill_positions_from_library(default_db, only_empty=True)
+            if sync_stats.get("updated"):
+                logger.info(
+                    "[Enrich] Library→position backfill: %d row(s) updated",
+                    sync_stats["updated"],
+                )
+        except Exception as sync_exc:  # noqa: BLE001
+            logger.warning("[Enrich] Position backfill after enrichment failed: %s", sync_exc)

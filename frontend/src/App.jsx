@@ -159,6 +159,7 @@ function MainApp({ onLogout, authUser, authPass }) {
   const [homeLoading, setHomeLoading] = useState(false);
   const [homeError, setHomeError] = useState("");
   const homeLoadedKey = useRef(-1);
+  const homeSummaryRef = useRef(null);
   const [toastMsg, setToastMsg] = useState(null);
   const toastTimer = useRef(null);
   const toast = useCallback((m) => { setToastMsg(m); clearTimeout(toastTimer.current); toastTimer.current = setTimeout(() => setToastMsg(null), 2400); }, []);
@@ -350,7 +351,7 @@ function MainApp({ onLogout, authUser, authPass }) {
   const homeReqId = useRef(0);
   const loadHome = useCallback(async () => {
     const reqId = ++homeReqId.current;
-    setHomeLoading(true);
+    if (!homeSummaryRef.current) setHomeLoading(true);
     setHomeError("");
     try {
       const res = await getHomeSummary({
@@ -359,6 +360,7 @@ function MainApp({ onLogout, authUser, authPass }) {
       });
       if (reqId !== homeReqId.current) return;
       setHomeSummary(res);
+      homeSummaryRef.current = res;
       homeLoadedKey.current = homeRefreshKey;
     } catch (e) {
       if (reqId !== homeReqId.current) return;
@@ -375,8 +377,6 @@ function MainApp({ onLogout, authUser, authPass }) {
   const syncHomeIfReviewCountChanged = useCallback(() => {
     if (viewRef.current === "home") {
       setHomeRefreshKey((k) => k + 1);
-    } else {
-      homeLoadedKey.current = -1;
     }
   }, []);
 

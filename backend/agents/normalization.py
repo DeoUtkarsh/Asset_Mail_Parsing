@@ -7,6 +7,7 @@ validation grid has a uniform, predictable schema.
 import logging
 from typing import Any
 
+import pipeline_log as plog
 from database import supabase
 from sse_manager import sse_manager
 
@@ -71,33 +72,35 @@ async def run_normalization(job_id: str, email_id: str) -> list[str]:
         "message": "Building superset column schema…",
     })
 
-    # Fetch all vessels for this email via the join view
-    rows = (
-        supabase.table("vessels_full")
-        .select("id, dynamic_data")
-        .eq("parent_email_id", email_id)
-        .execute()
-    )
-    vessels = rows.data or []
+    with plog.step("Phase1", "Normalization", email_id=email_id[:8]):
+        rows = (
+            supabase.table("vessels_full")
+            .select("id, dynamic_data")
+            .eq("parent_email_id", email_id)
+            .execute()
+        )
+        vessels = rows.data or []
 
-    if not vessels:
-        logger.warning("No vessels found for email_id=%s during normalization.", email_id)
-        await sse_manager.send(job_id, "normalization_done", {
-            "email_id": email_id,
-            "column_count": 0,
-            "vessel_count": 0,
-            "columns": [],
-        })
-        return []
+        if not vessels:
+            plog.warn("Phase1", "No vessels for normalization", email_id=email_id[:8])
+            await sse_manager.send(job_id, "normalization_done", {
+                "email_id": email_id,
+                "column_count": 0,
+                "vessel_count": 0,
+                "columns": [],
+            })
+            return []
 
-    superset = _build_superset(vessels)
+        superset = _build_superset(vessels)
 
-    # Back-fill missing keys with "" for each vessel
-    for vessel in vessels:
-        original: dict = vessel.get("dynamic_data") or {}
-        updated = {key: original.get(key, "") for key in superset}
-        if updated != original:
-            supabase.table("vessels").update({"dynamic_data": updated}).eq("id", vessel["id"]).execute()
+        # Back-fill missing keys with "" for each vessel
+        for vessel in vessels:
+            original: dict = vessel.get("dynamic_data") or {}
+            updated = {key: original.get(key, "") for key in superset}
+            if updated != original:
+                supabase.table("vessels").update({"dynamic_data": updated}).eq("id", vessel["id"]).execute()
+
+        plog.info("Phase1", "Normalization done", email_id=email_id[:8], columns=len(superset), vessels=len(vessels))
 
     await sse_manager.send(job_id, "normalization_done", {
         "email_id": email_id,

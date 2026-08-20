@@ -27,6 +27,7 @@ from llm import claude_client, files_to_content_blocks
 from verification import try_auto_verify_attachment
 from email_text import prepare_extraction_text
 from file_storage import read_bytes
+from vessel_enrichment import run_vessel_library_enrichment
 
 # ── NVIDIA NIM (legacy — kept for reference, no longer used) ──────────────────
 # from openai import AsyncOpenAI
@@ -36,6 +37,8 @@ from file_storage import read_bytes
 # )
 
 logger = logging.getLogger(__name__)
+
+import pipeline_log as plog
 
 EXTRACTION_PROMPT = """\
 You are an expert shipbroking data extractor. Extract ALL vessel/ship position data from this email.
@@ -593,6 +596,12 @@ async def _extract_single_attachment(
                 "filename": filename,
             })
 
+        try:
+            # Queue vessel enrichment as soon as an attachment's vessel rows exist.
+            await run_vessel_library_enrichment(job_id, supabase)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[Extract] Could not queue enrichment for %s: %s", filename, exc)
+
         return vessels_data
 
 
@@ -604,7 +613,7 @@ async def run_extraction(job_id: str, attachment_ids: list[str]) -> int:
     if not attachment_ids:
         return 0
 
-    # Fetch attachment metadata
+    plog.info("Extract", "Starting parallel extraction", attachments=len(attachment_ids))
     rows = (
         supabase.table("attachments")
         .select("id, filename, raw_text, preview_html, mail_from, mail_subject, parent_email_id, files")
@@ -653,4 +662,5 @@ async def run_extraction(job_id: str, attachment_ids: list[str]) -> int:
     await sse_manager.send(job_id, "all_extractions_done", {
         "total_vessels": total_vessels,
     })
+    plog.info("Extract", "All attachments done", vessels=total_vessels, attachments=len(attachments))
     return total_vessels

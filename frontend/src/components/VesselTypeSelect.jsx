@@ -22,7 +22,11 @@ export const VESSEL_TYPE_OPTIONS = [
 export function isImoTypeValue(val) {
   const s = String(val || "").trim();
   if (!s) return false;
-  return /^\d+(\/\d+)?$/i.test(s) || /^imo\s*[ivx\d]/i.test(s);
+  if (/^\d{7}$/.test(s)) return false;
+  const norm = s.replace(/\s+/g, "").toLowerCase();
+  if (/^(?:imo)?[123](?:\/[123])*$/.test(norm)) return true;
+  if (/^(?:imo)?(?:i{1,3}|iv)(?:\/(?:i{1,3}|iv))*$/.test(norm)) return true;
+  return false;
 }
 
 export function normalizeVesselType(val) {

@@ -3,10 +3,11 @@ Extract structured broker contact rows from attachment email text (signature / c
 Used by the live fetch pipeline and retry paths.
 
 Pipeline:
-  1) Claude extract (tight prompt — only facts present in the mail)
+  1) Claude extract (tight prompt — contacts from the mail + vessel_name from
+     ships already extracted on the same circular)
   2) Deterministic scrub / merge / signature-email prefer
   3) Claude column-remap — review draft vs email, place into required columns
-  4) Final scrub / merge
+  4) Final scrub / merge; fill empty vessel_name from the vessels table
   If LLM yields nothing → regex/signature fallback (used_fallback=True; never write
   "signature fallback" into other_info).
 """
@@ -31,6 +32,8 @@ from agents.signature_extract import (
     regex_fallback_signature,
 )
 
+import pipeline_log as plog
+
 logger = logging.getLogger(__name__)
 
 CONTACT_FIELD_KEYS = [
@@ -49,25 +52,36 @@ CONTACT_FIELD_KEYS = [
     "office_address",
     "other_info",
     "status",
+    "country",
+    "city",
+    "trade",
+    "role",
+    "fax",
 ]
 
 # Legacy marker only — never written into other_info going forward.
 FALLBACK_OTHER_INFO = "signature fallback"
 
 CONTACT_EXTRACT_PROMPT = """\
-You extract BROKER / CHARTERING CONTACT records from the tail of a shipbroking email (.eml body).
+You extract BROKER / CHARTERING CONTACT records from a shipbroking email (.eml body).
 
 Rules:
 1. Focus on signature blocks, company letterheads, and contact lines
    (Tel, Mobile, Email, WeChat, WhatsApp, website, address).
 2. For fleet position lists dominated by vessel tables, still extract signature /
    contact blocks (usually at the end).
-3. Ignore vessel specification tables (DWT, IMO, ETA, FOC lists).
+3. Do NOT copy vessel specs (DWT, IMO, ETA, FOC, Q88) into contact columns.
+   Ship names go ONLY in `vessel_name` — NEVER in `other_info` / remarks.
+   - If a person is clearly the PIC for one ship, use that ship only.
+   - If contacts sit under a shared position list / desk, put ALL ships named
+     in this email on each of those contacts (semicolon-separated).
+   - Never invent ship names that are not in the email or the VESSELS list below.
 4. Return ONLY valid JSON with one key "contacts" (array of objects).
 5. Each object uses EXACTLY these keys (use "" if unknown — NEVER invent):
    contact_name, designation, department, company, company_type, vessel_name,
    email, off_phone, mob_phone, wechat, whatsapp,
-   website_address, office_address, other_info, status
+   website_address, office_address, other_info, status,
+   country, city, trade, role, fax
 6. PEOPLE vs SHARED BLOCKS:
    - If distinct people are named, create ONE ROW PER PERSON (even if they share a desk email).
      Never collapse multiple named people into a single row.
@@ -78,8 +92,11 @@ Rules:
    - Only if a shared signature has several emails and NO per-person names, create ONE row
      with all emails comma-separated in `email`.
 7. email: lowercase. Prefer emails from the signature block over random body mentions.
+   If both a personal/PIC email and a desk/office email appear, put BOTH in `email`
+   comma-separated (e.g. "name@co.com, chartering@co.com"). Never invent.
 8. off_phone = office / Tel / DID. mob_phone = Mobile / Cell / Handphone.
    Keep readable international format with leading + (e.g. +65 6781 3709). Never invent.
+   fax = Fax number only if a Fax label appears. Else "".
 9. company: clean company / desk name only. Strip "Position List", dates, "Open Tonnage",
    "Week NN", vessel list titles. If several affiliates for one person → comma-separated.
 10. company_type: ONLY if text has an explicit "Company type:" label. Otherwise "".
@@ -87,14 +104,28 @@ Rules:
 12. website_address: only real sites (www. / http / company domain lines). Else "".
 13. designation = job title (Manager, Director…). department = desk (Chartering, Ops…).
     Do NOT put geographic region headers (ASIA, EUROPE, AMERICAS) into department.
-14. other_info: Skype / ICE / leave notes only — NEVER write "signature fallback".
-15. status: ONLY "Active" or "Inactive". Default "Active" if unclear. Never invent other labels.
-16. Do not include GDPR footers, Proofpoint links, or unsubscribe text.
-17. Extract EVERY named person in the signature — missing a named person is an error.
+14. Keep THREE location fields when possible:
+    office_address = street / building / full postal line.
+    city = city only (Singapore, Athens, Seoul).
+    country = country only (Singapore, Greece, UAE). Do not dump city into country.
+15. trade: cargo / fleet focus ONLY (CPP, Chemical, Palm oil, DPP, MR, small tankers).
+    NEVER put the company name in trade — company goes in `company`.
+16. role: Owner / Broker / Operator / Charterer ONLY if the text says so. Else "".
+    Do NOT copy this into status.
+17. other_info = remarks / Skype / ICE / leave notes ONLY.
+    NEVER put vessel names, DWT, IMO, or "signature fallback" in other_info.
+18. status: ONLY "Active" or "Inactive". Default "Active" if unclear. Never invent other labels.
+19. Casing: Title Case for contact_name, company, office_address, city, country,
+    designation, department, trade. Emails lowercase. Do not shout ALL CAPS.
+20. Do not include GDPR footers, Proofpoint links, or unsubscribe text.
+21. Extract EVERY named person in the signature — missing a named person is an error.
 
 Attachment filename hint: {filename_hint}
 
-TEXT (tail of message):
+VESSELS ALREADY LISTED ON THIS SAME EMAIL (put into vessel_name as above):
+{vessel_names_hint}
+
+TEXT (signature / contact tail of message):
 {chunk}
 
 JSON OUTPUT ONLY:"""
@@ -108,24 +139,37 @@ You receive:
 2) DRAFT_CONTACTS — JSON array already extracted (may have wrong columns, splits, or gaps)
 
 Your job:
-- Put every fact that EXISTS in EMAIL_TEXT into the correct column.
-- If EMAIL_TEXT does not contain a fact, that column MUST be "".
+- Put every fact that EXISTS in EMAIL_TEXT (or the VESSELS list) into the correct column.
+- If a fact is not in EMAIL_TEXT or VESSELS, that column MUST be "".
 - Do NOT invent company_type, WeChat, WhatsApp, designation, department, website, or phones.
 - Do NOT invent contact names that are not in the email.
+- vessel_name: ships from this circular ONLY. PIC next to one ship → that ship; shared
+  desk / position-list contacts → all VESSELS names, semicolon-separated.
+  Do not copy DWT / IMO / ETA into vessel_name. Never put ship names in other_info.
+- other_info: remarks / Skype / ICE / leave notes only — never vessel names,
+  never "signature fallback".
+- office_address, city, country are separate. trade = cargo/fleet, not company name.
+- Title Case names / company / address / city / country / trade. Emails lowercase.
 - Keep one row per distinct named person. Shared desk email may repeat on each row
   (do NOT collapse named PICs into one contact).
 - Same person + multiple companies → one row, companies comma-separated.
 - Several emails + no person names → one row, emails comma-separated.
 - Clean company names (strip "Position List", dates, open tonnage titles).
-- other_info: only Skype / ICE / leave notes from the email — never "signature fallback".
 - status: ONLY "Active" or "Inactive" (default "Active").
+- country / city / trade / role / fax: only if present in EMAIL_TEXT. Else "".
+- role is Owner/Broker/Operator/Charterer — never put that in status.
+- Personal + desk emails → both in `email`, comma-separated.
 
 Required keys on every object (use "" if unknown):
 contact_name, designation, department, company, company_type, vessel_name,
 email, off_phone, mob_phone, wechat, whatsapp,
-website_address, office_address, other_info, status
+website_address, office_address, other_info, status,
+country, city, trade, role, fax
 
 Return ONLY valid JSON: {{"contacts": [ ... ]}}
+
+VESSELS ALREADY LISTED ON THIS SAME EMAIL:
+{vessel_names_hint}
 
 EMAIL_TEXT:
 {chunk}
@@ -472,7 +516,22 @@ def signature_fallback_contacts(
     return merge_contact_rows(cleaned)
 
 
-async def llm_extract_contacts(chunk: str, filename_hint: str = "") -> list[dict[str, str]]:
+def _vessel_names_hint(names: list[str] | None) -> str:
+    cleaned = [n.strip() for n in (names or []) if (n or "").strip()]
+    if not cleaned:
+        return (
+            "(none listed yet — if the email text itself names ships, "
+            "still put those names in vessel_name)"
+        )
+    safe = [n.replace("{", "").replace("}", "") for n in cleaned]
+    return "\n".join(f"- {n}" for n in safe)
+
+
+async def llm_extract_contacts(
+    chunk: str,
+    filename_hint: str = "",
+    vessel_names: list[str] | None = None,
+) -> list[dict[str, str]]:
     if not chunk or len(chunk) < 30:
         return []
 
@@ -488,6 +547,7 @@ async def llm_extract_contacts(chunk: str, filename_hint: str = "") -> list[dict
                         "role": "system",
                         "content": (
                             "You extract structured broker contact rows from email signatures. "
+                            "Ship names only in vessel_name; remarks only in other_info. "
                             "Never invent company_type, WeChat, or WhatsApp. Output only valid JSON."
                         ),
                     },
@@ -496,6 +556,7 @@ async def llm_extract_contacts(chunk: str, filename_hint: str = "") -> list[dict
                         "content": CONTACT_EXTRACT_PROMPT.format(
                             chunk=chunk[:14000],
                             filename_hint=filename_hint or "(unknown)",
+                            vessel_names_hint=_vessel_names_hint(vessel_names),
                         ),
                     },
                 ],
@@ -531,6 +592,7 @@ async def llm_remap_contacts_to_columns(
     draft_contacts: list[dict[str, str]],
     *,
     filename_hint: str = "",
+    vessel_names: list[str] | None = None,
 ) -> list[dict[str, str]]:
     """Second Claude pass: map draft fields into required columns; never invent."""
     if not chunk or len(chunk) < 30:
@@ -548,7 +610,9 @@ async def llm_remap_contacts_to_columns(
                         "role": "system",
                         "content": (
                             "You remap extracted broker contact fields into the correct columns. "
-                            "Use only facts present in the email. Never invent. Output only valid JSON."
+                            "Include vessel_name from ships on this same circular. "
+                            "Use only facts present in the email or VESSELS list. Never invent. "
+                            "Output only valid JSON."
                         ),
                     },
                     {
@@ -556,6 +620,7 @@ async def llm_remap_contacts_to_columns(
                         "content": COLUMN_REMAP_PROMPT.format(
                             chunk=chunk[:12000],
                             draft_json=draft_json[:8000],
+                            vessel_names_hint=_vessel_names_hint(vessel_names),
                         )
                         + (
                             f"\n\nAttachment filename hint: {filename_hint}"
@@ -600,6 +665,7 @@ async def extract_contacts_from_attachment(
     signature_emails: str = "",
     signature_phones: str = "",
     fallback_only: bool = False,
+    vessel_names: list[str] | None = None,
 ) -> tuple[list[dict[str, str]], bool]:
     """
     Preprocess + LLM extract + column remap; regex/DB fallback if LLM returns nothing.
@@ -611,7 +677,9 @@ async def extract_contacts_from_attachment(
 
     if not fallback_only:
         try:
-            contacts = await llm_extract_contacts(chunk, filename_hint=filename)
+            contacts = await llm_extract_contacts(
+                chunk, filename_hint=filename, vessel_names=vessel_names
+            )
         except Exception:
             contacts = []
 
@@ -631,7 +699,7 @@ async def extract_contacts_from_attachment(
 
     if contacts:
         remapped = await llm_remap_contacts_to_columns(
-            chunk, contacts, filename_hint=filename
+            chunk, contacts, filename_hint=filename, vessel_names=vessel_names
         )
         if remapped:
             contacts = remapped
@@ -710,15 +778,40 @@ def enrich_contacts_vessel_names(
         return contacts
     names = vessel_names_for_attachment(attachment_id)
     if not names:
-        return contacts
+        return [_separate_remarks_and_vessels(c) for c in contacts]
     summary = summarize_vessel_names(names)
     enriched: list[dict[str, str]] = []
     for contact in contacts:
         row = dict(contact)
         if not (row.get("vessel_name") or "").strip():
             row["vessel_name"] = summary
-        enriched.append(row)
+        enriched.append(_separate_remarks_and_vessels(row))
     return enriched
+
+
+def _separate_remarks_and_vessels(contact: dict[str, str]) -> dict[str, str]:
+    """Keep ship names in vessel_name; remarks in other_info only."""
+    row = dict(contact)
+    vn = (row.get("vessel_name") or "").strip()
+    oi = (row.get("other_info") or "").strip()
+    if oi.lower() == FALLBACK_OTHER_INFO:
+        row["other_info"] = ""
+        return row
+    if not oi:
+        return row
+    if vn and oi.lower() == vn.lower():
+        row["other_info"] = ""
+        return row
+    if vn:
+        cleaned = oi
+        for token in re.split(r"[;,]+", vn):
+            t = token.strip()
+            if len(t) >= 3:
+                cleaned = re.sub(re.escape(t), " ", cleaned, flags=re.I)
+        cleaned = re.sub(r"\s*[;,/]+\s*", "; ", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" ;,")
+        row["other_info"] = cleaned
+    return row
 
 
 _EMPTY_CONTACT = frozenset({
@@ -800,6 +893,28 @@ def contact_match_key(contact: dict[str, Any]) -> str:
     return ""
 
 
+def _parse_excel_sourced(raw: Any) -> list[str]:
+    if isinstance(raw, list):
+        return [str(x) for x in raw if str(x)]
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+            if isinstance(data, list):
+                return [str(x) for x in data if str(x)]
+        except Exception:  # noqa: BLE001
+            return []
+    return []
+
+
+def _source_label(excel_sourced: set[str] | list[str], *, has_email_parent: bool) -> str:
+    sourced = set(excel_sourced or [])
+    if sourced and has_email_parent:
+        return "mixed"
+    if sourced:
+        return "owners-list"
+    return "email"
+
+
 def _merge_contact_fields(
     base: dict[str, Any],
     incoming: dict[str, Any],
@@ -826,6 +941,12 @@ def _merge_contact_fields(
             else:
                 out[key] = base_st or "Active"
             continue
+        if key in ("email", "company"):
+            out[key] = _merge_text_field(cur, nxt) if (cur or nxt) else ""
+            continue
+        if key in ("off_phone", "mob_phone", "fax"):
+            out[key] = _merge_text_field(cur, nxt, sep=" ; ") if (cur or nxt) else ""
+            continue
         if key == "contact_name" and cur and nxt:
             if _norm_person_token(cur) != _norm_person_token(nxt):
                 out[key] = cur
@@ -839,7 +960,7 @@ def dedupe_broker_contacts(supabase_client=None) -> dict[str, int]:
     db = supabase_client or supabase
     rows = (
         db.table("broker_contacts")
-        .select("id, match_key, attachment_id, parent_email_id, row_order, used_fallback, updated_at, "
+        .select("id, match_key, attachment_id, parent_email_id, row_order, used_fallback, updated_at, excel_sourced, source, "
                 + ", ".join(CONTACT_FIELD_KEYS))
         .execute()
     ).data or []
@@ -856,30 +977,32 @@ def dedupe_broker_contacts(supabase_client=None) -> dict[str, int]:
     updated = 0
 
     for row in rows_sorted:
-        key = contact_match_key(row) or (row.get("match_key") or "")
-        if not key:
-            # Keep orphan rows unique so they do not collapse together
-            key = f"orphan:{row['id']}"
-        if key not in by_key:
-            if key != (row.get("match_key") or ""):
-                db.table("broker_contacts").update({
-                    "match_key": key,
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                }).eq("id", row["id"]).execute()
-                row["match_key"] = key
-                updated += 1
-            by_key[key] = row
+        ident = contact_match_key(row) or (row.get("match_key") or "")
+        if not ident:
+            ident = f"orphan:{row['id']}"
+        lane = "upload" if str(row.get("source") or "").lower() == "owners-list" else "email"
+        bucket = f"{lane}:{ident}"
+        if ident != (row.get("match_key") or "") and not ident.startswith("orphan:"):
+            db.table("broker_contacts").update({
+                "match_key": ident,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }).eq("id", row["id"]).execute()
+            row["match_key"] = ident
+            updated += 1
+        if bucket not in by_key:
+            by_key[bucket] = row
             continue
 
-        survivor = by_key[key]
+        survivor = by_key[bucket]
         merged_fields = _merge_contact_fields(survivor, row)
         patch = dict(merged_fields)
-        patch["match_key"] = key
+        patch["match_key"] = ident
         patch["attachment_id"] = row.get("attachment_id") or survivor.get("attachment_id")
         patch["parent_email_id"] = row.get("parent_email_id") or survivor.get("parent_email_id")
         patch["used_fallback"] = bool(survivor.get("used_fallback")) and bool(
             row.get("used_fallback")
         )
+        patch["source"] = survivor.get("source") or row.get("source") or ""
         patch["updated_at"] = datetime.now(timezone.utc).isoformat()
         db.table("broker_contacts").update(patch).eq("id", survivor["id"]).execute()
         for f, v in patch.items():
@@ -926,6 +1049,10 @@ def _contact_row_db_payload(
     return row
 
 
+def _is_upload_contact(row: dict[str, Any] | None) -> bool:
+    return str((row or {}).get("source") or "").lower() == "owners-list"
+
+
 def save_broker_contacts_for_attachment(
     attachment_id: str,
     parent_email_id: str | None,
@@ -933,10 +1060,7 @@ def save_broker_contacts_for_attachment(
     *,
     used_fallback: bool | None = None,
 ) -> int:
-    """Upsert broker contacts by global identity (email → phone → name+company).
-
-    Same person across mails updates one row. Returns number of contacts upserted.
-    """
+    """Upsert email-extracted contacts. Never merge into Excel upload rows."""
     contacts = enrich_contacts_vessel_names(attachment_id, contacts)
     fb = contacts_used_fallback(contacts) if used_fallback is None else used_fallback
 
@@ -944,12 +1068,15 @@ def save_broker_contacts_for_attachment(
         supabase.table("broker_contacts")
         .select(
             "id, match_key, attachment_id, parent_email_id, row_order, used_fallback, "
+            "excel_sourced, source, "
             + ", ".join(CONTACT_FIELD_KEYS)
         )
         .execute()
     ).data or []
     by_key: dict[str, dict[str, Any]] = {}
     for row in existing_rows:
+        if _is_upload_contact(row):
+            continue
         key = row.get("match_key") or contact_match_key(row)
         if key and key not in by_key:
             by_key[key] = row
@@ -965,18 +1092,30 @@ def save_broker_contacts_for_attachment(
         payload = _contact_row_db_payload(
             attachment_id, parent_email_id, contact, i, fb, match_key=key
         )
+        payload["excel_sourced"] = []
+        payload["source"] = "email"
 
         existing = by_key.get(key)
         if existing:
-            merged = _merge_contact_fields(existing, payload)
-            patch = dict(merged)
-            patch["match_key"] = key
-            patch["attachment_id"] = attachment_id
-            patch["parent_email_id"] = parent_email_id
-            patch["row_order"] = i
-            # Keep fallback flag only if both sides were fallback
-            patch["used_fallback"] = bool(existing.get("used_fallback")) and bool(fb)
-            patch["updated_at"] = datetime.now(timezone.utc).isoformat()
+            same_att = str(existing.get("attachment_id") or "") == str(attachment_id)
+            if same_att:
+                patch = dict(payload)
+            else:
+                merged = _merge_contact_fields(existing, payload)
+                patch = dict(merged)
+                patch["match_key"] = key
+                patch["attachment_id"] = existing.get("attachment_id") or attachment_id
+                patch["parent_email_id"] = existing.get("parent_email_id") or parent_email_id
+                patch["row_order"] = existing.get("row_order") if existing.get("row_order") is not None else i
+                patch["used_fallback"] = bool(existing.get("used_fallback")) and bool(fb)
+                patch["excel_sourced"] = []
+                patch["source"] = "email"
+                patch["updated_at"] = datetime.now(timezone.utc).isoformat()
+            if same_att:
+                patch["used_fallback"] = bool(fb)
+                patch["row_order"] = i
+                patch["attachment_id"] = attachment_id
+                patch["parent_email_id"] = parent_email_id
             supabase.table("broker_contacts").update(patch).eq(
                 "id", existing["id"]
             ).execute()
@@ -989,17 +1128,20 @@ def save_broker_contacts_for_attachment(
             by_key[key] = result.data[0]
         upserted += 1
 
-    # Drop stale rows still attributed to this attachment but not in the new extract
     stale = (
         supabase.table("broker_contacts")
-        .select("id, match_key")
+        .select("id, match_key, source")
         .eq("attachment_id", attachment_id)
         .execute()
     ).data or []
     for row in stale:
+        if _is_upload_contact(row):
+            continue
         mk = row.get("match_key") or ""
         if mk and mk not in kept_keys:
             supabase.table("broker_contacts").delete().eq("id", row["id"]).execute()
+
+    return upserted
 
     return upserted
 
@@ -1036,6 +1178,7 @@ async def _process_attachment_contacts(
         filename=filename,
         signature_emails=att.get("signature_emails") or "",
         signature_phones=att.get("signature_phones") or "",
+        vessel_names=vessel_names_for_attachment(aid),
     )
     count = save_broker_contacts_for_attachment(
         aid, parent_email_id, contacts, used_fallback=used_fallback
@@ -1080,9 +1223,11 @@ async def run_parent_contact_extraction(job_id: str, email_id: str) -> None:
     (LLM + remap + signature fallback) and save to broker_contacts.
     Run after signature_emails/signature_phones are on attachment rows.
     """
+    plog.info("Contacts", "▶ parent contact extract", email_id=email_id[:8])
     try:
         await _run_parent_contact_extraction_impl(job_id, email_id)
     except Exception as exc:
+        plog.exception("Contacts", "Parent extract failed", email_id=email_id[:8])
         logger.exception("[ContactExtract] Failed for parent %s: %s", email_id, exc)
         await sse_manager.send(job_id, "contact_extraction_error", {
             "email_id": email_id,
@@ -1115,11 +1260,12 @@ async def _run_parent_contact_extraction_impl(job_id: str, email_id: str) -> Non
             updated += 1
             total_rows += count
 
-    logger.info(
-        "[ContactExtract] parent=%s attachments_with_contacts=%d contact_rows=%d",
-        email_id,
-        updated,
-        total_rows,
+    plog.info(
+        "Contacts",
+        "✓ parent contact extract",
+        email_id=email_id[:8],
+        attachments=updated,
+        rows=total_rows,
     )
 
     await sse_manager.send(job_id, "contact_extraction_done", {

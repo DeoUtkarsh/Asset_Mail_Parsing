@@ -69,7 +69,8 @@ desktop.ini
 .claude/
 .cursor/
 
-# ── Logs / Misc ───────────────────────────────────────────────────────────────
+# Local contact backups (owners directory dumps — not for git)
+local_backups/
 *.log
 logs/
 *.bak

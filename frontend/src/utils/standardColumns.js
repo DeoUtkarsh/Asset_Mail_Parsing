@@ -40,7 +40,7 @@ export const DEFAULT_COLUMNS = [
 export const COLUMN_WIDTHS = {
   _num: 58,
   received: 150,
-  imo: 90,
+  imo: 118,
   imo_type: 100,
   company: 200,
   vessel_name: 180,
@@ -304,16 +304,15 @@ export function formatAttachmentFiles(files) {
     .join(", ");
 }
 
-/** True when a value is an IMO type code (2, 2/3, IMO II), not a 7-digit IMO number. */
+/** True when a value is an IMO type code (1, 2, 2/3, IMO II), not an IMO number. */
 export function looksLikeImoType(val) {
   if (val == null) return false;
   const s = String(val).trim();
   if (!s) return false;
   if (/^\d{7}$/.test(s)) return false;
   const norm = s.replace(/\s+/g, "").toLowerCase();
-  if (/^imo[\d/]/i.test(norm)) return true;
-  if (/^\d+(\/\d+)?$/.test(norm)) return true;
-  if (/^(i{1,3}|ii|iii|iv)(\/(i{1,3}|ii|iii|iv))?$/.test(norm)) return true;
+  if (/^(?:imo)?[123](?:\/[123])*$/.test(norm)) return true;
+  if (/^(?:imo)?(?:i{1,3}|iv)(?:\/(?:i{1,3}|iv))*$/.test(norm)) return true;
   return false;
 }
 

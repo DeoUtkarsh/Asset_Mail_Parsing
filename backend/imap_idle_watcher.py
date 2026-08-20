@@ -19,6 +19,8 @@ import time
 import uuid
 from typing import Awaitable, Callable, Optional
 
+import pipeline_log as plog
+
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -62,10 +64,7 @@ async def run_phase1_exclusive(
 
     if not wait and _phase1_lock.locked():
         _pending_rerun = True
-        logger.info(
-            "[AutoFetch] Phase 1 busy — queued another run after current finishes (%s)",
-            source,
-        )
+        plog.info("AutoFetch", "Phase 1 busy — queued rerun after current", source=source)
         return ""
 
     async with _phase1_lock:
@@ -76,16 +75,16 @@ async def run_phase1_exclusive(
             _active_job_id = jid
             if notify_bus and source != "manual":
                 await notify_bus(jid, {"source": source})
-            logger.info("[AutoFetch] Starting Phase 1 job_id=%s source=%s", jid, source)
+            plog.info("AutoFetch", "▶ Phase 1 starting", job=jid[:8], source=source)
             try:
                 await runner(jid)
             except Exception:
-                logger.exception("[AutoFetch] Phase 1 crashed job_id=%s", jid)
+                plog.exception("AutoFetch", "Phase 1 crashed", job=jid[:8])
             if not _pending_rerun:
                 if _active_job_id == jid:
                     _active_job_id = None
                 return jid
-            logger.info("[AutoFetch] Pending mailbox change — running Phase 1 again")
+            plog.info("AutoFetch", "Pending mailbox change — running Phase 1 again")
             source = "imap_idle_queued"
 
 
@@ -117,7 +116,7 @@ def _imap_idle_once(idle_timeout_sec: float = 1740.0) -> bool:
         if not cont or not cont.startswith(b"+"):
             raise RuntimeError(f"IMAP IDLE not accepted: {cont!r}")
 
-        logger.info("[AutoFetch] IMAP IDLE listening (timeout=%.0fs)", idle_timeout_sec)
+        plog.info("AutoFetch", "IMAP IDLE listening", timeout_s=int(idle_timeout_sec))
         deadline = time.monotonic() + idle_timeout_sec
         saw_change = False
         while not _stop.is_set():
@@ -169,16 +168,28 @@ def _imap_idle_once(idle_timeout_sec: float = 1740.0) -> bool:
 
 def _idle_thread_main(loop: asyncio.AbstractEventLoop, on_change: Callable[[], None]) -> None:
     reconnect = max(5, int(settings.AUTO_FETCH_IDLE_RECONNECT_SEC or 30))
+    # Let uvicorn accept HTTP first. Gmail SSL in this process used to freeze
+    # the interpreter and reset the Vite proxy (ECONNRESET / empty tabs).
+    if _stop.wait(2.0):
+        return
+    try:
+        from imap_client import get_inbox_max_uid
+        from imap_uid_watermark import ensure_idle_baseline
+
+        ensure_idle_baseline(get_inbox_max_uid())
+    except Exception:
+        logger.exception("[AutoFetch] Could not set IDLE UID baseline — continuing without it")
+
     while not _stop.is_set():
         try:
             changed = _imap_idle_once()
             if _stop.is_set():
                 break
             if changed:
-                logger.info("[AutoFetch] Mailbox change detected — scheduling Phase 1")
+                plog.info("AutoFetch", "Mailbox change detected — scheduling Phase 1")
                 loop.call_soon_threadsafe(on_change)
             else:
-                logger.info("[AutoFetch] IDLE cycle ended (refresh) — reconnecting")
+                plog.info("AutoFetch", "IDLE cycle ended — reconnecting")
         except Exception as exc:  # noqa: BLE001
             if _stop.is_set():
                 break
@@ -190,50 +201,37 @@ async def start_imap_idle_watcher(
     runner: Phase1Runner,
     notify_bus: NotifyBus,
 ) -> None:
-    """Start background IDLE watcher (no-op if already running or flag off)."""
+    """Start background IDLE watcher (no-op if already running or flag off).
+
+    Returns immediately so FastAPI can serve HTTP while Gmail IMAP connects.
+    """
     global _watcher_task
     if not settings.AUTO_FETCH_IMAP_IDLE:
-        logger.info("[AutoFetch] IMAP IDLE disabled (AUTO_FETCH_IMAP_IDLE=false)")
+        plog.info("AutoFetch", "IMAP IDLE disabled")
         return
     if _watcher_task and not _watcher_task.done():
         return
 
-    # Baseline: ignore everything already in INBOX (empty DB must not backfill).
-    try:
-        from imap_client import get_inbox_max_uid
-        from imap_uid_watermark import ensure_idle_baseline
+    async def _boot_and_pump() -> None:
+        _stop.clear()
+        loop = asyncio.get_running_loop()
+        trigger = asyncio.Event()
 
-        mx = await asyncio.to_thread(get_inbox_max_uid)
-        ensure_idle_baseline(mx)
-    except Exception:
-        logger.exception("[AutoFetch] Could not set IDLE UID baseline — aborting watcher start")
-        return
+        def _on_change() -> None:
+            trigger.set()
 
-    _stop.clear()
-    loop = asyncio.get_running_loop()
-    trigger = asyncio.Event()
+        thread = threading.Thread(
+            target=_idle_thread_main,
+            args=(loop, _on_change),
+            name="imap-idle-watcher",
+            daemon=True,
+        )
+        thread.start()
+        plog.info("AutoFetch", "IMAP IDLE watcher started", user=settings.EMAIL_USER, server=settings.IMAP_SERVER)
 
-    def _on_change() -> None:
-        trigger.set()
-
-    thread = threading.Thread(
-        target=_idle_thread_main,
-        args=(loop, _on_change),
-        name="imap-idle-watcher",
-        daemon=True,
-    )
-    thread.start()
-    logger.info(
-        "[AutoFetch] IMAP IDLE watcher started for %s@%s",
-        settings.EMAIL_USER,
-        settings.IMAP_SERVER,
-    )
-
-    async def _pump() -> None:
         while not _stop.is_set():
             await trigger.wait()
             trigger.clear()
-            # Brief debounce — Gmail often sends several EXISTS lines quickly.
             await asyncio.sleep(2.0)
             while trigger.is_set():
                 trigger.clear()
@@ -245,7 +243,8 @@ async def start_imap_idle_watcher(
                 wait=False,
             )
 
-    _watcher_task = asyncio.create_task(_pump(), name="imap-idle-pump")
+    _watcher_task = asyncio.create_task(_boot_and_pump(), name="imap-idle-boot")
+    plog.info("AutoFetch", "IMAP IDLE connecting in background — HTTP API ready")
 
 
 async def stop_imap_idle_watcher() -> None:
@@ -258,4 +257,4 @@ async def stop_imap_idle_watcher() -> None:
         except asyncio.CancelledError:
             pass
         _watcher_task = None
-    logger.info("[AutoFetch] IMAP IDLE watcher stopped")
+    plog.info("AutoFetch", "IMAP IDLE watcher stopped")

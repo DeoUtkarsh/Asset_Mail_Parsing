@@ -632,17 +632,19 @@ def _extract_imo_number(dd: dict) -> str:
 
 
 def _looks_like_imo_type(val: Any) -> bool:
+    """True for chemical-tanker IMO type codes only (1, 2, 2/3, IMO II).
+
+    Short numbers like 123 / 1234 are IMO *numbers* the user typed, not types.
+    """
     if not _has_value(val):
         return False
     s = str(val).strip()
     if IMO_NUMBER_RE.match(s):
         return False
     norm = re.sub(r"\s+", "", s.lower())
-    if re.match(r"^imo[\d/]+", norm):
+    if re.fullmatch(r"(?:imo)?[123](?:/[123])*", norm):
         return True
-    if re.match(r"^\d+(/\d+)?$", norm):
-        return True
-    if re.match(r"^(i{1,3}|ii|iii|iv)(/(i{1,3}|ii|iii|iv))?$", norm):
+    if re.fullmatch(r"(?:imo)?(?:i{1,3}|iv)(?:/(?:i{1,3}|iv))*", norm):
         return True
     return False
 
@@ -656,19 +658,25 @@ def _resolve_imo_number_only(dd: dict) -> str:
     num = _extract_imo_number(dd)
     if num and IMO_NUMBER_RE.match(num):
         return num
-    # If imo held a type code, do not treat it as a number.
-    if _has_value(dd.get("imo")) and _looks_like_imo_type(dd.get("imo")):
+    raw = str(dd.get("imo") or "").strip()
+    # Type codes belong in imo_type, not IMO.
+    if raw and _looks_like_imo_type(raw):
         return ""
-    if num and not _looks_like_imo_type(num) and re.search(r"\d{7}", num):
+    if raw:
+        m = IMO_EMBEDDED_RE.search(raw)
+        if m:
+            return m.group(1)
+        return raw
+    if num and re.search(r"\d{7}", num):
         m = IMO_EMBEDDED_RE.search(num)
         return m.group(1) if m else ""
     return ""
 
 
 def _resolve_imo_type(dd: dict) -> str:
-    if _has_value(dd.get("imo_type")) and _looks_like_imo_type(dd.get("imo_type")):
+    if _has_value(dd.get("imo_type")):
         return str(dd["imo_type"]).strip()
-    for k in ("imo_type", "imo", "vessel_type"):
+    for k in ("imo", "vessel_type"):
         v = dd.get(k)
         if _looks_like_imo_type(v):
             return str(v).strip()
@@ -688,7 +696,11 @@ def _resolve_vessel_type(dd: dict) -> str:
 
 
 def _normalize_imo_and_vessel_type(out: dict[str, str]) -> None:
-    """Split IMO number vs IMO type; keep type codes out of vessel_type."""
+    """Split IMO number vs IMO type; keep type codes out of vessel_type.
+
+    User-entered IMO values that are not type codes (e.g. 123) stay in ``imo``.
+    Only genuine type codes (1, 2/3, IMO II) are moved to ``imo_type``.
+    """
     imo = (out.get("imo") or "").strip()
     imo_type = (out.get("imo_type") or "").strip()
     vt = (out.get("vessel_type") or "").strip()
@@ -703,9 +715,9 @@ def _normalize_imo_and_vessel_type(out: dict[str, str]) -> None:
         out["imo"] = imo
     elif imo:
         m = IMO_EMBEDDED_RE.search(imo)
-        out["imo"] = m.group(1) if m else ""
-        if not out["imo"] and _looks_like_imo_type(imo) and not out.get("imo_type"):
-            out["imo_type"] = imo
+        # Extract a 7-digit IMO from messy text; keep short user values as typed.
+        if m and not IMO_NUMBER_RE.match(imo):
+            out["imo"] = m.group(1)
 
     if _looks_like_imo_type(vt):
         if not out.get("imo_type"):

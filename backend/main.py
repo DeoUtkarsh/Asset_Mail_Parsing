@@ -22,13 +22,16 @@ import asyncio
 import json
 import logging
 import logging.config
+import time
 import uuid
 from typing import Any
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+from fastapi import BackgroundTasks, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from sse_starlette.sse import EventSourceResponse
+
+import pipeline_log as plog
 
 from config import settings
 from database import supabase, get_supabase
@@ -71,6 +74,11 @@ from vessel_library import (
     normalize_library_formats,
     rematch_library,
 )
+from vessel_sync import (
+    backfill_positions_from_library,
+    sync_library_row_to_positions,
+    sync_position_to_library,
+)
 from vessel_enrichment import (
     run_vessel_library_enrichment,
     get_enrichment_status,
@@ -93,6 +101,8 @@ from imap_idle_watcher import (
 )
 
 MANUAL_ENTRIES_MESSAGE_ID = "manual-entries"
+OWNERS_LIST_MESSAGE_ID = "owners-list-import"
+HIDDEN_INBOX_MESSAGE_IDS = frozenset({MANUAL_ENTRIES_MESSAGE_ID, OWNERS_LIST_MESSAGE_ID})
 LIVE_BUS_JOB_ID = "live"
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
@@ -115,6 +125,7 @@ logging.config.dictConfig({
     "root": {"handlers": ["console"], "level": "INFO"},
     # Anthropic DEBUG dumps full prompts and looks like work is still running after Synced.
     "loggers": {
+        "pipeline":       {"level": "INFO", "propagate": True},
         "anthropic":      {"level": "WARNING"},
         "openai":         {"level": "WARNING"},
         "httpx":          {"level": "WARNING"},
@@ -141,8 +152,33 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def log_api_requests(request: Request, call_next):
+    """Log every /api call (except SSE streams) with status and timing."""
+    path = request.url.path
+    if not path.startswith("/api") or path.startswith("/api/events"):
+        return await call_next(request)
+    t0 = time.monotonic()
+    method = request.method
+    plog.info("API", f"→ {method} {path}")
+    try:
+        response = await call_next(request)
+    except Exception:
+        plog.exception("API", f"✗ {method} {path} crashed", elapsed_s=round(time.monotonic() - t0, 2))
+        raise
+    ms = (time.monotonic() - t0) * 1000
+    level = plog.warn if response.status_code >= 400 else plog.info
+    level("API", f"← {method} {path}", status=response.status_code, ms=round(ms))
+    return response
+
+
 @app.on_event("startup")
 async def startup_event():
+    from datetime import datetime, timezone
+    import os
+
+    app.state.started_at = datetime.now(timezone.utc).isoformat()
+    plog.info("Pipeline", "Server worker started", pid=os.getpid(), started_at=app.state.started_at)
     logger.info("=" * 60)
     logger.info("  Shipbroking Email Parser — startup")
     logger.info("=" * 60)
@@ -217,6 +253,12 @@ async def startup_event():
             fmt_n = normalize_library_formats(db)
             if fmt_n:
                 logger.info("  Vessel library format normalize: %d rows", fmt_n)
+            sync_stats = backfill_positions_from_library(db, only_empty=True)
+            if sync_stats.get("updated"):
+                logger.info(
+                    "  Library→position backfill: %d position row(s) updated from library",
+                    sync_stats["updated"],
+                )
         except Exception as lib_fmt_exc:
             logger.warning("  Vessel library format normalize skipped: %s", lib_fmt_exc)
         try:
@@ -258,7 +300,11 @@ async def startup_event():
                 logger.warning("[AutoFetch] Could not advance UID watermark: %s", wm_exc)
 
     await start_imap_idle_watcher(_idle_phase1, _notify_auto_fetch)
-
+    logger.info("  HTTP API ready (IMAP IDLE does not block requests)")
+    plog.info(
+        "Pipeline",
+        "logging ON — tags: API, Phase1, Phase2, Ingestion, Extract, Contacts, Owners, Q88, Library, Enrich, AutoFetch, Summary",
+    )
     logger.info("=" * 60)
 
 
@@ -275,9 +321,13 @@ async def _run_phase1(
     date_to: str | None = None,
     min_uid: int | None = None,
 ) -> None:
-    logger.info(
-        "[Phase1] Starting job_id=%s date_from=%s date_to=%s min_uid=%s",
-        job_id, date_from, date_to, min_uid,
+    plog.info(
+        "Phase1",
+        "▶ job started",
+        job=job_id[:8],
+        date_from=date_from or "any",
+        date_to=date_to or "any",
+        min_uid=min_uid if min_uid is not None else "off",
     )
     initial_state = {
         "job_id": job_id,
@@ -295,7 +345,7 @@ async def _run_phase1(
     try:
         final_state = await phase1_graph.ainvoke(initial_state)
         if final_state.get("error"):
-            logger.error("[Phase1] Failed: %s", final_state["error"])
+            plog.error("Phase1", "Job failed", job=job_id[:8], error=final_state["error"])
             await sse_manager.send(job_id, "phase1_failed", {"error": final_state["error"]})
             return
 
@@ -316,7 +366,7 @@ async def _run_phase1(
             logger.warning("[Phase1] Could not save fetch scope: %s", scope_exc)
 
         if not email_ids:
-            logger.info("[Phase1] No new emails to process.")
+            plog.info("Phase1", "No new emails", job=job_id[:8])
             await sse_manager.send(job_id, "phase1_no_new", {
                 "message": "No new broker emails found.",
                 "date_from": date_from,
@@ -324,9 +374,13 @@ async def _run_phase1(
             })
             return
 
-        # Graph already did vessels + contacts + email_ready. Signal UI done now.
-        logger.info("[Phase1] Complete — %d email(s), columns=%d",
-                    len(email_ids), len(final_state.get("superset_columns", [])))
+        plog.info(
+            "Phase1",
+            "✓ job complete",
+            job=job_id[:8],
+            emails=len(email_ids),
+            columns=len(final_state.get("superset_columns", [])),
+        )
         await sse_manager.send(job_id, "phase1_complete", {
             "email_id": email_ids[0],
             "email_ids": email_ids,
@@ -343,7 +397,7 @@ async def _run_phase1(
 
         try:
             pending = detect_new_vessels(supabase)
-            logger.info("[Phase1] Vessel library review queue: %d new vessel(s)", len(pending))
+            plog.info("Library", "New vessels to review", count=len(pending))
         except Exception as lib_exc:
             logger.exception("[Phase1] Vessel library review detect failed: %s", lib_exc)
 
@@ -353,7 +407,7 @@ async def _run_phase1(
         except Exception as enrich_exc:
             logger.exception("[Phase1] Vessel library enrichment failed: %s", enrich_exc)
     except Exception as exc:
-        logger.exception("[Phase1] Crashed: %s", exc)
+        plog.exception("Phase1", "Job crashed", job=job_id[:8])
         await sse_manager.send(job_id, "phase1_failed", {"error": str(exc)})
 
 
@@ -394,7 +448,7 @@ def _email_ids_in_date_window(date_from: str | None, date_to: str | None) -> lis
 
     out: list[str] = []
     for r in rows:
-        if r.get("message_id") == "manual-entries":
+        if r.get("message_id") in HIDDEN_INBOX_MESSAGE_IDS:
             continue
         d = _day(r.get("date_received"))
         if d is None:
@@ -411,6 +465,9 @@ def _email_ids_in_date_window(date_from: str | None, date_to: str | None) -> lis
 
 @app.get("/api/health")
 async def health():
+    import os
+    from datetime import datetime, timezone
+
     try:
         get_supabase().table("parent_emails").select("id").limit(1).execute()
         db_status = "ok"
@@ -420,6 +477,8 @@ async def health():
         "status": "ok",
         "db": db_status,
         "auto_fetch_imap_idle": bool(settings.AUTO_FETCH_IMAP_IDLE),
+        "pid": os.getpid(),
+        "started_at": getattr(app.state, "started_at", None),
     }
 
 
@@ -512,11 +571,9 @@ async def fetch_emails(background_tasks: BackgroundTasks, body: FetchEmailsReque
         date_from = date_from.strip()[:10] or None
     if date_to:
         date_to = date_to.strip()[:10] or None
-    logger.info(
-        "[API] POST /api/fetch-emails — starting Phase 1 date_from=%s date_to=%s",
-        date_from, date_to,
-    )
+    plog.info("Phase1", "Fetch emails requested", date_from=date_from or "any", date_to=date_to or "any")
     job_id = str(uuid.uuid4())
+    plog.info("Phase1", "Job queued", job=job_id[:8])
 
     async def _runner(jid: str) -> None:
         await _run_phase1(jid, date_from, date_to)
@@ -587,72 +644,77 @@ async def sse_events(request: Request, job_id: str):
 async def list_emails():
     logger.info("[API] GET /api/emails")
     try:
-        emails = supabase.table("parent_emails").select("*").order("date_received", desc=True).execute()
-        result = []
-        for em in emails.data or []:
-            if em.get("message_id") == MANUAL_ENTRIES_MESSAGE_ID:
-                continue  # synthetic holder for manually-added positions
-            atts = (
-                supabase.table("attachments")
-                .select(
-                    "id, filename, status, error_message, mail_from, mail_subject, mail_date, files, "
-                    "is_verified, manually_reviewed, created_at, raw_text, columns_in_email"
-                )
-                .eq("parent_email_id", em["id"])
-                .order("created_at")
-                .execute()
-            )
-            att_rows = atts.data or []
-            att_ids = [a["id"] for a in att_rows]
-            vessels_by_att: dict[str, list] = {aid: [] for aid in att_ids}
-            if att_ids:
-                vall = (
-                    supabase.table("vessels")
-                    .select("id, attachment_id, dynamic_data, region")
-                    .in_("attachment_id", att_ids)
-                    .execute()
-                )
-                for v in vall.data or []:
-                    aid = v.get("attachment_id")
-                    if aid in vessels_by_att:
-                        vessels_by_att[aid].append(v)
-
-            att_list = []
-            for att in att_rows:
-                aid = att["id"]
-                vlist = vessels_by_att.get(aid, [])
-                vessel_count = len(vlist)
-                conf = compute_attachment_confidence(
-                    status=att.get("status") or "",
-                    vessel_count=vessel_count,
-                    vessels=vlist,
-                    raw_text=att.get("raw_text"),
-                    retry_suggested=False,
-                    manually_reviewed=bool(att.get("manually_reviewed")),
-                    columns_in_email=att.get("columns_in_email"),
-                )
-                att_list.append({
-                    k: v for k, v in att.items() if k != "raw_text"
-                } | {
-                    "is_verified": bool(att.get("is_verified")),
-                    "manually_reviewed": bool(att.get("manually_reviewed")),
-                    "vessel_count": vessel_count,
-                    "retry_suggested": False,
-                    "columns_in_email": conf.get("applicable_columns") or [],
-                    "needs_review": attachment_needs_review(
-                        status=att.get("status") or "",
-                        confidence_tier=conf.get("confidence_tier"),
-                        max_unfilled=conf.get("max_unfilled") or 0,
-                    ),
-                    **conf,
-                })
-            att_list.sort(key=lambda a: (str(a.get("created_at") or ""), (a.get("filename") or "").lower()))
-            result.append({**em, "attachments": att_list})
+        result = await asyncio.to_thread(_list_emails_sync)
         logger.info("[API] Returning %d emails", len(result))
         return result
     except Exception as exc:
         logger.error("[API] GET /api/emails failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+def _list_emails_sync() -> list[dict]:
+    emails = supabase.table("parent_emails").select("*").order("date_received", desc=True).execute()
+    result = []
+    for em in emails.data or []:
+        if em.get("message_id") in HIDDEN_INBOX_MESSAGE_IDS:
+            continue
+        atts = (
+            supabase.table("attachments")
+            .select(
+                "id, filename, status, error_message, mail_from, mail_subject, mail_date, files, "
+                "is_verified, manually_reviewed, created_at, columns_in_email"
+            )
+            .eq("parent_email_id", em["id"])
+            .order("created_at")
+            .execute()
+        )
+        att_rows = atts.data or []
+        att_ids = [a["id"] for a in att_rows]
+        vessels_by_att: dict[str, list] = {aid: [] for aid in att_ids}
+        if att_ids:
+            vall = (
+                supabase.table("vessels")
+                .select("id, attachment_id, dynamic_data, region")
+                .in_("attachment_id", att_ids)
+                .execute()
+            )
+            for v in vall.data or []:
+                aid = v.get("attachment_id")
+                if aid in vessels_by_att:
+                    vessels_by_att[aid].append(v)
+
+        att_list = []
+        for att in att_rows:
+            aid = att["id"]
+            vlist = vessels_by_att.get(aid, [])
+            vessel_count = len(vlist)
+            conf = compute_attachment_confidence(
+                status=att.get("status") or "",
+                vessel_count=vessel_count,
+                vessels=vlist,
+                raw_text=None,
+                retry_suggested=False,
+                manually_reviewed=bool(att.get("manually_reviewed")),
+                columns_in_email=att.get("columns_in_email"),
+            )
+            att_list.append({
+                k: v for k, v in att.items() if k != "raw_text"
+            } | {
+                "is_verified": bool(att.get("is_verified")),
+                "manually_reviewed": bool(att.get("manually_reviewed")),
+                "vessel_count": vessel_count,
+                "retry_suggested": False,
+                "columns_in_email": conf.get("applicable_columns") or [],
+                "needs_review": attachment_needs_review(
+                    status=att.get("status") or "",
+                    confidence_tier=conf.get("confidence_tier"),
+                    max_unfilled=conf.get("max_unfilled") or 0,
+                ),
+                **conf,
+            })
+        att_list.sort(key=lambda a: (str(a.get("created_at") or ""), (a.get("filename") or "").lower()))
+        result.append({**em, "attachments": att_list})
+    return result
 
 
 @app.get("/api/emails/{email_id}/attachments")
@@ -821,28 +883,32 @@ async def list_all_vessels():
     """All vessels from parent emails that finished Phase 1."""
     logger.info("[API] GET /api/vessels")
     try:
-        ready = (
-            supabase.table("parent_emails")
-            .select("id")
-            .in_("status", ["ready_for_validation", "drafted"])
-            .execute()
-        )
-        email_ids = [e["id"] for e in (ready.data or [])]
-        if not email_ids:
-            return []
-        rows = (
-            supabase.table("vessels_full")
-            .select(_VESSEL_GRID_COLUMNS)
-            .in_("parent_email_id", email_ids)
-            .eq("attachment_is_verified", True)
-            .execute()
-        )
-        data = _sort_vessel_rows(rows.data or [])
-        logger.info("[API] Returning %d vessels from %d emails", len(data), len(email_ids))
+        data = await asyncio.to_thread(_list_all_vessels_sync)
+        logger.info("[API] Returning %d vessels", len(data))
         return data
     except Exception as exc:
         logger.error("[API] list_all_vessels failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+def _list_all_vessels_sync() -> list:
+    ready = (
+        supabase.table("parent_emails")
+        .select("id")
+        .in_("status", ["ready_for_validation", "drafted"])
+        .execute()
+    )
+    email_ids = [e["id"] for e in (ready.data or [])]
+    if not email_ids:
+        return []
+    rows = (
+        supabase.table("vessels_full")
+        .select(_VESSEL_GRID_COLUMNS)
+        .in_("parent_email_id", email_ids)
+        .eq("attachment_is_verified", True)
+        .execute()
+    )
+    return _sort_vessel_rows(rows.data or [])
 
 
 @app.get("/api/columns")
@@ -929,75 +995,127 @@ async def summary_vessels(body: SummaryScopeRequest | None = None):
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+def _list_contacts_sync() -> list[dict[str, Any]]:
+    """Join contacts to parent/attachment in one round-trip (keeps the event loop free)."""
+    contact_rows = (
+        supabase.table("broker_contacts")
+        .select(
+            "id, attachment_id, parent_email_id, row_order, used_fallback, "
+            "excel_sourced, source, "
+            + ", ".join(CONTACT_FIELD_KEYS)
+        )
+        .order("row_order")
+        .execute()
+    ).data or []
+
+    parent_ids = {r.get("parent_email_id") for r in contact_rows if r.get("parent_email_id")}
+    att_ids = {r.get("attachment_id") for r in contact_rows if r.get("attachment_id")}
+
+    parents: dict[str, dict] = {}
+    if parent_ids:
+        for p in (
+            supabase.table("parent_emails")
+            .select("id, subject, sender, date_received")
+            .execute()
+        ).data or []:
+            if p["id"] in parent_ids:
+                parents[p["id"]] = p
+
+    attachments: dict[str, dict] = {}
+    if att_ids:
+        for a in (
+            supabase.table("attachments")
+            .select("id, filename")
+            .execute()
+        ).data or []:
+            if a["id"] in att_ids:
+                attachments[a["id"]] = a
+
+    result = []
+    for row in contact_rows:
+        parent = parents.get(row.get("parent_email_id") or "", {})
+        att = attachments.get(row.get("attachment_id") or "", {})
+        item = {
+            "contact_id": row["id"],
+            "attachment_id": row.get("attachment_id") or "",
+            "filename": att.get("filename") or "",
+            "parent_email_id": row.get("parent_email_id") or "",
+            "subject": parent.get("subject") or "",
+            "sender": parent.get("sender") or "",
+            "date_received": (
+                parent["date_received"].isoformat()
+                if hasattr(parent.get("date_received"), "isoformat")
+                else (parent.get("date_received") or None)
+            ),
+            "used_fallback": bool(row.get("used_fallback")),
+            "row_order": row.get("row_order") or 0,
+            "excel_sourced": row.get("excel_sourced") if isinstance(row.get("excel_sourced"), list) else [],
+            "source": row.get("source") or "email",
+        }
+        for key in CONTACT_FIELD_KEYS:
+            if key == "status":
+                item[key] = normalize_contact_status(row.get(key))
+            else:
+                item[key] = row.get(key) or ""
+        result.append(item)
+
+    result.sort(
+        key=lambda r: (
+            str(r.get("date_received") or ""),
+            r.get("filename") or "",
+            r.get("row_order") or 0,
+        ),
+        reverse=True,
+    )
+    return result
+
+
 @app.get("/api/contacts")
 async def list_contacts():
     """Flat list: one row per broker contact with parent email + attachment context."""
     logger.info("[API] GET /api/contacts")
     try:
-        contact_rows = (
-            supabase.table("broker_contacts")
-            .select(
-                "id, attachment_id, parent_email_id, row_order, used_fallback, "
-                + ", ".join(CONTACT_FIELD_KEYS)
-            )
-            .order("row_order")
-            .execute()
-        ).data or []
-
-        parents = {
-            p["id"]: p
-            for p in (
-                supabase.table("parent_emails")
-                .select("id, subject, sender, date_received")
-                .execute()
-            ).data
-            or []
-        }
-        attachments = {
-            a["id"]: a
-            for a in (
-                supabase.table("attachments")
-                .select("id, filename")
-                .execute()
-            ).data
-            or []
-        }
-
-        result = []
-        for row in contact_rows:
-            parent = parents.get(row.get("parent_email_id") or "", {})
-            att = attachments.get(row.get("attachment_id") or "", {})
-            item = {
-                "contact_id": row["id"],
-                "attachment_id": row.get("attachment_id") or "",
-                "filename": att.get("filename") or "",
-                "parent_email_id": row.get("parent_email_id") or "",
-                "subject": parent.get("subject") or "",
-                "sender": parent.get("sender") or "",
-                "date_received": parent.get("date_received"),
-                "used_fallback": bool(row.get("used_fallback")),
-                "row_order": row.get("row_order") or 0,
-            }
-            for key in CONTACT_FIELD_KEYS:
-                if key == "status":
-                    item[key] = normalize_contact_status(row.get(key))
-                else:
-                    item[key] = row.get(key) or ""
-            result.append(item)
-
-        result.sort(
-            key=lambda r: (
-                r.get("date_received") or "",
-                r.get("filename") or "",
-                r.get("row_order") or 0,
-            ),
-            reverse=True,
-        )
+        result = await asyncio.to_thread(_list_contacts_sync)
         logger.info("[API] Returning %d broker contact rows", len(result))
         return result
     except Exception as exc:
         logger.error("[API] list_contacts failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/contacts/owners-csv")
+async def upload_owners_csv(file: UploadFile = File(...)):
+    """Import CSV / Excel / JSON / PDF into Owners directory. Does not touch email contacts."""
+    name = (file.filename or "upload.csv").strip()
+    ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+    if ext not in {"csv", "json", "pdf", "xlsx", "xls", "xlsm"}:
+        raise HTTPException(
+            status_code=400,
+            detail="Please upload a CSV, Excel, JSON, or PDF file.",
+        )
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="File is empty.")
+    if len(raw) > 15_000_000:
+        raise HTTPException(status_code=400, detail="File is too large (max 15 MB).")
+    logger.info("[API] POST /api/contacts/owners-csv filename=%s bytes=%s", name, len(raw))
+    try:
+        from owners_csv_import import import_owners_file
+
+        result = await import_owners_file(raw, name)
+        logger.info(
+            "[API] owners import done file=%s mode=%s inserted=%s updated=%s",
+            name,
+            result.get("extract_mode"),
+            result.get("inserted"),
+            result.get("updated"),
+        )
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("[API] owners file import failed: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.put("/api/contacts/{contact_id}")
@@ -1018,13 +1136,23 @@ async def update_broker_contact(contact_id: str, body: UpdateBrokerContactReques
 
         existing = (
             supabase.table("broker_contacts")
-            .select("id, match_key, " + ", ".join(CONTACT_FIELD_KEYS))
+            .select("id, match_key, excel_sourced, source, " + ", ".join(CONTACT_FIELD_KEYS))
             .eq("id", contact_id)
             .limit(1)
             .execute()
         ).data or []
         if not existing:
             raise HTTPException(status_code=404, detail="Contact not found.")
+        from agents.contact_extract import _parse_excel_sourced, _source_label
+
+        sourced = set(_parse_excel_sourced(existing[0].get("excel_sourced")))
+        for field in update_payload:
+            if field in CONTACT_FIELD_KEYS:
+                sourced.discard(field)
+        update_payload["excel_sourced"] = sorted(sourced)
+        update_payload["source"] = _source_label(
+            sourced, has_email_parent=bool(existing[0].get("parent_email_id"))
+        )
         merged_for_key = {**existing[0], **update_payload}
         new_key = contact_match_key(merged_for_key)
         if new_key:
@@ -1100,6 +1228,8 @@ async def update_broker_contact(contact_id: str, body: UpdateBrokerContactReques
             "date_received": parent_row.get("date_received"),
             "used_fallback": bool(row.get("used_fallback")),
             "row_order": row.get("row_order") or 0,
+            "excel_sourced": row.get("excel_sourced") if isinstance(row.get("excel_sourced"), list) else [],
+            "source": row.get("source") or "",
         }
         for key in CONTACT_FIELD_KEYS:
             out[key] = (
@@ -1186,6 +1316,7 @@ async def update_vessel(vessel_id: str, body: UpdateVesselRequest):
         )
         if not result.data:
             raise HTTPException(status_code=404, detail="Vessel not found.")
+        sync_position_to_library(supabase, standardized)
         return result.data[0]
     except HTTPException:
         raise
@@ -1248,16 +1379,158 @@ async def get_vessel_library():
     """Vessel Library master list + vessels newly detected in position data."""
     logger.info("[API] GET /api/vessel-library")
     try:
-        vessels = merge_cache_into_rows(supabase, list_library(supabase))
-        new_vessels = merge_cache_into_rows(supabase, detect_new_vessels(supabase))
-        return {
-            "vessels": vessels,
-            "new_vessels": new_vessels,
-            "enrichment": get_enrichment_status(),
-        }
+        data = await asyncio.to_thread(_get_vessel_library_sync)
+        try:
+            await run_vessel_library_enrichment("live", supabase)
+        except Exception as enrich_exc:  # noqa: BLE001
+            logger.warning("[API] get_vessel_library enrichment queue failed: %s", enrich_exc)
+        data["enrichment"] = get_enrichment_status()
+        return data
     except Exception as exc:
         logger.error("[API] get_vessel_library failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+def _get_vessel_library_sync() -> dict:
+    vessels = merge_cache_into_rows(supabase, list_library(supabase))
+    new_vessels = merge_cache_into_rows(supabase, detect_new_vessels(supabase))
+    q88_ids = {
+        str(r.get("vessel_id"))
+        for r in (supabase.table("vessel_q88").select("vessel_id").execute().data or [])
+        if r.get("vessel_id")
+    }
+    for row in vessels:
+        row["has_q88"] = str(row.get("id") or "") in q88_ids
+    return {
+        "vessels": vessels,
+        "new_vessels": new_vessels,
+        "enrichment": get_enrichment_status(),
+    }
+
+
+def _q88_payload(row: dict) -> dict:
+    return {
+        "vessel_id": str(row.get("vessel_id") or ""),
+        "filename": row.get("filename") or "",
+        "fields": row.get("fields") if isinstance(row.get("fields"), list) else [],
+        "mismatch": bool(row.get("mismatch")),
+        "pdf_imo": row.get("pdf_imo") or "",
+        "pdf_name": row.get("pdf_name") or "",
+        "updated_at": (
+            row["updated_at"].isoformat()
+            if hasattr(row.get("updated_at"), "isoformat")
+            else (row.get("updated_at") or "")
+        ),
+    }
+
+
+@app.get("/api/vessel-library/{vessel_id}/q88")
+async def get_vessel_q88(vessel_id: str):
+    plog.info("Q88", "Load stored extract", vessel=vessel_id[:8])
+    row = (
+        supabase.table("vessel_q88").select("*").eq("vessel_id", vessel_id).execute()
+    ).data
+    hit = row[0] if row else None
+    if not hit:
+        plog.info("Q88", "No stored extract", vessel=vessel_id[:8])
+        return {"vessel_id": vessel_id, "filename": "", "fields": [], "mismatch": False}
+    filled = sum(1 for f in (hit.get("fields") or []) if (f.get("value") or "").strip())
+    plog.info("Q88", "Returning stored extract", vessel=vessel_id[:8], file=hit.get("filename"), filled=filled)
+    return _q88_payload(hit)
+
+
+@app.post("/api/vessel-library/{vessel_id}/q88")
+async def upload_vessel_q88(
+    vessel_id: str,
+    file: UploadFile = File(...),
+    ignore_mismatch: bool = False,
+):
+    lib = supabase.table("vessel_library").select("id, vessel_name, imo_no").eq("id", vessel_id).execute()
+    if not lib.data:
+        raise HTTPException(status_code=404, detail="Vessel not found in library.")
+    vessel = lib.data[0]
+    name = (file.filename or "q88.pdf").strip()
+    if not name.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Please upload a Q88 PDF.")
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="File is empty.")
+    if len(raw) > 20_000_000:
+        raise HTTPException(status_code=400, detail="File is too large (max 20 MB).")
+
+    from agents.q88_extract import extract_q88_pdf, mismatch_against_library
+
+    plog.info(
+        "Q88",
+        "Upload received",
+        vessel=vessel_id[:8],
+        library=vessel.get("vessel_name") or "",
+        file=name,
+        bytes=len(raw),
+        ignore=ignore_mismatch,
+    )
+    try:
+        fields = await extract_q88_pdf(raw, name)
+    except ValueError as exc:
+        plog.warn("Q88", "Rejected PDF", file=name, reason=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        plog.exception("Q88", "Scan failed", vessel=vessel_id[:8], file=name)
+        raise HTTPException(status_code=500, detail=f"Q88 scan failed: {exc}") from exc
+
+    check = mismatch_against_library(
+        fields,
+        vessel.get("vessel_name") or "",
+        vessel.get("imo_no") or "",
+    )
+    if check["mismatch"] and not ignore_mismatch:
+        plog.warn(
+            "Q88",
+            "IMO/name mismatch",
+            library=f"{vessel.get('vessel_name')}/{vessel.get('imo_no')}",
+            pdf=f"{check.get('pdf_name')}/{check.get('pdf_imo')}",
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "mismatch": True,
+                "message": (
+                    f"This PDF looks like {check['pdf_name'] or 'another vessel'}"
+                    f"{(' (IMO ' + check['pdf_imo'] + ')') if check['pdf_imo'] else ''}, "
+                    f"not {vessel.get('vessel_name') or 'this library row'}"
+                    f"{(' (IMO ' + (vessel.get('imo_no') or '') + ')') if vessel.get('imo_no') else ''}. "
+                    "Click Ignore to store it on this row anyway."
+                ),
+                **check,
+            },
+        )
+
+    supabase.table("vessel_q88").delete().eq("vessel_id", vessel_id).execute()
+    saved = supabase.table("vessel_q88").insert({
+        "vessel_id": vessel_id,
+        "filename": name,
+        "fields": fields,
+        "mismatch": bool(check["mismatch"]),
+        "pdf_imo": check["pdf_imo"],
+        "pdf_name": check["pdf_name"],
+    }).execute()
+    row = (saved.data or [{}])[0]
+    row.setdefault("fields", fields)
+    row.setdefault("filename", name)
+    row.setdefault("vessel_id", vessel_id)
+    row.setdefault("mismatch", check["mismatch"])
+    row.setdefault("pdf_imo", check["pdf_imo"])
+    row.setdefault("pdf_name", check["pdf_name"])
+    filled = sum(1 for f in fields if (f.get("value") or "").strip())
+    plog.info(
+        "Q88",
+        "Saved to DB",
+        vessel=vessel_id[:8],
+        file=name,
+        filled=filled,
+        mismatch=check["mismatch"],
+    )
+    return _q88_payload(row)
 
 
 @app.post("/api/vessel-library")
@@ -1265,7 +1538,9 @@ async def create_vessel_library(body: VesselLibraryRequest):
     """Add a vessel (manual entry or promotion from the review list)."""
     logger.info("[API] POST /api/vessel-library — %s", body.vessel_name)
     try:
-        return add_library_vessel(supabase, body.model_dump())
+        row = add_library_vessel(supabase, body.model_dump())
+        sync_library_row_to_positions(supabase, row, only_empty=True)
+        return row
     except Exception as exc:
         logger.error("[API] create_vessel_library failed: %s", exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -1275,7 +1550,16 @@ async def create_vessel_library(body: VesselLibraryRequest):
 async def edit_vessel_library(vessel_id: str, body: VesselLibraryRequest):
     logger.info("[API] PUT /api/vessel-library/%s", vessel_id)
     try:
-        return update_library_vessel(supabase, vessel_id, body.model_dump())
+        fields = body.model_dump(exclude_unset=True)
+        row = update_library_vessel(supabase, vessel_id, fields)
+        from vessel_library import LIBRARY_FIELDS
+
+        edited = {f for f in LIBRARY_FIELDS if f in fields}
+        if edited:
+            sync_library_row_to_positions(
+                supabase, row, fields=edited, only_empty=False
+            )
+        return row
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -1299,7 +1583,9 @@ async def autofill_vessel_library():
     """Re-run library sync (insert new + fill blank fields on existing)."""
     logger.info("[API] POST /api/vessel-library/autofill")
     try:
-        stats = autofill_library(supabase)
+        with plog.step("Library", "Autofill vessel library"):
+            stats = autofill_library(supabase)
+        plog.info("Library", "Autofill complete", **{k: v for k, v in stats.items() if isinstance(v, (int, str))})
         return stats
     except Exception as exc:
         logger.error("[API] autofill_vessel_library failed: %s", exc)
@@ -1383,12 +1669,11 @@ async def create_manual_vessel(body: ManualVesselRequest):
 
 @app.post("/api/generate-draft")
 async def generate_draft(body: GenerateDraftRequest, background_tasks: BackgroundTasks):
-    logger.info("[API] POST /api/generate-draft — email_id=%s vessels=%d",
-                body.email_id, len(body.vessels))
+    plog.info("Phase2", "Draft requested", email_id=body.email_id[:8], vessels=len(body.vessels))
     job_id = str(uuid.uuid4())
 
     async def _run_phase2():
-        logger.info("[Phase2] Starting job_id=%s, vessels=%d", job_id, len(body.vessels))
+        plog.info("Phase2", "▶ job started", job=job_id[:8], vessels=len(body.vessels))
         initial_state = {
             "job_id": job_id,
             "email_id": body.email_id,
@@ -1402,13 +1687,15 @@ async def generate_draft(body: GenerateDraftRequest, background_tasks: Backgroun
         try:
             final_state = await phase2_graph.ainvoke(initial_state)
             if final_state.get("error"):
-                logger.error("[Phase2] Failed: %s", final_state["error"])
+                plog.error("Phase2", "Job failed", job=job_id[:8], error=final_state["error"])
                 await sse_manager.send(job_id, "phase2_failed", {"error": final_state["error"]})
             else:
-                logger.info(
-                    "[Phase2] Done — %d zones, %d chars HTML",
-                    len(final_state.get("zones", [])),
-                    len(final_state.get("draft_html", "")),
+                plog.info(
+                    "Phase2",
+                    "✓ job complete",
+                    job=job_id[:8],
+                    zones=len(final_state.get("zones", [])),
+                    chars=len(final_state.get("draft_html", "")),
                 )
                 await sse_manager.send(job_id, "drafting_done", {
                     "email_id": body.email_id,
@@ -1416,7 +1703,7 @@ async def generate_draft(body: GenerateDraftRequest, background_tasks: Backgroun
                     "zones": final_state.get("zones", []),
                 })
         except Exception as exc:
-            logger.exception("[Phase2] Crashed: %s", exc)
+            plog.exception("Phase2", "Job crashed", job=job_id[:8])
             await sse_manager.send(job_id, "phase2_failed", {"error": str(exc)})
 
     background_tasks.add_task(_run_phase2)

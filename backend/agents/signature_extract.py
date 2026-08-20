@@ -14,6 +14,7 @@ from config import settings
 from database import supabase
 from sse_manager import sse_manager
 from llm import claude_client
+import pipeline_log as plog
 
 logger = logging.getLogger(__name__)
 
@@ -276,7 +277,7 @@ async def llm_extract_signature_chunk(chunk: str) -> dict[str, str]:
         content = resp.choices[0].message.content or ""
         return _parse_llm_json_obj(content)
     except Exception as exc:
-        logger.warning("[Signature] LLM chunk failed: %s", exc)
+        plog.warn("Contacts", "Signature LLM chunk failed", error=str(exc)[:80])
         return {"emails": "", "phones": ""}
 
 
@@ -288,7 +289,7 @@ async def run_parent_signature_extraction(job_id: str, email_id: str) -> None:
     try:
         await _run_parent_signature_extraction_impl(job_id, email_id)
     except Exception as exc:
-        logger.exception("[Signature] Failed for parent %s: %s", email_id, exc)
+        plog.exception("Contacts", "Signature extraction failed", email_id=email_id[:8])
         await sse_manager.send(job_id, "signature_extraction_error", {
             "email_id": email_id,
             "error": str(exc),
@@ -380,10 +381,12 @@ async def _run_parent_signature_extraction_impl(job_id: str, email_id: str) -> N
                     preview_first = emails_val[:120] + ("…" if len(emails_val) > 120 else "")
         await asyncio.sleep(0.15)
 
-    logger.info(
-        "[Signature] parent=%s attachments_updated=%d",
-        email_id,
-        updated,
+    plog.info(
+        "Contacts",
+        "Signature extraction done",
+        email_id=email_id[:8],
+        attachments_updated=updated,
+        total=len(attachments),
     )
 
     await sse_manager.send(job_id, "signature_extraction_done", {
